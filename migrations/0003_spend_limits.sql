@@ -28,3 +28,11 @@ CREATE TABLE usage_months (
   month     INTEGER PRIMARY KEY,           -- ms at the start of the UTC month
   received  INTEGER NOT NULL DEFAULT 0
 );
+
+-- Seed the current month from the hourly counts already recorded, so that
+-- deploying the cap mid-month does not grant a second full allowance.
+-- project_stats buckets use the receive time, as usage_months does.
+INSERT INTO usage_months (month, received)
+SELECT unixepoch('now', 'start of month') * 1000, COALESCE(SUM(received), 0)
+FROM project_stats
+WHERE bucket >= unixepoch('now', 'start of month') * 1000;
