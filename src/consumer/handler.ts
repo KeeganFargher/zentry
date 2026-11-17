@@ -39,19 +39,8 @@ async function loadPayload(message: QueueMessage, deps: ConsumerDeps): Promise<s
 // after this works on the typed result.
 const EventPayload = jsonText(WireEvent);
 
-/** Null when the payload is missing or is not a JSON object; retrying would not help. */
-async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepared | null> {
-  const payload = await loadPayload(message, deps);
-
-  if (payload === null) {
-    logError("dropping event whose spilled payload is gone", {
-      project_id: message.project_id,
-      event_id: message.event_id,
-    });
-
-    return null;
-  }
-
+/** Null when the payload is not a JSON object; retrying would not help. */
+function normalizeMessage(message: QueueMessage, payload: string): Prepared | null {
   const parsed = EventPayload.safeParse(payload);
 
   if (!parsed.success) {
@@ -64,19 +53,37 @@ async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepa
     return null;
   }
 
+  return prepareEvent(
+    normalizeEvent(parsed.data, {
+      projectId: message.project_id,
+      eventId: message.event_id,
+      receivedAt: message.received_at,
+      clientIp: message.client_ip,
+      userAgent: message.user_agent,
+      sentAt: message.sent_at,
+    }),
+  );
+}
+
+/** Null when the event cannot be stored; retrying would not help. */
+async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepared | null> {
+  const payload = await loadPayload(message, deps);
+
+  if (payload === null) {
+    logError("dropping event whose spilled payload is gone", {
+      project_id: message.project_id,
+      event_id: message.event_id,
+    });
+
+    return null;
+  }
+
+  // Parsing is inside the try as well as normalizing: anything either throws
+  // depends only on the payload, so it would throw the same way on every retry,
+  // and a throw here would otherwise send the whole batch back to the queue.
   try {
-    return prepareEvent(
-      normalizeEvent(parsed.data, {
-        projectId: message.project_id,
-        eventId: message.event_id,
-        receivedAt: message.received_at,
-        clientIp: message.client_ip,
-        userAgent: message.user_agent,
-        sentAt: message.sent_at,
-      }),
-    );
+    return normalizeMessage(message, payload);
   } catch (cause) {
-    // The same input would fail the same way on every retry.
     logError("dropping event that could not be normalized", {
       project_id: message.project_id,
       event_id: message.event_id,

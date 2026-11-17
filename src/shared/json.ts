@@ -6,7 +6,14 @@ import { z } from "zod";
 
 import type { Json, JsonObject } from "./contract";
 
-export const JsonValue: z.ZodType<Json> = z.json();
+/**
+ * A JSON value of any kind, checked only for presence. Every value a schema
+ * sees came out of `JSON.parse` (see `jsonText`), so it is `Json` by
+ * construction. Re-walking it with `z.json()` would recurse as deep as the
+ * sender nested it, before the trimmers cap depth, and a small but deeply
+ * nested payload would overflow the stack. The trimmers walk it, bounded.
+ */
+export const JsonValue: z.ZodType<Json> = z.custom<Json>((value) => value !== undefined);
 
 export const JsonRecord: z.ZodType<JsonObject> = z.record(z.string(), JsonValue);
 

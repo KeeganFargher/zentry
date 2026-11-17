@@ -5,6 +5,7 @@ import type { Json, JsonObject, Pair } from "@/shared/contract";
 import { jsonKind, jsonText, JsonValue } from "@/shared/json";
 
 import { FILTERED, scrubSecrets } from "./secrets";
+import { MAX_STRING, trimJson } from "./trim";
 
 export { FILTERED };
 
@@ -59,6 +60,8 @@ export function scrubQueryString(query: string): string {
     .join("&");
 }
 
+const BODY_LIMITS = { depth: 5, maxKeys: 200, maxString: MAX_STRING };
+
 const FORM_ENCODED = /^[^=&\s]+=[^\s]*$/;
 
 /** Body text that holds a JSON object or list; any other text is scrubbed as plain text. */
@@ -79,8 +82,11 @@ export function scrubBody(body: Json): Json {
 function scrubBodyText(text: string): string {
   const parsed = JsonBodyText.safeParse(text);
 
+  // The text was already cut to length, but not to depth: trim the parsed value
+  // to the request-data limits first, or a short, deeply nested body would
+  // overflow the stack in `scrubJson`.
   if (parsed.success) {
-    return JSON.stringify(scrubJson(parsed.data));
+    return JSON.stringify(scrubJson(trimJson(parsed.data, BODY_LIMITS)));
   }
 
   return FORM_ENCODED.test(text) ? scrubQueryString(text) : scrubText(text);

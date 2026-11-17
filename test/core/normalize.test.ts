@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { prepareEvent } from "@/core/buckets";
 import { indexedTags, userLabel } from "@/core/tags";
+import type { Json } from "@/shared/contract";
 
 import { normalize, normalized, pythonError, RECEIVED_AT } from "./helpers";
 
@@ -54,6 +55,22 @@ describe("normalizeEvent", () => {
     expect(event.breadcrumbs).toEqual([]);
     expect(event.user).toBeNull();
     expect(event.title).toBe("kept");
+  });
+
+  // A small payload can nest far deeper than the stack. Depth is capped by
+  // trimming, so nothing may walk free-form data before the trimmers do.
+  it("survives free-form data nested far deeper than the stack", () => {
+    let nested: Json = "bottom";
+
+    for (let level = 0; level < 20_000; level += 1) {
+      nested = [nested];
+    }
+
+    const body = `${"[".repeat(4000)}${"]".repeat(4000)}`;
+    const event = normalize({ extra: { nested }, request: { data: body } });
+
+    expect(event.extra).toEqual({ nested: [[[["[…]"]]]] });
+    expect(event.request?.data).toBe(`[[[[["[…]"]]]]]`);
   });
 
   it("titles a message event by its first line", () => {
