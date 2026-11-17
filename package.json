@@ -1,0 +1,44 @@
+{
+  "name": "zentry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sentry-compatible error tracking on Cloudflare Workers, D1, R2 and Queues.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build ui",
+    "check": "pnpm fmt:check && pnpm lint && pnpm typecheck && pnpm test",
+    "deploy": "pnpm build && wrangler deploy",
+    "dev": "wrangler dev",
+    "dev:ui": "vite ui",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --fix",
+    "migrate:local": "wrangler d1 migrations apply zentry --local",
+    "migrate:remote": "wrangler d1 migrations apply zentry --remote",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ui"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261116.1",
+    "@oxlint/plugins": "1.93.0",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "lefthook": "2.2.2",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
+    "oxlint-tsgolint": "7.0.2007",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "4.1.12",
+    "wrangler": "4.162.0"
+  },
+  "packageManager": "pnpm@12.5.1"
+}
