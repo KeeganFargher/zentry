@@ -1,6 +1,7 @@
 // Planning, part 2: turn buckets into the rows the consumer writes in one
 // transaction (DESIGN.md §7.4, step C).
 
+import type { RateLimitReason } from "@/shared/contract";
 import type {
   AggregateRow,
   BatchState,
@@ -9,10 +10,12 @@ import type {
   GroupStatRow,
   LimitRow,
   NewGroupRow,
+  ProjectQuota,
   ProjectStatRow,
   TagRow,
+  UsageRow,
 } from "@/shared/plan";
-import { HOUR, hourBucket } from "@/shared/time";
+import { HOUR, hourBucket, monthBucket } from "@/shared/time";
 
 import { buildBuckets, dropDuplicates } from "./buckets";
 import type { Bucket, Prepared, Sampled } from "./buckets";
@@ -152,21 +155,60 @@ function projectStatRows(groupStats: GroupStatRow[]): ProjectStatRow[] {
   return [...rows.values()];
 }
 
-/** Projects whose count for the current hour now exceeds their quota. */
+type HourlyLimit = { max: number; reason: RateLimitReason };
+
+function hourlyLimits(quota: ProjectQuota): HourlyLimit[] {
+  const limits: HourlyLimit[] = [];
+
+  if (quota.maxEventsPerHour !== null) {
+    limits.push({ max: quota.maxEventsPerHour, reason: "project_quota" });
+  }
+
+  if (quota.spikeLimitPerHour !== null) {
+    limits.push({ max: quota.spikeLimitPerHour, reason: "spike_protection" });
+  }
+
+  return limits;
+}
+
+/**
+ * Projects whose count for the current hour now exceeds their quota or their
+ * spike threshold. When both are passed, the lower one is the reason given,
+ * since it is the one that would still hold if the other were raised.
+ */
 function limitRows(projectStats: ProjectStatRow[], input: PlanInput): LimitRow[] {
   const hour = hourBucket(input.now);
   const rows: LimitRow[] = [];
 
   for (const quota of input.state.quotas) {
     const added = projectStats.find((row) => row.p === quota.projectId && row.b === hour)?.n ?? 0;
-    const max = quota.maxEventsPerHour;
+    const received = quota.received + added;
 
-    if (max !== null && quota.received + added > max) {
-      rows.push({ p: quota.projectId, until: hour + HOUR });
+    const [binding] = hourlyLimits(quota)
+      .filter((limit) => received > limit.max)
+      .toSorted((a, b) => a.max - b.max);
+
+    if (binding !== undefined) {
+      rows.push({ p: quota.projectId, until: hour + HOUR, reason: binding.reason });
     }
   }
 
   return rows;
+}
+
+/** Accepted events per UTC month, for the installation-wide monthly cap. */
+function usageRows(projectStats: ProjectStatRow[]): UsageRow[] {
+  const rows = new Map<number, UsageRow>();
+
+  for (const stat of projectStats) {
+    const month = monthBucket(stat.b);
+    const row = rows.get(month) ?? { m: month, n: 0 };
+
+    row.n += stat.n;
+    rows.set(month, row);
+  }
+
+  return [...rows.values()];
 }
 
 export function planBatch(input: PlanInput): Plan {
@@ -188,6 +230,7 @@ export function planBatch(input: PlanInput): Plan {
       tags: buckets.flatMap(tagRows),
       projectStats,
       limits: limitRows(projectStats, input),
+      usage: usageRows(projectStats),
     },
   };
 }

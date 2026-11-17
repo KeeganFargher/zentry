@@ -1,14 +1,24 @@
 // Projects and their DSN keys.
 
+import type { RateLimitReason } from "@/shared/contract";
+
 export type ProjectRecord = {
   id: number;
   slug: string;
   name: string;
   platform: string | null;
   maxEventsPerHour: number | null;
-  rateLimitedUntil: number | null;
+  rateLimit: { until: number; reason: RateLimitReason } | null;
+  spikeProtection: boolean;
+  spikeLimitPerHour: number | null;
   firstEventAt: number | null;
   createdAt: number;
+};
+
+type ProjectRow = Omit<ProjectRecord, "rateLimit" | "spikeProtection"> & {
+  rateLimitedUntil: number | null;
+  rateLimitReason: RateLimitReason | null;
+  spikeProtection: number;
 };
 
 export type KeyRecord = {
@@ -28,7 +38,11 @@ export type NewProject = {
   now: number;
 };
 
-export type ProjectChanges = { name: string; maxEventsPerHour: number | null };
+export type ProjectChanges = {
+  name: string;
+  maxEventsPerHour: number | null;
+  spikeProtection: boolean;
+};
 
 export type NewKey = { projectId: number; label: string; publicKey: string; now: number };
 
@@ -45,8 +59,23 @@ const PROJECT_COLUMNS = `
   id, slug, name, platform,
   max_events_per_hour AS maxEventsPerHour,
   rate_limited_until AS rateLimitedUntil,
+  rate_limit_reason AS rateLimitReason,
+  spike_protection AS spikeProtection,
+  spike_limit_per_hour AS spikeLimitPerHour,
   first_event_at AS firstEventAt,
   created_at AS createdAt`;
+
+function toRecord(row: ProjectRow): ProjectRecord {
+  const { rateLimitedUntil, rateLimitReason, spikeProtection, ...rest } = row;
+
+  // The table's CHECK keeps the two limit columns set and cleared together.
+  const rateLimit =
+    rateLimitedUntil === null || rateLimitReason === null
+      ? null
+      : { until: rateLimitedUntil, reason: rateLimitReason };
+
+  return { ...rest, rateLimit, spikeProtection: spikeProtection === 1 };
+}
 
 const KEY_COLUMNS = `id, label, public_key AS publicKey, status, created_at AS createdAt`;
 
@@ -61,16 +90,18 @@ export class ProjectStore {
     const { results } = await this.#db
       .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE organization_id = ?1 ORDER BY slug`)
       .bind(organizationId)
-      .all<ProjectRecord>();
+      .all<ProjectRow>();
 
-    return results;
+    return results.map(toRecord);
   }
 
   async findBySlug(organizationId: number, slug: string): Promise<ProjectRecord | null> {
-    return this.#db
+    const row = await this.#db
       .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE organization_id = ?1 AND slug = ?2`)
       .bind(organizationId, slug)
-      .first<ProjectRecord>();
+      .first<ProjectRow>();
+
+    return row === null ? null : toRecord(row);
   }
 
   /** Creates the project and its first key. Null when the slug is taken. */
@@ -99,17 +130,25 @@ export class ProjectStore {
     return this.findBySlug(project.organizationId, project.slug);
   }
 
+  /**
+   * A change to the quota or to spike protection lifts the current limit: it
+   * was set under the old settings, and the next batch sets it again if the
+   * new ones are still passed.
+   */
   async update(projectId: number, changes: ProjectChanges): Promise<void> {
+    const limitsChanged = `max_events_per_hour IS NOT ?3 OR spike_protection IS NOT ?4`;
+
     await this.#db
       .prepare(
         `UPDATE projects
          SET name = ?2,
              max_events_per_hour = ?3,
-             rate_limited_until = CASE WHEN max_events_per_hour IS ?3
-                                       THEN rate_limited_until ELSE NULL END
+             spike_protection = ?4,
+             rate_limited_until = CASE WHEN ${limitsChanged} THEN NULL ELSE rate_limited_until END,
+             rate_limit_reason  = CASE WHEN ${limitsChanged} THEN NULL ELSE rate_limit_reason END
          WHERE id = ?1`,
       )
-      .bind(projectId, changes.name, changes.maxEventsPerHour)
+      .bind(projectId, changes.name, changes.maxEventsPerHour, changes.spikeProtection ? 1 : 0)
       .run();
   }
 

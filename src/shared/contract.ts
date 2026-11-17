@@ -11,6 +11,9 @@ export type Level = "fatal" | "error" | "warning" | "info" | "debug";
 
 export type IssueStatus = "unresolved" | "resolved" | "ignored";
 
+/** Why ingest refuses a project's events, in Relay's reason codes. */
+export type RateLimitReason = "project_quota" | "spike_protection";
+
 // ── Stored event (the JSON object kept in R2) ────────────────────────────
 
 export type StoredFrame = {
@@ -123,7 +126,11 @@ export type ApiProject = {
   name: string;
   platform: string | null;
   maxEventsPerHour: number | null;
-  rateLimitedUntil: number | null;
+  /** Null while not limited. */
+  rateLimit: { until: number; reason: RateLimitReason } | null;
+  spikeProtection: boolean;
+  /** The current hourly spike threshold; null until the hourly cron has computed one. */
+  spikeLimitPerHour: number | null;
   firstEventAt: number | null;
   createdAt: number;
   events24h: number;

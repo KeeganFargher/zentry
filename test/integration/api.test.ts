@@ -204,7 +204,9 @@ describe("projects and keys", () => {
         .then((row) => row?.until ?? null);
 
     await api(path, { method: "PUT", body: { maxEventsPerHour: 10 } });
-    await env.DB.prepare(`UPDATE projects SET rate_limited_until = 123 WHERE id = ?1`)
+    await env.DB.prepare(
+      `UPDATE projects SET rate_limited_until = 123, rate_limit_reason = 'project_quota' WHERE id = ?1`,
+    )
       .bind(project.id)
       .run();
 
@@ -214,6 +216,31 @@ describe("projects and keys", () => {
 
     await api(path, { method: "PUT", body: { maxEventsPerHour: 1000 } });
     expect(await limitedUntil()).toBeNull();
+  });
+
+  it("turns spike protection off and lifts a spike limit", async () => {
+    const project = await newProject("Bursty");
+    const path = `/projects/default/${project.slug}/`;
+
+    expect(project.spikeProtection).toBe(true);
+
+    await env.DB.prepare(
+      `UPDATE projects SET rate_limited_until = 123, rate_limit_reason = 'spike_protection'
+       WHERE id = ?1`,
+    )
+      .bind(project.id)
+      .run();
+
+    expect((await (await api(path)).json<ApiProject>()).rateLimit).toEqual({
+      until: 123,
+      reason: "spike_protection",
+    });
+
+    const updated = await (
+      await api(path, { method: "PUT", body: { spikeProtection: false } })
+    ).json<ApiProject>();
+
+    expect(updated).toMatchObject({ spikeProtection: false, rateLimit: null });
   });
   it("reports 24-hour counts in the project list", async () => {
     const project = await newProject("Counted");

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { EventBlobs } from "@/blobs/events";
 import { processMessages } from "@/consumer/handler";
-import { HOUR } from "@/shared/time";
+import { HOUR, monthBucket } from "@/shared/time";
 
 import {
   consumerDeps,
@@ -15,6 +15,23 @@ import {
   message,
   NOW,
 } from "./helpers";
+
+async function limitOf(projectId: number): Promise<{ until: number; reason: string } | null> {
+  return env.DB.prepare(
+    `SELECT rate_limited_until AS until, rate_limit_reason AS reason
+     FROM projects WHERE id = ?1 AND rate_limited_until IS NOT NULL`,
+  )
+    .bind(projectId)
+    .first<{ until: number; reason: string }>();
+}
+
+async function monthCount(): Promise<number> {
+  const row = await env.DB.prepare(`SELECT received FROM usage_months WHERE month = ?1`)
+    .bind(monthBucket(NOW))
+    .first<{ received: number }>();
+
+  return row?.received ?? 0;
+}
 
 describe("consumer", () => {
   it("turns 100 copies of one error into one issue seen 100 times", async () => {
@@ -247,6 +264,74 @@ describe("consumer", () => {
       .first<{ until: number | null }>();
 
     expect(row?.until).toBe(NOW - (NOW % HOUR) + HOUR);
+  });
+
+  it("sets a spike-protection limit once a project passes its spike threshold", async () => {
+    const project = await createProject(100);
+
+    await env.DB.prepare(`UPDATE projects SET spike_limit_per_hour = 2 WHERE id = ?1`)
+      .bind(project.id)
+      .run();
+
+    const messages = [1, 2, 3].map((index) =>
+      message({ projectId: project.id, index, event: errorEvent("checkout") }),
+    );
+
+    await processMessages(messages, consumerDeps());
+
+    expect(await limitOf(project.id)).toEqual({
+      until: NOW - (NOW % HOUR) + HOUR,
+      reason: "spike_protection",
+    });
+  });
+
+  it("names the lower limit when a project passes both", async () => {
+    const project = await createProject(2);
+
+    await env.DB.prepare(`UPDATE projects SET spike_limit_per_hour = 3 WHERE id = ?1`)
+      .bind(project.id)
+      .run();
+
+    const messages = [1, 2, 3, 4].map((index) =>
+      message({ projectId: project.id, index, event: errorEvent("checkout") }),
+    );
+
+    await processMessages(messages, consumerDeps());
+
+    expect((await limitOf(project.id))?.reason).toBe("project_quota");
+  });
+
+  it("ignores the spike threshold while spike protection is off", async () => {
+    const project = await createProject();
+
+    await env.DB.prepare(
+      `UPDATE projects SET spike_limit_per_hour = 1, spike_protection = 0 WHERE id = ?1`,
+    )
+      .bind(project.id)
+      .run();
+
+    const messages = [1, 2, 3].map((index) =>
+      message({ projectId: project.id, index, event: errorEvent("checkout") }),
+    );
+
+    await processMessages(messages, consumerDeps());
+
+    expect(await limitOf(project.id)).toBeNull();
+  });
+
+  it("adds every new event to the month's installation-wide count", async () => {
+    const project = await createProject();
+    const before = await monthCount();
+
+    const messages = [1, 2, 3].map((index) =>
+      message({ projectId: project.id, index, event: errorEvent("checkout") }),
+    );
+
+    await processMessages(messages, consumerDeps());
+    // A redelivery is a duplicate, and is not counted again.
+    await processMessages(messages, consumerDeps());
+
+    expect(await monthCount()).toBe(before + 3);
   });
 
   it("acks and drops a message that is not JSON", async () => {

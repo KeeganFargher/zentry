@@ -83,7 +83,7 @@ logs, metrics, native symbolication, teams, SSO, integrations.
                  │   └─ send ─▶ Queue          │   reads D1, reads R2                 │
                  │ queue: consumer (concurrency 1)                                    │
                  │   normalize → scrub → hash → R2 put → one D1 transaction           │
-                 │ scheduled: retention, tag pruning                                  │
+                 │ scheduled: retention, tag pruning; hourly spike thresholds         │
                  └────────────────────────────────────────────────────────────────────┘
                      │              │                   │                │
                   Queue          Queue (DLQ)           D1               R2
@@ -165,14 +165,15 @@ The allowed imports between these folders are fixed and lint-enforced; see §16.
   "ratelimits": [
     { "name": "INGEST_RL", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } }
   ],
-  "triggers": { "crons": ["17 3 * * *"] },
-  "observability": { "enabled": true },
+  "triggers": { "crons": ["17 3 * * *", "3 * * * *"] },
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   "vars": {
     "INGEST_HOST": "ingest.zentry.example.com",
     "ACCESS_TEAM_DOMAIN": "<team>.cloudflareaccess.com",
     "ACCESS_AUD": "<application audience tag>",
     "RETENTION_DAYS": "90",
-    "MAX_STORED_PER_GROUP_HOUR": "100"
+    "MAX_STORED_PER_GROUP_HOUR": "100",
+    "MAX_EVENTS_PER_MONTH": "1000000"
   }
 }
 ```
@@ -325,7 +326,7 @@ The Worker awaits `EVENTS_Q.send()` before responding. If the send throws
 | Bad key | 401 | `{"detail":"…"}` |
 | Malformed | 400 | `{"detail":"…"}` |
 | Too large | 413 | `{"detail":"…"}` |
-| Rate limited | 429 | `Retry-After: <s>`, `X-Sentry-Rate-Limits: <s>::project` |
+| Rate limited | 429 | `Retry-After: <s>`, `X-Sentry-Rate-Limits: <s>::<scope>:<reason>` (§6) |
 | Queue unavailable | 503 | `Retry-After: 30` |
 
 SDKs read `X-Sentry-Rate-Limits` and stop sending for that many seconds, which
@@ -333,26 +334,83 @@ is what makes rate limiting cheap.
 
 ---
 
-## 6. Rate limiting and flood control
+## 6. Rate limiting, spike protection and flood control
 
-Three layers, from cheapest to most precise.
+A DSN is public, so a crash loop or an abuser can send any volume. Each layer
+below bounds a different cost; together they put a ceiling on the bill. They
+follow Sentry's quota model (`src/sentry/quotas/base.py`: quotas scoped to the
+organization, project or key, each with a reason code) and its spike
+protection (described in `docs/pricing/quotas/spike-protection.mdx` of
+`getsentry/sentry-docs`; the algorithm itself is in the closed `getsentry`).
 
-1. **Burst limit, in the ingest Worker.** `INGEST_RL.limit({ key: publicKey })`
+| # | Layer | Scope | Reason code | Set by | Bounds |
+|---|---|---|---|---|---|
+| 1 | Monthly cap | installation | `org_quota` | `MAX_EVENTS_PER_MONTH` | everything downstream, for the month |
+| 2 | Spike protection | project | `spike_protection` | hourly cron | one project's sudden surge |
+| 3 | Hourly quota | project | `project_quota` | project settings | one project's sustained volume |
+| 4 | Burst limit | key, per location | `key_quota` | Rate Limiting binding | a runaway loop, within the minute |
+| 5 | Flood sampling | issue | (stored, not refused) | `MAX_STORED_PER_GROUP_HOUR` | R2 writes and event rows |
+
+Every refusal is a `429` with `Retry-After` and
+`X-Sentry-Rate-Limits: <seconds>::<scope>:<reason>`, Relay's format
+(`relay-server/src/utils/rate_limits.rs`). The categories field is empty,
+which means all categories, so the SDK also pauses sessions and transactions;
+Zentry drops those, but each still costs a Worker request. Layers 1 to 3 apply
+to every envelope; layer 4 only to envelopes that carry an event.
+
+1. **Monthly cap.** The consumer adds each batch's new events to
+   `usage_months` (one row per UTC month) in the same transaction as the rest.
+   Ingest reads that row through a per-isolate cache refreshed every minute and
+   refuses everything once it reaches `MAX_EVENTS_PER_MONTH`, until the month
+   ends. The variable is required: a missing or non-positive value makes the
+   Worker throw rather than run without a ceiling. Overshoot is what arrives
+   within a minute plus queue delay, which layer 4 bounds.
+2. **Spike protection.** On by default per project, off for projects that are
+   bursty by design. A cron at minute 3 of every hour sets
+   `projects.spike_limit_per_hour` for each protected project
+   (`core/spike.ts`):
+   - floor = max(500, ⌈3 × `MAX_EVENTS_PER_MONTH` / (720 × min(projects, 5))⌉),
+     Sentry's floor: the hourly rate that would use three months of quota in
+     one; 500 is a tenth of Sentry's smallest error plan;
+   - projection = the higher of the mean of the last 168 complete hours and
+     the mean of the same hour of day over those 7 days (a stand-in for
+     Sentry's seasonality weighting);
+   - multiplier = 5 × the coefficient of variation of those hours, bounded to
+     3..6 (Sentry: "5 times the standard deviation", bounded to 3..6);
+   - threshold = max(floor, ⌈projection × multiplier⌉).
+
+   The consumer treats the threshold like an hourly quota. Only accepted
+   events count toward the history, since refused ones never reach the
+   consumer; Sentry gives dropped events a decaying weight instead, so here a
+   long spike raises the threshold more slowly. A new project has no threshold
+   until the next hourly run; layers 1 and 3 hold meanwhile.
+3. **Hourly project quota.** The consumer keeps `project_stats.received` per
+   hour. When a project passes `projects.max_events_per_hour` (default 10,000;
+   NULL means unlimited) or its spike threshold, the consumer sets
+   `rate_limited_until` to the start of the next hour and `rate_limit_reason`
+   to the lower of the two limits passed. A CHECK keeps the two columns set
+   and cleared together. Ingest sees the flag through its 60-second key cache.
+   Changing the quota or the spike setting lifts the current limit.
+4. **Burst limit, in the ingest Worker.** `INGEST_RL.limit({ key: publicKey })`
    at 600 per 60 seconds. This counter is per Cloudflare location and
    approximate, so it is a guard against a runaway loop and not an exact
    quota. Over the limit: `429`, `Retry-After: 60`.
-2. **Hourly project quota, set by the consumer.** The consumer keeps
-   `project_stats.received` per hour. When a project passes
-   `projects.max_events_per_hour` (default 10,000; NULL means unlimited), the
-   consumer sets `projects.rate_limited_until` to the start of the next hour.
-   The ingest Worker sees that flag through its 60-second key cache and
-   returns `429` until then. The quota is global and configurable, and it
-   lags by up to a minute plus queue delay.
-3. **Per-issue flood sampling, in the consumer.** Each issue stores at most
+5. **Per-issue flood sampling, in the consumer.** Each issue stores at most
    `MAX_STORED_PER_GROUP_HOUR` (100) full events per hour. Events beyond that
    still add to `times_seen`, hourly stats and tag counts, but get no `events`
    row and no R2 object. One issue firing a million times costs 100 stored
    events an hour instead of a million.
+
+**What the Worker cannot bound.** Every request that reaches the Worker is
+billed, including the ones it refuses, and so is each logged invocation past
+20 million a month. Three account settings cover that, listed in `README.md`
+under "Spend protection": the Workers spending limit (requests and CPU; not
+D1, R2 or Queues), an email alert below it, and a WAF rate limiting rule on
+the ingest hostname, whose blocked requests never invoke the Worker. Workers
+Logs are sampled at 10% (`head_sampling_rate`) for the same reason.
+
+Refused events are not counted anywhere: counting them would cost a D1 write
+per refusal, which is the cost being avoided.
 
 ---
 
@@ -904,7 +962,7 @@ run continues.
 4. Tag pruning: for any `(group_id, key)` with more than 200 values, delete
    all but the 200 with the highest `times_seen`. This bounds `user`, `url`
    and similar tags. Counts for such tags are therefore approximate.
-5. `UPDATE projects SET rate_limited_until = NULL WHERE rate_limited_until < ?now`.
+5. `UPDATE projects SET rate_limited_until = NULL, rate_limit_reason = NULL WHERE rate_limited_until < ?now`.
 
 R2 objects are removed by the lifecycle rules, not by the cron. Deleting an
 issue by hand from the UI also deletes its R2 objects, 1,000 keys per call.
@@ -1190,7 +1248,7 @@ fixed:
 | `ingest/` | HTTP ingest | `shared`, `core`, `db` |
 | `consumer/` | Queue handler | `shared`, `core`, `db`, `blobs` |
 | `api/` | Read API | `shared`, `db`, `blobs` |
-| `cron/` | Retention | `shared`, `db`, `blobs` |
+| `cron/` | Retention, spike thresholds | `shared`, `core`, `db`, `blobs` |
 | `worker.ts` | Wires handlers to bindings | everything |
 | `ui/` | SPA | `src/shared/contract.ts` only, as type imports |
 
@@ -1303,7 +1361,7 @@ export default defineConfig({
     { files: ["src/ingest/**"],   rules: { "no-restricted-imports": except("shared", "core", "db") } },
     { files: ["src/consumer/**"], rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
     { files: ["src/api/**"],      rules: { "no-restricted-imports": except("shared", "db", "blobs") } },
-    { files: ["src/cron/**"],     rules: { "no-restricted-imports": except("shared", "db", "blobs") } },
+    { files: ["src/cron/**"],     rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
     { files: ["ui/**"],           rules: { "no-restricted-imports": except() } },
 
     // Named exemptions. Each is one file or one folder, with the reason.
@@ -1543,6 +1601,14 @@ What changed when the design met running code. The code is the reference.
 - Issue ids can be reused after an issue is deleted (SQLite rowids).
 - Query strings inside breadcrumb `data.url` get the card rule only.
 - The issue list has no environment picker; filter by clicking a tag value.
+
+**Spend limits (migration `0003_spend_limits.sql`)**
+
+- The monthly cap, spike protection and reason codes in §6 were added after a
+  review against Sentry's quota code. The migration clears any rate limit set
+  before it, since those carry no reason; the next batch over quota sets them
+  again.
+- `cron/` may import `core/` (§16.3) for the spike arithmetic.
 
 **Decisions the design left open**
 

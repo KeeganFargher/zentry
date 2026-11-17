@@ -34,7 +34,11 @@ export async function createProject(
     throw new Error("project slug collision");
   }
 
-  await projects.update(created.id, { name: created.name, maxEventsPerHour });
+  await projects.update(created.id, {
+    name: created.name,
+    maxEventsPerHour,
+    spikeProtection: true,
+  });
 
   return created;
 }

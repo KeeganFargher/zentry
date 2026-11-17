@@ -25,7 +25,12 @@ type GroupRow = {
   resolved_at: number | null;
 };
 
-type QuotaRow = { id: number; max_events_per_hour: number | null; received: number };
+type QuotaRow = {
+  id: number;
+  max_events_per_hour: number | null;
+  spike_limit: number | null;
+  received: number;
+};
 
 type StoredRow = { group_id: number; bucket: number; stored: number };
 
@@ -48,7 +53,9 @@ const SELECT_KNOWN_GROUPS = `
   JOIN groups g ON g.id = gh.group_id`;
 
 const SELECT_QUOTAS = `
-  SELECT p.id, p.max_events_per_hour, COALESCE(ps.received, 0) AS received
+  SELECT p.id, p.max_events_per_hour,
+         CASE WHEN p.spike_protection = 1 THEN p.spike_limit_per_hour END AS spike_limit,
+         COALESCE(ps.received, 0) AS received
   FROM json_each(?1) j
   JOIN projects p ON p.id = j.value
   LEFT JOIN project_stats ps ON ps.project_id = p.id AND ps.bucket = ?2`;
@@ -152,7 +159,16 @@ const UPSERT_PROJECT_STATS = `
     received = received + excluded.received, stored = stored + excluded.stored`;
 
 // E8.
-const SET_RATE_LIMIT = `UPDATE projects SET rate_limited_until = ?2 WHERE id = ?1`;
+const SET_RATE_LIMIT = `
+  UPDATE projects SET rate_limited_until = ?2, rate_limit_reason = ?3 WHERE id = ?1`;
+
+// E9. Counted from project_stats rows, so an event for a deleted project, which
+// E7 skips, still counts here: it was accepted at ingest all the same.
+const UPSERT_USAGE = `
+  INSERT INTO usage_months (month, received)
+  SELECT value->>'m', value->>'n' FROM json_each(?1)
+  WHERE true
+  ON CONFLICT(month) DO UPDATE SET received = received + excluded.received`;
 
 export class BatchStore {
   readonly #db: D1Database;
@@ -184,6 +200,7 @@ export class BatchStore {
       quotas: quotas.results.map((row): ProjectQuota => ({
         projectId: row.id,
         maxEventsPerHour: row.max_events_per_hour,
+        spikeLimitPerHour: row.spike_limit,
         received: row.received,
       })),
     };
@@ -207,7 +224,7 @@ export class BatchStore {
     }));
   }
 
-  /** E1 to E8, as one transaction. */
+  /** E1 to E9, as one transaction. */
   async commit(writes: BatchWrites, now: number): Promise<void> {
     const db = this.#db;
     const aggregates = JSON.stringify(writes.aggregates);
@@ -220,7 +237,8 @@ export class BatchStore {
       db.prepare(UPSERT_GROUP_STATS).bind(JSON.stringify(writes.groupStats)),
       db.prepare(UPSERT_TAGS).bind(JSON.stringify(writes.tags)),
       db.prepare(UPSERT_PROJECT_STATS).bind(JSON.stringify(writes.projectStats)),
-      ...writes.limits.map((row) => db.prepare(SET_RATE_LIMIT).bind(row.p, row.until)),
+      ...writes.limits.map((row) => db.prepare(SET_RATE_LIMIT).bind(row.p, row.until, row.reason)),
+      db.prepare(UPSERT_USAGE).bind(JSON.stringify(writes.usage)),
     ];
 
     await db.batch(statements);

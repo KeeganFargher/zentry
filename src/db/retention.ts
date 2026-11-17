@@ -64,7 +64,8 @@ export class RetentionStore {
 
   async clearExpiredLimits(now: number): Promise<number> {
     return this.#changes(
-      `UPDATE projects SET rate_limited_until = NULL WHERE rate_limited_until < ?1`,
+      `UPDATE projects SET rate_limited_until = NULL, rate_limit_reason = NULL
+       WHERE rate_limited_until < ?1`,
       now,
     );
   }

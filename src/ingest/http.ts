@@ -28,15 +28,30 @@ export function rejected(status: number, detail: string): Response {
   return Response.json({ detail }, { status, headers: CORS_HEADERS });
 }
 
-/** 429 that tells the SDK to stop sending for `seconds`. */
-export function rateLimited(seconds: number): Response {
+/** The scope and reason code of a limit, as Relay writes them in X-Sentry-Rate-Limits. */
+export type LimitCause = {
+  scope: "organization" | "project" | "key";
+  reason: "org_quota" | "project_quota" | "spike_protection" | "key_quota";
+};
+
+/**
+ * 429 that tells the SDK to stop sending for `seconds`. The categories field
+ * is left empty, which means every category: the SDK then also stops sending
+ * sessions and transactions, which Zentry drops anyway but which still cost a
+ * Worker request each.
+ */
+export function rateLimited(seconds: number, cause: LimitCause): Response {
   const wait = String(Math.max(1, Math.ceil(seconds)));
 
   return Response.json(
     { detail: "rate limited" },
     {
       status: 429,
-      headers: { ...CORS_HEADERS, "Retry-After": wait, "X-Sentry-Rate-Limits": `${wait}::project` },
+      headers: {
+        ...CORS_HEADERS,
+        "Retry-After": wait,
+        "X-Sentry-Rate-Limits": `${wait}::${cause.scope}:${cause.reason}`,
+      },
     },
   );
 }

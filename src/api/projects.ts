@@ -25,6 +25,7 @@ const CreateProjectBody = z.object({
 const UpdateProjectBody = z.object({
   name: Name.optional(),
   maxEventsPerHour: z.int().min(0).nullable().optional(),
+  spikeProtection: z.boolean().optional(),
 });
 
 const CreateKeyBody = z.object({ label: Name.default("Default") });
@@ -135,11 +136,18 @@ export const updateProject: Handler = async (context, args) => {
   const maxEventsPerHour =
     body.maxEventsPerHour === undefined ? project.maxEventsPerHour : body.maxEventsPerHour;
 
-  await context.deps.projects.update(project.id, { name, maxEventsPerHour });
+  const spikeProtection = body.spikeProtection ?? project.spikeProtection;
 
-  return Response.json(
-    toApiProject({ ...project, name, maxEventsPerHour }, await recentCounts(context), context.now),
-  );
+  await context.deps.projects.update(project.id, { name, maxEventsPerHour, spikeProtection });
+
+  // Read back rather than patched in memory: the update may have lifted the limit.
+  const updated = await context.deps.projects.findBySlug(context.organizationId, project.slug);
+
+  if (updated === null) {
+    return notFound();
+  }
+
+  return Response.json(toApiProject(updated, await recentCounts(context), context.now));
 };
 
 export const deleteProject: Handler = async (context, args) => {
