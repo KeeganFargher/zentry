@@ -136,6 +136,26 @@ describe("projects and keys", () => {
     expect(keys[0]?.dsn).toBe(`https://${keys[0]?.publicKey}@ingest.zentry.test/${project.id}`);
   });
 
+  it("refuses a body that is not JSON, or has a field of the wrong type", async () => {
+    const path = "/organizations/default/projects/";
+
+    const notJson = await handleApi(
+      new Request(`https://zentry.test/api/0${path}`, {
+        method: "POST",
+        headers: { "cf-access-jwt-assertion": await signToken(claims()) },
+        body: "name=oops",
+      }),
+      apiDeps(),
+      new Sessions(),
+    );
+
+    const wrongType = await api(path, { method: "POST", body: { name: 42 } });
+
+    expect(notJson.status).toBe(400);
+    expect(wrongType.status).toBe(400);
+    expect((await wrongType.json<{ detail: string }>()).detail).toContain("name");
+  });
+
   it("refuses a duplicate slug and a missing name", async () => {
     await newProject("Dup One");
 
@@ -268,6 +288,33 @@ describe("issues", () => {
     expect(staging.issues.map((issue) => issue.metadata.function)).toEqual(["checkout"]);
     expect(text.issues.map((issue) => issue.metadata.function)).toEqual(["refund"]);
     expect(resolved.issues).toEqual([]);
+  });
+
+  it("refuses query parameters that do not match, saying which one", async () => {
+    const project = await newProject("Strict");
+
+    for (const query of [
+      "&limit=many",
+      "&limit=0",
+      "&status=nonsense",
+      "&tag=nocolon",
+      "&cursor=%%",
+    ]) {
+      const response = await api(`/organizations/default/issues/?project=${project.id}${query}`);
+
+      expect({ query, status: response.status }).toEqual({ query, status: 400 });
+    }
+
+    const response = await api(`/organizations/default/issues/?project=${project.id}&sort=wrong`);
+
+    expect((await response.json<{ detail: string }>()).detail).toContain("sort");
+  });
+
+  it("treats an empty query parameter as absent", async () => {
+    const project = await newProject("Empty Params");
+    const response = await api(`/organizations/default/issues/?project=${project.id}&cursor=&tag=`);
+
+    expect(response.status).toBe(200);
   });
 
   it("marks an issue as seen per user, and unseen again when it regresses", async () => {

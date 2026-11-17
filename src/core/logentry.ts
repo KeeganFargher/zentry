@@ -3,38 +3,26 @@
 // Supports `%s`-style and `{}`-style, positional and named.
 
 import type { Json, JsonObject } from "@/shared/contract";
-import { asArray, asObject, asText } from "@/shared/json";
+import { jsonKind } from "@/shared/json";
 
 // %%, %(name)s, %s, {name}, {0}, {}
 const PLACEHOLDER = /%%|%\((\w+)\)[sdifr]|%[sdifr]|\{(\w*)\}/g;
 
-function show(value: Json | undefined): string | null {
-  const text = asText(value);
+/** An SDK sends either a list or an object; the other side is empty. */
+export type TemplateParams = { list: Json[]; named: JsonObject };
 
-  if (text !== null) {
-    return text;
+function show(value: Json): string {
+  const kind = jsonKind(value);
+
+  if (kind.kind === "string") {
+    return kind.value;
   }
 
-  return value === undefined ? null : JSON.stringify(value);
+  return kind.kind === "scalar" && kind.value !== null ? String(kind.value) : JSON.stringify(value);
 }
 
-function lookup(name: string, list: Json[] | null, named: JsonObject | null): Json | undefined {
-  if (named !== null && Object.hasOwn(named, name)) {
-    return named[name];
-  }
-
-  return list?.[Number(name)];
-}
-
-/** The template unchanged when `params` is missing or holds neither a list nor an object. */
-export function fillTemplate(template: string | null, params: Json | undefined): string | null {
-  const list = asArray(params);
-  const named = asObject(params);
-
-  if (template === null || (list === null && named === null)) {
-    return template;
-  }
-
+export function fillTemplate(template: string, params: TemplateParams): string {
+  const { list, named } = params;
   let next = 0;
 
   return template.replace(PLACEHOLDER, (match, percentName?: string, braceName?: string) => {
@@ -44,8 +32,9 @@ export function fillTemplate(template: string | null, params: Json | undefined):
       return "%";
     }
 
-    const value = name === "" ? list?.[next++] : lookup(name, list, named);
+    const value =
+      name === "" ? list[next++] : Object.hasOwn(named, name) ? named[name] : list[Number(name)];
 
-    return show(value) ?? match;
+    return value === undefined ? match : show(value);
   });
 }

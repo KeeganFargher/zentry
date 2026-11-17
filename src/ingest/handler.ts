@@ -2,11 +2,13 @@
 // DESIGN.md §5. The only processing done here is what is needed to accept or
 // refuse the event; everything else happens in the queue consumer.
 
-import { envelopePublicKey, findEventItem, parseEnvelope } from "@/core/envelope";
+import { z } from "zod";
+
+import { findEventItem, parseEnvelope } from "@/core/envelope";
 import type { KeyInfo } from "@/db/keys";
-import type { JsonObject } from "@/shared/contract";
 import { newEventId, normalizeEventId, parseId } from "@/shared/ids";
-import { asObject, getNonEmpty, parseJson } from "@/shared/json";
+import { jsonText } from "@/shared/json";
+import { Label, lenient } from "@/shared/schema";
 import { SECOND } from "@/shared/time";
 import { INLINE_PAYLOAD_MAX_BYTES, MAX_ENVELOPE_BYTES, MAX_EVENT_BYTES } from "@/shared/types";
 import type { QueueMessage } from "@/shared/types";
@@ -37,6 +39,19 @@ type Parsed = {
   envelopeEventId: string | null;
   sentAt: string | null;
 };
+
+/**
+ * The only parts of the event ingest reads. The rest is validated by the
+ * consumer (core/wire.ts), off the request path.
+ */
+const EventHead = jsonText(
+  z.object({
+    event_id: lenient(Label.transform(normalizeEventId)),
+    type: lenient(Label),
+  }),
+);
+
+type EventHead = z.output<typeof EventHead>;
 
 const ROUTE = /^\/api\/(\d+)\/(envelope|store)\/?$/;
 const decoder = new TextDecoder();
@@ -72,9 +87,9 @@ function parseBody(bytes: Uint8Array, kind: Route["kind"]): Parsed | null {
   return {
     payload: item === null ? null : decoder.decode(item.payload),
     eventBytes: item?.payload.length ?? 0,
-    envelopeKey: envelopePublicKey(envelope),
-    envelopeEventId: getNonEmpty(envelope.header, "event_id"),
-    sentAt: getNonEmpty(envelope.header, "sent_at"),
+    envelopeKey: envelope.header.publicKey,
+    envelopeEventId: envelope.header.eventId,
+    sentAt: envelope.header.sentAt,
   };
 }
 
@@ -89,10 +104,8 @@ async function authenticate(
   return publicKey === null || info === null ? null : { publicKey, info };
 }
 
-function resolveEventId(event: JsonObject, parsed: Parsed): string {
-  const claimed = getNonEmpty(event, "event_id") ?? parsed.envelopeEventId ?? "";
-
-  return normalizeEventId(claimed) ?? newEventId();
+function resolveEventId(head: EventHead, parsed: Parsed): string {
+  return head.event_id ?? parsed.envelopeEventId ?? newEventId();
 }
 
 type Accepted = {
@@ -108,13 +121,15 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
     return rejected(413, "event too large");
   }
 
-  const event = asObject(parseJson(input.payload));
+  const parsedHead = EventHead.safeParse(input.payload);
 
-  if (event === null) {
+  if (!parsedHead.success) {
     return rejected(400, "event is not a JSON object");
   }
 
-  if (getNonEmpty(event, "type") === "transaction") {
+  const head = parsedHead.data;
+
+  if (head.type === "transaction") {
     return accepted(null);
   }
 
@@ -124,7 +139,7 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
     return rateLimited(60);
   }
 
-  const eventId = resolveEventId(event, input.parsed);
+  const eventId = resolveEventId(head, input.parsed);
   const { projectId } = input.info;
   // Measured as the queue will carry it: a JSON string, with its quotes escaped.
   const inline = encoder.encode(JSON.stringify(input.payload)).length <= INLINE_PAYLOAD_MAX_BYTES;

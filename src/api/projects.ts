@@ -1,16 +1,38 @@
 // Project and DSN key endpoints.
 
+import { z } from "zod";
+
 import type { KeyRecord, ProjectHour, ProjectRecord } from "@/db/projects";
-import type { ApiKey, ApiProject, JsonObject } from "@/shared/contract";
+import type { ApiKey, ApiProject } from "@/shared/contract";
 import { newPublicKey, parseId } from "@/shared/ids";
-import { getNonEmpty, getNumber, getString } from "@/shared/json";
 
 import type { ApiContext, Handler } from "./context";
-import { badRequest, isLocal, noContent, notFound, readObject } from "./http";
+import { badRequest, isLocal, noContent, notFound, readBody } from "./http";
 import { fillSeries, LAST_24_HOURS, windowStart } from "./series";
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,49}$/;
-const MAX_NAME = 100;
+const SLUG_RULE = "a slug may use only a-z, 0-9 and dashes, and start with a letter or digit";
+
+const Name = z.string().trim().min(1).max(100);
+
+const CreateProjectBody = z.object({
+  name: Name,
+  slug: z.string().regex(SLUG, SLUG_RULE).optional(),
+  platform: z.string().min(1).nullable().default(null),
+});
+
+/** Absent fields keep their value. `maxEventsPerHour: null` removes the quota. */
+const UpdateProjectBody = z.object({
+  name: Name.optional(),
+  maxEventsPerHour: z.int().min(0).nullable().optional(),
+});
+
+const CreateKeyBody = z.object({ label: Name.default("Default") });
+
+const UpdateKeyBody = z.object({
+  label: Name.optional(),
+  status: z.enum(["active", "revoked"]).optional(),
+});
 
 function slugify(name: string): string {
   return name
@@ -67,19 +89,19 @@ export const listProjects: Handler = async (context) => {
 };
 
 export const createProject: Handler = async (context) => {
-  const body = (await readObject(context.request)) ?? {};
-  const name = (getNonEmpty(body, "name") ?? "").trim().slice(0, MAX_NAME);
-  const slug = getNonEmpty(body, "slug") ?? slugify(name);
+  const { name, slug: requested, platform } = await readBody(context.request, CreateProjectBody);
+  const slug = requested ?? slugify(name);
 
-  if (name === "" || !SLUG.test(slug)) {
-    return badRequest("a name is required, and the slug may use only a-z, 0-9 and dashes");
+  // A name can be valid yet have no letters or digits to make a slug from.
+  if (!SLUG.test(slug)) {
+    return badRequest(`could not make a slug from this name; ${SLUG_RULE}`);
   }
 
   const created = await context.deps.projects.create({
     organizationId: context.organizationId,
     slug,
     name,
-    platform: getNonEmpty(body, "platform"),
+    platform,
     publicKey: newPublicKey(),
     now: context.now,
   });
@@ -97,27 +119,18 @@ export const getProject: Handler = async (context, [slug]) => {
     : Response.json(toApiProject(project, await recentCounts(context), context.now));
 };
 
-/** `maxEventsPerHour`: a number sets the quota, null removes it, absent keeps it. */
-function nextQuota(body: JsonObject, current: number | null): number | null {
-  if (!("maxEventsPerHour" in body)) {
-    return current;
-  }
-
-  const quota = getNumber(body, "maxEventsPerHour");
-
-  return quota === null ? null : Math.max(0, Math.floor(quota));
-}
-
 export const updateProject: Handler = async (context, [slug]) => {
   const project = await projectOf(context, slug);
-  const body = (await readObject(context.request)) ?? {};
 
   if (project === null) {
     return notFound();
   }
 
-  const name = (getNonEmpty(body, "name") ?? project.name).trim().slice(0, MAX_NAME);
-  const maxEventsPerHour = nextQuota(body, project.maxEventsPerHour);
+  const body = await readBody(context.request, UpdateProjectBody);
+  const name = body.name ?? project.name;
+
+  const maxEventsPerHour =
+    body.maxEventsPerHour === undefined ? project.maxEventsPerHour : body.maxEventsPerHour;
 
   await context.deps.projects.update(project.id, { name, maxEventsPerHour });
 
@@ -152,15 +165,16 @@ export const listKeys: Handler = async (context, [slug]) => {
 
 export const createKey: Handler = async (context, [slug]) => {
   const project = await projectOf(context, slug);
-  const body = (await readObject(context.request)) ?? {};
 
   if (project === null) {
     return notFound();
   }
 
+  const { label } = await readBody(context.request, CreateKeyBody);
+
   await context.deps.projects.createKey({
     projectId: project.id,
-    label: (getNonEmpty(body, "label") ?? "Default").slice(0, MAX_NAME),
+    label,
     publicKey: newPublicKey(),
     now: context.now,
   });
@@ -173,21 +187,9 @@ export const createKey: Handler = async (context, [slug]) => {
   );
 };
 
-function nextKeyStatus(
-  requested: string | null,
-  current: KeyRecord["status"],
-): KeyRecord["status"] {
-  if (requested === "revoked" || requested === "active") {
-    return requested;
-  }
-
-  return current;
-}
-
 export const updateKey: Handler = async (context, [slug, keyIdText]) => {
   const project = await projectOf(context, slug);
   const keyId = parseId(keyIdText ?? "");
-  const body = (await readObject(context.request)) ?? {};
   const keys = project === null ? [] : await context.deps.projects.listKeys(project.id);
   const key = keys.find((candidate) => candidate.id === keyId);
 
@@ -195,8 +197,9 @@ export const updateKey: Handler = async (context, [slug, keyIdText]) => {
     return notFound();
   }
 
-  const label = (getNonEmpty(body, "label") ?? key.label).slice(0, MAX_NAME);
-  const status = nextKeyStatus(getString(body, "status"), key.status);
+  const body = await readBody(context.request, UpdateKeyBody);
+  const label = body.label ?? key.label;
+  const status = body.status ?? key.status;
 
   await context.deps.projects.updateKey({ projectId: project.id, keyId: key.id, label, status });
 

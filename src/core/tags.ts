@@ -1,53 +1,70 @@
 // The tags that are counted per issue, and the user label shown in lists.
 
-import type { JsonObject, Pair, StoredEvent } from "@/shared/contract";
-import { getObject, getText } from "@/shared/json";
+import type { Pair, StoredEvent } from "@/shared/contract";
 
+import { scrubText } from "./scrub";
 import { cut } from "./trim";
 import { majorVersion } from "./useragent";
 
 const MAX_INDEXED_TAGS = 50;
 const MAX_VALUE = 200;
 
+export type ContextFacts = {
+  name: string | null;
+  version: string | null;
+  model: string | null;
+  family: string | null;
+};
+
+export type UserFacts = {
+  id: string | null;
+  email: string | null;
+  username: string | null;
+  ipAddress: string | null;
+};
+
+/**
+ * What tags are built from, pulled out of the event's free-form `contexts`
+ * and `user` while they were still typed (see core/wire.ts), so nothing here
+ * has to look inside arbitrary JSON.
+ */
+export type TagFacts = {
+  browser: ContextFacts | null;
+  os: ContextFacts | null;
+  runtime: ContextFacts | null;
+  device: ContextFacts | null;
+  user: UserFacts;
+};
+
 type Candidate = [key: string, value: string | null];
 
-function contextField(event: StoredEvent, name: string, field: string): string | null {
-  const context = getObject(event.contexts, name);
+function nameAndVersion(context: ContextFacts | null): string | null {
+  if (context === null || context.name === null) {
+    return null;
+  }
 
-  return context === null ? null : getText(context, field);
+  return context.version === null ? context.name : `${context.name} ${context.version}`;
 }
 
-function nameAndVersion(event: StoredEvent, name: string): string | null {
-  const title = contextField(event, name, "name");
-  const version = contextField(event, name, "version");
+function browserTag(browser: ContextFacts | null): string | null {
+  if (browser === null || browser.name === null) {
+    return null;
+  }
 
-  return title === null || version === null ? title : `${title} ${version}`;
+  return browser.version === null
+    ? browser.name
+    : `${browser.name} ${majorVersion(browser.version)}`;
 }
 
-function browserTag(event: StoredEvent): string | null {
-  const name = contextField(event, "browser", "name");
-  const major = majorVersion(contextField(event, "browser", "version"));
-
-  return name === null || major === null ? name : `${name} ${major}`;
-}
-
-function userField(user: JsonObject | null, field: string): string | null {
-  const value = user === null ? null : getText(user, field);
-
-  return value === "" ? null : value;
-}
-
-function userTag(user: JsonObject | null): string | null {
-  const fields: [prefix: string, field: string][] = [
-    ["id", "id"],
-    ["email", "email"],
-    ["username", "username"],
-    ["ip", "ip_address"],
+function userTag(user: UserFacts): string | null {
+  const fields: [prefix: string, value: string | null][] = [
+    ["id", user.id],
+    ["email", user.email],
+    ["username", user.username],
+    ["ip", user.ipAddress],
   ];
 
-  for (const [prefix, field] of fields) {
-    const value = userField(user, field);
-
+  for (const [prefix, value] of fields) {
     if (value !== null) {
       return `${prefix}:${value}`;
     }
@@ -66,7 +83,7 @@ function handledTag(event: StoredEvent): string | null {
   return handled ? "yes" : "no";
 }
 
-function builtInTags(event: StoredEvent): Candidate[] {
+function eventTags(event: StoredEvent): Candidate[] {
   return [
     ["level", event.level],
     ["environment", event.environment],
@@ -74,35 +91,52 @@ function builtInTags(event: StoredEvent): Candidate[] {
     ["server_name", event.serverName],
     ["logger", event.logger ?? null],
     ["transaction", event.transaction],
-    ["browser", browserTag(event)],
-    ["browser.name", contextField(event, "browser", "name")],
-    ["os", nameAndVersion(event, "os")],
-    ["os.name", contextField(event, "os", "name")],
-    ["runtime", nameAndVersion(event, "runtime")],
-    ["device", contextField(event, "device", "model") ?? contextField(event, "device", "family")],
+  ];
+}
+
+function factTags(facts: TagFacts): Candidate[] {
+  const { browser, os, runtime, device } = facts;
+
+  return [
+    ["browser", browserTag(browser)],
+    ["browser.name", browser?.name ?? null],
+    ["os", nameAndVersion(os)],
+    ["os.name", os?.name ?? null],
+    ["runtime", nameAndVersion(runtime)],
+    ["device", device?.model ?? device?.family ?? null],
+  ];
+}
+
+function requestTags(event: StoredEvent, facts: TagFacts): Candidate[] {
+  return [
     ["url", event.request?.url ?? null],
-    ["user", userTag(event.user)],
+    ["user", userTag(facts.user)],
     ["handled", handledTag(event)],
     ["mechanism", event.exceptions.at(-1)?.mechanism?.type ?? null],
   ];
 }
 
+/** In this order, which is the order they are kept in when the limit is hit. */
+function builtInTags(event: StoredEvent, facts: TagFacts): Candidate[] {
+  return [...eventTags(event), ...factTags(facts), ...requestTags(event, facts)];
+}
+
 /** Built-in tags first, then the event's own. The first value for a key wins. */
-export function indexedTags(event: StoredEvent): Pair[] {
+export function indexedTags(event: StoredEvent, facts: TagFacts): Pair[] {
   const tags = new Map<string, string>();
 
-  for (const [key, value] of [...builtInTags(event), ...event.tags]) {
+  for (const [key, value] of [...builtInTags(event, facts), ...event.tags]) {
     if (value !== null && value !== "" && !tags.has(key) && tags.size < MAX_INDEXED_TAGS) {
-      tags.set(key, cut(value, MAX_VALUE));
+      // Facts come from the SDK unscrubbed; tag values are stored, so they are scrubbed here.
+      tags.set(key, cut(scrubText(value), MAX_VALUE));
     }
   }
 
   return [...tags];
 }
 
-export function userLabel(user: JsonObject | null): string | null {
-  const fields = ["email", "username", "id", "ip_address"];
-  const found = fields.map((field) => userField(user, field)).find((value) => value !== null);
+export function userLabel(user: UserFacts): string | null {
+  const found = user.email ?? user.username ?? user.id ?? user.ipAddress;
 
-  return found === undefined ? null : cut(found, MAX_VALUE);
+  return found === null ? null : cut(scrubText(found), MAX_VALUE);
 }

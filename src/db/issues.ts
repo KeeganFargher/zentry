@@ -1,7 +1,9 @@
 // Issue queries for the read API. Every query is scoped to an organization.
 
+import { z } from "zod";
+
 import type { ApiActivity, ApiIssue, IssueMetadata, IssueStatus, Pair } from "@/shared/contract";
-import { asObject, getString, parseJson } from "@/shared/json";
+import { jsonText } from "@/shared/json";
 
 export type IssueRecord = Omit<ApiIssue, "stats" | "hasSeen">;
 
@@ -57,23 +59,24 @@ const SELECT_ISSUES = `
 
 const IN_ORGANIZATION = `project_id IN (SELECT id FROM projects WHERE organization_id = ?2)`;
 
-function parseMetadata(text: string): IssueMetadata {
-  const metadata = asObject(parseJson(text)) ?? {};
-
-  return {
-    type: getString(metadata, "type"),
-    value: getString(metadata, "value"),
-    filename: getString(metadata, "filename"),
-    function: getString(metadata, "function"),
-    logger: getString(metadata, "logger"),
-  };
-}
+// Written by the consumer from `deriveMetadata`, so it must match exactly. A
+// row that does not is corrupt, and parsing throws rather than showing an
+// issue with silently blanked fields.
+const Metadata = jsonText(
+  z.object({
+    type: z.string().nullable(),
+    value: z.string().nullable(),
+    filename: z.string().nullable(),
+    function: z.string().nullable(),
+    logger: z.string().nullable(),
+  }),
+) satisfies z.ZodType<IssueMetadata, string>;
 
 function toRecord({ metadata, shortNumber, ...row }: IssueRow): IssueRecord {
   return {
     ...row,
     shortId: `${row.projectSlug.toUpperCase()}-${shortNumber}`,
-    metadata: parseMetadata(metadata),
+    metadata: Metadata.parse(metadata),
   };
 }
 

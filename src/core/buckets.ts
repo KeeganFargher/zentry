@@ -7,6 +7,7 @@ import { hourBucket } from "@/shared/time";
 
 import { deriveMetadata } from "./derive";
 import { computeHash } from "./grouping";
+import type { Normalized } from "./normalize";
 import { indexedTags, userLabel } from "./tags";
 
 /** A normalized event plus everything derived from it. */
@@ -31,13 +32,15 @@ export type Bucket = {
   events: Sampled[];
 };
 
-export function prepareEvent(event: StoredEvent): Prepared {
+export function prepareEvent(normalized: Normalized): Prepared {
+  const { event, facts } = normalized;
+
   return {
     event,
     json: JSON.stringify(event),
     hash: computeHash(event),
-    tags: indexedTags(event),
-    userLabel: userLabel(event.user),
+    tags: indexedTags(event, facts),
+    userLabel: userLabel(facts.user),
     metadata: deriveMetadata(event.exceptions, event.logger ?? null),
   };
 }

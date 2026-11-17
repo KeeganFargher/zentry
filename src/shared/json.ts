@@ -1,110 +1,60 @@
-// The single place where untrusted JSON is narrowed into typed values.
-// Everything else in the codebase works on the results and never sees
-// `unknown`. Runtime `typeof` checks are allowed in this file only.
+// JSON at the edges of the system. Text from outside (a request body, a queue
+// payload, a D1 column) is turned into a typed value here, once, by a schema;
+// nothing downstream re-checks what a schema has already proven.
+
+import { z } from "zod";
 
 import type { Json, JsonObject } from "./contract";
 
-export function parseJson(text: string): Json | undefined {
-  try {
-    // SAFETY: JSON.parse can only produce the value kinds that make up `Json`.
-    return JSON.parse(text) as Json;
-  } catch {
-    return undefined;
-  }
+export const JsonValue: z.ZodType<Json> = z.json();
+
+export const JsonRecord: z.ZodType<JsonObject> = z.record(z.string(), JsonValue);
+
+/**
+ * Text that must hold JSON matching `schema`. Invalid JSON is reported as a
+ * schema issue rather than thrown, so every caller handles one failure shape.
+ */
+export function jsonText<T extends z.ZodType>(schema: T): z.ZodType<z.output<T>, string> {
+  // SAFETY: a schema checks whatever it is given at runtime; its input type
+  // only records what it was written to expect, and JSON is what it gets here.
+  const target = schema as z.ZodType<z.output<T>, Json>;
+
+  return z
+    .string()
+    .transform((text, context): Json => {
+      try {
+        // SAFETY: JSON.parse can only produce the value kinds that make up `Json`.
+        return JSON.parse(text) as Json;
+      } catch {
+        context.addIssue({ code: "custom", message: "not valid JSON" });
+
+        return z.NEVER;
+      }
+    })
+    .pipe(target);
 }
 
-export function asObject(value: Json | undefined): JsonObject | null {
-  if (value === null || value === undefined || typeof value !== "object") {
-    return null;
-  }
+export type JsonKind =
+  | { kind: "string"; value: string }
+  | { kind: "list"; value: Json[] }
+  | { kind: "map"; value: JsonObject }
+  | { kind: "scalar"; value: number | boolean | null };
 
-  return Array.isArray(value) ? null : value;
-}
-
-export function asArray(value: Json | undefined): Json[] | null {
-  return Array.isArray(value) ? value : null;
-}
-
-export function asString(value: Json | undefined): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-export function asNumber(value: Json | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-export function asBoolean(value: Json | undefined): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-/** Strings as they are; numbers and booleans rendered; everything else null. */
-export function asText(value: Json | undefined): string | null {
+/**
+ * Tells the members of the `Json` union apart, for code that walks free-form
+ * data (extra, contexts, vars) to trim or scrub it. This only discriminates
+ * an already-typed value; it is not validation.
+ */
+export function jsonKind(value: Json): JsonKind {
   if (typeof value === "string") {
-    return value;
+    return { kind: "string", value };
   }
 
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
+  if (Array.isArray(value)) {
+    return { kind: "list", value };
   }
 
-  return null;
-}
-
-export function getObject(source: JsonObject, key: string): JsonObject | null {
-  return asObject(source[key]);
-}
-
-export function getArray(source: JsonObject, key: string): Json[] | null {
-  return asArray(source[key]);
-}
-
-export function getString(source: JsonObject, key: string): string | null {
-  return asString(source[key]);
-}
-
-export function getNumber(source: JsonObject, key: string): number | null {
-  return asNumber(source[key]);
-}
-
-export function getBoolean(source: JsonObject, key: string): boolean | null {
-  return asBoolean(source[key]);
-}
-
-export function getText(source: JsonObject, key: string): string | null {
-  return asText(source[key]);
-}
-
-/** A non-empty string, or null. */
-export function getNonEmpty(source: JsonObject, key: string): string | null {
-  const text = getString(source, key);
-
-  return text === null || text === "" ? null : text;
-}
-
-export function objectsIn(values: Json[] | null): JsonObject[] {
-  const found: JsonObject[] = [];
-
-  for (const value of values ?? []) {
-    const item = asObject(value);
-
-    if (item !== null) {
-      found.push(item);
-    }
-  }
-
-  return found;
-}
-
-export function stringsIn(values: Json[] | null): string[] {
-  const found: string[] = [];
-
-  for (const value of values ?? []) {
-    const item = asText(value);
-
-    if (item !== null) {
-      found.push(item);
-    }
-  }
-
-  return found;
+  return value !== null && typeof value === "object"
+    ? { kind: "map", value }
+    : { kind: "scalar", value };
 }

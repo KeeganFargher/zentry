@@ -2,13 +2,16 @@
 // store blobs and commit once for the whole batch. Messages are acked only
 // after the commit.
 
+import { z } from "zod";
+
 import type { EventBlob } from "@/blobs/events";
 import { groupHourKeys, prepareEvent } from "@/core/buckets";
 import type { Prepared } from "@/core/buckets";
 import { normalizeEvent } from "@/core/normalize";
 import { planBatch } from "@/core/plan";
+import { WireEvent } from "@/core/wire";
 import type { BatchKeys } from "@/db/batch";
-import { asObject, parseJson } from "@/shared/json";
+import { jsonText } from "@/shared/json";
 import { errorText, logError } from "@/shared/log";
 import type { BatchState, BatchWrites, GroupHourKey, GroupHourStored } from "@/shared/plan";
 import { hourBucket } from "@/shared/time";
@@ -32,12 +35,16 @@ async function loadPayload(message: QueueMessage, deps: ConsumerDeps): Promise<s
   return message.spill_key === null ? message.payload : deps.loadSpill(message.spill_key);
 }
 
+// The event is validated here, once, as it comes off the queue. Everything
+// after this works on the typed result.
+const EventPayload = jsonText(WireEvent);
+
 /** Null when the payload is missing or is not a JSON object; retrying would not help. */
 async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepared | null> {
-  const raw = asObject(parseJson((await loadPayload(message, deps)) ?? ""));
+  const payload = await loadPayload(message, deps);
 
-  if (raw === null) {
-    logError("dropping unparseable event", {
+  if (payload === null) {
+    logError("dropping event whose spilled payload is gone", {
       project_id: message.project_id,
       event_id: message.event_id,
     });
@@ -45,9 +52,21 @@ async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepa
     return null;
   }
 
+  const parsed = EventPayload.safeParse(payload);
+
+  if (!parsed.success) {
+    logError("dropping unparseable event", {
+      project_id: message.project_id,
+      event_id: message.event_id,
+      error: z.prettifyError(parsed.error),
+    });
+
+    return null;
+  }
+
   try {
     return prepareEvent(
-      normalizeEvent(raw, {
+      normalizeEvent(parsed.data, {
         projectId: message.project_id,
         eventId: message.event_id,
         receivedAt: message.received_at,

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { AccessVerifier } from "@/api/access";
+import type { SigningKey } from "@/api/access";
 import { handleApi, Sessions } from "@/api/router";
-import type { JsonObject } from "@/shared/contract";
 import { HOUR, MINUTE, SECOND } from "@/shared/time";
 
 import {
@@ -91,7 +91,7 @@ describe("Access verification", () => {
 
   it("fetches keys again for an unknown key id, at most once a minute", async () => {
     const [key] = await signingKeys();
-    let published: JsonObject[] = [];
+    let published: SigningKey[] = [];
     let fetches = 0;
 
     const access = new AccessVerifier(

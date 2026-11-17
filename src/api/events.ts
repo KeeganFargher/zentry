@@ -1,11 +1,13 @@
 // Event endpoints: an issue's event list, and one full event from R2.
 
+import { z } from "zod";
+
 import type { EventCursor, EventRef, IssueRef } from "@/db/events";
 import type { ApiEventList } from "@/shared/contract";
 import { normalizeEventId, parseId } from "@/shared/ids";
 
 import type { ApiContext, Handler } from "./context";
-import { decodeCursor, encodeCursor, intParam, notFound } from "./http";
+import { CursorParam, encodeCursor, IntParam, notFound, readQuery } from "./http";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -16,23 +18,26 @@ async function issueOf(context: ApiContext, idText: string | undefined): Promise
   return id === null ? null : context.deps.issues.find(context.organizationId, id);
 }
 
-function parseCursor(url: URL): EventCursor | null {
-  const [timestamp = "", eventId = ""] = decodeCursor(url) ?? [];
-
-  return /^\d+$/.test(timestamp) && eventId !== ""
-    ? { timestamp: Number(timestamp), eventId }
-    : null;
-}
+const EventListQuery = z.object({
+  cursor: CursorParam.pipe(
+    z
+      .tuple([IntParam, z.string().min(1)])
+      .transform(([timestamp, eventId]): EventCursor => ({ timestamp, eventId })),
+  )
+    .nullable()
+    .default(null),
+  limit: IntParam.pipe(z.number().min(1).max(MAX_LIMIT)).default(DEFAULT_LIMIT),
+});
 
 export const listEvents: Handler = async (context, [idText]) => {
-  const issueId = (await issueOf(context, idText))?.id ?? null;
-  const limit = Math.min(Math.max(intParam(context.url, "limit", DEFAULT_LIMIT), 1), MAX_LIMIT);
+  const issue = await issueOf(context, idText);
 
-  if (issueId === null) {
+  if (issue === null) {
     return notFound();
   }
 
-  const rows = await context.deps.events.list(issueId, parseCursor(context.url), limit + 1);
+  const { cursor, limit } = readQuery(context.url, EventListQuery);
+  const rows = await context.deps.events.list(issue.id, cursor, limit + 1);
   const events = rows.slice(0, limit);
   const last = events.at(-1);
   const hasMore = rows.length > limit && last !== undefined;

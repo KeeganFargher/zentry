@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 
 import { AccessVerifier } from "@/api/access";
+import type { SigningKey } from "@/api/access";
 import type { ApiDeps } from "@/api/context";
 import { handleApi, Sessions } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
@@ -8,8 +9,7 @@ import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { ProjectStore } from "@/db/projects";
 import { TenancyStore } from "@/db/tenancy";
-import type { Json, JsonObject } from "@/shared/contract";
-import { asObject, parseJson } from "@/shared/json";
+import type { Json } from "@/shared/contract";
 
 import { NOW } from "./helpers";
 
@@ -39,13 +39,14 @@ if (!("privateKey" in generated)) {
 
 const keyPair = generated;
 
-async function publicJwk(): Promise<JsonObject> {
+async function publicJwk(): Promise<SigningKey> {
   const exported = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-  const jwk = asObject(parseJson(JSON.stringify(exported))) ?? {};
 
-  jwk["kid"] = KEY_ID;
+  if (exported instanceof ArrayBuffer || exported.n === undefined || exported.e === undefined) {
+    throw new Error("expected an RSA public key as a JWK");
+  }
 
-  return jwk;
+  return { kid: KEY_ID, n: exported.n, e: exported.e };
 }
 
 export type Claims = { aud: string[]; iss: string; exp: number; email: string };
@@ -75,7 +76,7 @@ export async function signToken(payload: Claims): Promise<string> {
 }
 
 /** What the Access certs endpoint would publish. */
-export async function signingKeys(): Promise<JsonObject[]> {
+export async function signingKeys(): Promise<SigningKey[]> {
   return [await publicJwk()];
 }
 

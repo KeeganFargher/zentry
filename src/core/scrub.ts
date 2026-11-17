@@ -2,7 +2,7 @@
 // before anything is stored.
 
 import type { Json, JsonObject, Pair } from "@/shared/contract";
-import { asArray, asObject, asString, parseJson } from "@/shared/json";
+import { jsonKind, jsonText, JsonValue } from "@/shared/json";
 
 import { FILTERED, scrubSecrets } from "./secrets";
 
@@ -30,19 +30,17 @@ export function scrubObject(source: JsonObject): JsonObject {
 }
 
 export function scrubJson(value: Json): Json {
-  const text = asString(value);
-  const list = asArray(value);
-  const dictionary = asObject(value);
+  const kind = jsonKind(value);
 
-  if (text !== null) {
-    return scrubText(text);
+  if (kind.kind === "string") {
+    return scrubText(kind.value);
   }
 
-  if (list !== null) {
-    return list.map(scrubJson);
+  if (kind.kind === "list") {
+    return kind.value.map(scrubJson);
   }
 
-  return dictionary === null ? value : scrubObject(dictionary);
+  return kind.kind === "map" ? scrubObject(kind.value) : kind.value;
 }
 
 export function scrubPairs(pairs: Pair[]): Pair[] {
@@ -63,21 +61,26 @@ export function scrubQueryString(query: string): string {
 
 const FORM_ENCODED = /^[^=&\s]+=[^\s]*$/;
 
+/** Body text that holds a JSON object or list; any other text is scrubbed as plain text. */
+const JsonBodyText = jsonText(
+  JsonValue.refine((value) => ["list", "map"].includes(jsonKind(value).kind)),
+);
+
 /**
  * Scrubs a request body. SDKs often send the body as text, so a string that
  * holds JSON or form fields is scrubbed by key like structured data.
  */
 export function scrubBody(body: Json): Json {
-  const text = asString(body);
+  const kind = jsonKind(body);
 
-  if (text === null) {
-    return scrubJson(body);
-  }
+  return kind.kind === "string" ? scrubBodyText(kind.value) : scrubJson(body);
+}
 
-  const parsed = parseJson(text) ?? null;
+function scrubBodyText(text: string): string {
+  const parsed = JsonBodyText.safeParse(text);
 
-  if (asObject(parsed) !== null || asArray(parsed) !== null) {
-    return JSON.stringify(scrubJson(parsed));
+  if (parsed.success) {
+    return JSON.stringify(scrubJson(parsed.data));
   }
 
   return FORM_ENCODED.test(text) ? scrubQueryString(text) : scrubText(text);

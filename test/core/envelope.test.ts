@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { envelopePublicKey, findEventPayload, parseEnvelope } from "@/core/envelope";
+import { findEventPayload, parseEnvelope } from "@/core/envelope";
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -69,6 +69,6 @@ describe("parseEnvelope", () => {
   it("reads the public key from the dsn header", () => {
     const envelope = parseEnvelope(encode('{"dsn":"https://abc123@ingest.example.com/7"}\n'));
 
-    expect(envelope === null ? null : envelopePublicKey(envelope)).toBe("abc123");
+    expect(envelope?.header.publicKey).toBe("abc123");
   });
 });

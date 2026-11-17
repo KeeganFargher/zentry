@@ -105,7 +105,8 @@ export default defineConfig({
 
     // Named exemptions. Each is one file or one folder, with the reason.
     {
-      // The single place untrusted JSON is narrowed into typed values.
+      // `jsonKind` tells the members of the Json union apart for trim and scrub, and
+      // `jsonText` hands a parsed value to a schema; both need what these rules forbid.
       files: ["src/shared/json.ts"],
       rules: {
         "anti-slop/no-runtime-typeof": "off",

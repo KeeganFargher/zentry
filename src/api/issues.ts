@@ -1,5 +1,7 @@
 // Issue endpoints: list, detail, status changes, delete, tags, stats, activity.
 
+import { z } from "zod";
+
 import type { IssueCursor, IssueFilter, IssueHour, IssueRecord, IssueSort } from "@/db/issues";
 import type {
   ApiIssue,
@@ -10,61 +12,78 @@ import type {
   Pair,
 } from "@/shared/contract";
 import { parseId } from "@/shared/ids";
-import { getBoolean, getString } from "@/shared/json";
 
 import type { ApiContext, Handler } from "./context";
 import {
-  badRequest,
-  decodeCursor,
+  CursorParam,
   encodeCursor,
-  intParam,
+  IdParam,
+  IntParam,
   noContent,
   notFound,
-  readObject,
-  textParam,
+  readBody,
+  readQuery,
 } from "./http";
 import { fillSeries, LAST_14_DAYS, LAST_24_HOURS, LAST_30_DAYS, windowStart } from "./series";
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const TOP_TAG_VALUES = 10;
-const STATUSES: IssueStatus[] = ["unresolved", "resolved", "ignored"];
-const STATUS_REQUIRED = "status must be unresolved, resolved or ignored";
-const SORTS: IssueSort[] = ["date", "new", "freq"];
+const STATUS_REQUIRED = "pass a status, hasSeen: true, or both";
 
-function parseStatus(text: string | null): IssueStatus | null {
-  return STATUSES.find((status) => status === text) ?? null;
-}
+const Status = z.enum(["unresolved", "resolved", "ignored"]) satisfies z.ZodType<IssueStatus>;
+const Sort = z.enum(["date", "new", "freq"]) satisfies z.ZodType<IssueSort>;
 
-function parseTag(text: string | null): Pair | null {
-  const separator = text?.indexOf(":") ?? -1;
+/** `key:value`; the key may not be empty, the value may hold further colons. */
+const TagParam = z
+  .string()
+  .regex(/^[^:]+:/, "must be key:value")
+  .transform((text): Pair => {
+    const separator = text.indexOf(":");
 
-  return text === null || separator < 1
-    ? null
-    : [text.slice(0, separator), text.slice(separator + 1)];
-}
+    return [text.slice(0, separator), text.slice(separator + 1)];
+  });
 
-function parseCursor(url: URL): IssueCursor | null {
-  const [value = "", id = ""] = decodeCursor(url) ?? [];
+const IssueCursorParam = CursorParam.pipe(
+  z.tuple([IntParam, IntParam]).transform(([value, id]): IssueCursor => ({ value, id })),
+);
 
-  return /^\d+$/.test(value) && /^\d+$/.test(id) ? { value: Number(value), id: Number(id) } : null;
-}
+const IssueListQuery = z.object({
+  project: IdParam.nullable().default(null),
+  // "all" lifts the status filter.
+  status: z
+    .union([Status, z.literal("all")])
+    .default("unresolved")
+    .transform((status) => (status === "all" ? null : status)),
+  level: z.string().nullable().default(null),
+  query: z.string().nullable().default(null),
+  tag: TagParam.nullable().default(null),
+  sort: Sort.default("date"),
+  cursor: IssueCursorParam.nullable().default(null),
+  limit: IntParam.pipe(z.number().min(1).max(MAX_LIMIT)).default(DEFAULT_LIMIT),
+});
+
+const IssueIdsQuery = z.object({
+  id: z
+    .union([IdParam.transform((id) => [id]), z.array(IdParam)])
+    .pipe(z.array(z.number()).min(1).max(MAX_LIMIT)),
+});
+
+const UpdateIssuesBody = z.object({ status: Status });
+
+const UpdateIssueBody = z
+  .object({
+    status: Status.nullable().default(null),
+    hasSeen: z.literal(true).optional(),
+  })
+  .refine((body) => body.status !== null || body.hasSeen === true, STATUS_REQUIRED);
+
+const StatsQuery = z.object({ period: z.enum(["24h", "14d", "30d"]).default("24h") });
 
 function parseFilter(context: ApiContext): IssueFilter {
-  const { url } = context;
-  const status = textParam(url, "status") ?? "unresolved";
+  const { project, ...filter } = readQuery(context.url, IssueListQuery);
 
-  return {
-    organizationId: context.organizationId,
-    projectId: parseId(textParam(url, "project") ?? ""),
-    status: status === "all" ? null : (parseStatus(status) ?? "unresolved"),
-    level: textParam(url, "level"),
-    query: textParam(url, "query"),
-    tag: parseTag(textParam(url, "tag")),
-    sort: SORTS.find((sort) => sort === textParam(url, "sort")) ?? "date",
-    cursor: parseCursor(url),
-    limit: Math.min(Math.max(intParam(url, "limit", DEFAULT_LIMIT), 1), MAX_LIMIT),
-  };
+  return { ...filter, organizationId: context.organizationId, projectId: project };
 }
 
 function sortValue(issue: IssueRecord, sort: IssueSort): number {
@@ -135,17 +154,8 @@ async function changeStatus(
 }
 
 export const updateIssues: Handler = async (context) => {
-  const ids = context.url.searchParams.getAll("id").flatMap((text) => parseId(text) ?? []);
-  const body = (await readObject(context.request)) ?? {};
-  const status = parseStatus(getString(body, "status"));
-
-  if (ids.length === 0 || ids.length > MAX_LIMIT) {
-    return badRequest(`pass between 1 and ${MAX_LIMIT} id parameters`);
-  }
-
-  if (status === null) {
-    return badRequest(STATUS_REQUIRED);
-  }
+  const { id: ids } = readQuery(context.url, IssueIdsQuery);
+  const { status } = await readBody(context.request, UpdateIssuesBody);
 
   await changeStatus(context, ids, status);
 
@@ -161,23 +171,18 @@ export const getIssue: Handler = async (context, [idText]) => {
 /** Accepts `status`, `hasSeen: true` (the user opened the issue), or both. */
 export const updateIssue: Handler = async (context, [idText]) => {
   const issue = await issueOf(context, idText);
-  const body = (await readObject(context.request)) ?? {};
-  const status = parseStatus(getString(body, "status"));
-  const seen = getBoolean(body, "hasSeen") === true;
 
   if (issue === null) {
     return notFound();
   }
 
-  if (status === null && !seen) {
-    return badRequest(STATUS_REQUIRED);
-  }
+  const { status, hasSeen } = await readBody(context.request, UpdateIssueBody);
 
   if (status !== null) {
     await changeStatus(context, [issue.id], status);
   }
 
-  if (seen) {
+  if (hasSeen === true) {
     await context.deps.issues.markSeen(context.user.id, issue, context.now);
   }
 
@@ -219,11 +224,7 @@ export const getIssueTags: Handler = async (context, [idText]) => {
   return Response.json([...tags.values()]);
 };
 
-const PERIODS = new Map([
-  ["24h", LAST_24_HOURS],
-  ["14d", LAST_14_DAYS],
-  ["30d", LAST_30_DAYS],
-]);
+const PERIODS = { "24h": LAST_24_HOURS, "14d": LAST_14_DAYS, "30d": LAST_30_DAYS };
 
 function sum(hours: IssueHour[], pick: (hour: IssueHour) => number): number {
   return hours.reduce((total, hour) => total + pick(hour), 0);
@@ -231,13 +232,13 @@ function sum(hours: IssueHour[], pick: (hour: IssueHour) => number): number {
 
 export const getIssueStats: Handler = async (context, [idText]) => {
   const issue = await issueOf(context, idText);
-  const period = PERIODS.get(textParam(context.url, "period") ?? "24h") ?? LAST_24_HOURS;
 
   if (issue === null) {
     return notFound();
   }
 
-  const window = { ...period, now: context.now };
+  const { period } = readQuery(context.url, StatsQuery);
+  const window = { ...PERIODS[period], now: context.now };
   const hours = await context.deps.issues.hourlyCounts([issue.id], windowStart(window));
 
   return Response.json({

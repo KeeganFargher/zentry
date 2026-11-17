@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { prepareEvent } from "@/core/buckets";
 import { indexedTags, userLabel } from "@/core/tags";
 
-import { normalize, pythonError, RECEIVED_AT } from "./helpers";
+import { normalize, normalized, pythonError, RECEIVED_AT } from "./helpers";
 
 const frame = { filename: "app/views.py", function: "checkout", lineno: 42 };
 
@@ -30,6 +30,30 @@ describe("normalizeEvent", () => {
 
     expect(event.exceptions).toHaveLength(1);
     expect(event.message?.formatted).toBe("hello");
+  });
+
+  it("drops a field of the wrong type and keeps the rest of the event", () => {
+    const event = normalize({
+      level: { not: "a level" },
+      release: 7,
+      exception: { values: [{ type: 42, value: "kept", mechanism: "oops" }, "not an exception"] },
+      tags: [["feature", "checkout"], "not a pair", ["count", 3]],
+      breadcrumbs: "not a list",
+      user: ["not", "an", "object"],
+    });
+
+    expect(event.level).toBe("error");
+    expect(event.release).toBeNull();
+    expect(event.exceptions).toEqual([
+      { type: null, value: "kept", module: null, mechanism: null, frames: [] },
+    ]);
+    expect(event.tags).toEqual([
+      ["feature", "checkout"],
+      ["count", "3"],
+    ]);
+    expect(event.breadcrumbs).toEqual([]);
+    expect(event.user).toBeNull();
+    expect(event.title).toBe("kept");
   });
 
   it("titles a message event by its first line", () => {
@@ -99,8 +123,8 @@ describe("normalizeEvent", () => {
     const userAgent =
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-    const event = normalize({ platform: "javascript" }, { userAgent });
-    const tags = new Map(indexedTags(event));
+    const { event, facts } = normalized({ platform: "javascript" }, { userAgent });
+    const tags = new Map(indexedTags(event, facts));
 
     expect(tags.get("browser")).toBe("Chrome 131");
     expect(tags.get("browser.name")).toBe("Chrome");
@@ -172,7 +196,7 @@ describe("scrubbing", () => {
 
 describe("indexedTags", () => {
   it("lists built-in tags before the event's own and keeps the first value", () => {
-    const event = normalize({
+    const { event, facts } = normalized({
       ...pythonError(frame),
       release: "1.2.3",
       environment: "staging",
@@ -180,13 +204,13 @@ describe("indexedTags", () => {
       tags: { environment: "ignored", feature: "checkout" },
     });
 
-    const tags = new Map(indexedTags(event));
+    const tags = new Map(indexedTags(event, facts));
 
     expect(tags.get("environment")).toBe("staging");
     expect(tags.get("release")).toBe("1.2.3");
     expect(tags.get("user")).toBe("email:bob@example.com");
     expect(tags.get("feature")).toBe("checkout");
-    expect(userLabel(event.user)).toBe("bob@example.com");
+    expect(userLabel(facts.user)).toBe("bob@example.com");
   });
 
   it("scrubs a request body sent as text, whether JSON or form fields", () => {
@@ -202,10 +226,11 @@ describe("indexedTags", () => {
 
 describe("logger", () => {
   it("keeps the logger name and indexes it as a tag", () => {
-    const event = normalize({ logger: "Shop.Checkout.PaymentService", message: "declined" });
+    const result = normalized({ logger: "Shop.Checkout.PaymentService", message: "declined" });
+    const { event, facts } = result;
 
     expect(event.logger).toBe("Shop.Checkout.PaymentService");
-    expect(new Map(indexedTags(event)).get("logger")).toBe("Shop.Checkout.PaymentService");
-    expect(prepareEvent(event).metadata.logger).toBe("Shop.Checkout.PaymentService");
+    expect(new Map(indexedTags(event, facts)).get("logger")).toBe("Shop.Checkout.PaymentService");
+    expect(prepareEvent(result).metadata.logger).toBe("Shop.Checkout.PaymentService");
   });
 });

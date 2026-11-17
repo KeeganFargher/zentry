@@ -1,67 +1,48 @@
-// Stack frames: parsing, limits, and the default in-app rule.
+// Stack frames: the frame limit, scrubbing of vars, and the default in-app rule.
 
-import type { JsonObject, StoredFrame } from "@/shared/contract";
-import {
-  getArray,
-  getBoolean,
-  getNonEmpty,
-  getNumber,
-  getObject,
-  objectsIn,
-  stringsIn,
-} from "@/shared/json";
+import type { StoredFrame } from "@/shared/contract";
 
 import { looksLikeLibrary } from "./inapp";
 import { scrubObject } from "./scrub";
-import { cut, cutOrNull, MAX_LINE, MAX_STRING, trimObject } from "./trim";
+import { trimObject } from "./trim";
+import type { WireFrame, WireStacktrace } from "./wire";
 
 const MAX_FRAMES = 250;
 const MAX_CONTEXT_LINES = 10;
 const VARS_LIMITS = { depth: 3, maxKeys: 50, maxString: 512 };
 
 /** Keeps the lines nearest the error: the last of `pre_context`, the first of `post_context`. */
-function contextLines(raw: JsonObject, key: "pre_context" | "post_context"): string[] {
-  const lines = stringsIn(getArray(raw, key));
-
-  const nearest =
-    key === "pre_context" ? lines.slice(-MAX_CONTEXT_LINES) : lines.slice(0, MAX_CONTEXT_LINES);
-
-  return nearest.map((line) => cut(line, MAX_LINE));
+function nearestLines(lines: string[], side: "pre" | "post"): string[] {
+  return side === "pre" ? lines.slice(-MAX_CONTEXT_LINES) : lines.slice(0, MAX_CONTEXT_LINES);
 }
 
-function parseVars(raw: JsonObject): JsonObject | null {
-  const vars = getObject(raw, "vars");
-
-  return vars === null ? null : scrubObject(trimObject(vars, VARS_LIMITS));
-}
-
-function parseFrame(raw: JsonObject): StoredFrame {
-  const filename = cutOrNull(getNonEmpty(raw, "filename"), MAX_STRING);
-  const absPath = cutOrNull(getNonEmpty(raw, "abs_path"), MAX_STRING);
-  const module = cutOrNull(getNonEmpty(raw, "module"), MAX_STRING);
-  const fn = cutOrNull(getNonEmpty(raw, "function"), MAX_STRING);
+function toStoredFrame(raw: WireFrame): StoredFrame {
+  const located = {
+    filename: raw.filename,
+    absPath: raw.abs_path,
+    module: raw.module,
+    function: raw.function,
+  };
 
   return {
-    filename,
-    absPath,
-    module,
-    function: fn,
-    lineno: getNumber(raw, "lineno"),
-    colno: getNumber(raw, "colno"),
-    inApp:
-      getBoolean(raw, "in_app") ?? !looksLikeLibrary({ absPath, filename, module, function: fn }),
-    contextLine: cutOrNull(getNonEmpty(raw, "context_line"), MAX_LINE),
-    preContext: contextLines(raw, "pre_context"),
-    postContext: contextLines(raw, "post_context"),
-    vars: parseVars(raw),
+    ...located,
+    lineno: raw.lineno,
+    colno: raw.colno,
+    inApp: raw.in_app ?? !looksLikeLibrary(located),
+    contextLine: raw.context_line,
+    preContext: nearestLines(raw.pre_context, "pre"),
+    postContext: nearestLines(raw.post_context, "post"),
+    vars: raw.vars === null ? null : scrubObject(trimObject(raw.vars, VARS_LIMITS)),
   };
 }
 
 /** Frames are kept in SDK order: oldest call first, crash site last. */
-export function parseFrames(stacktrace: JsonObject | null): StoredFrame[] {
-  const raw = stacktrace === null ? [] : objectsIn(getArray(stacktrace, "frames"));
+export function toStoredFrames(stacktrace: WireStacktrace): StoredFrame[] {
+  const { frames } = stacktrace;
   const half = MAX_FRAMES / 2;
-  const kept = raw.length > MAX_FRAMES ? [...raw.slice(0, half), ...raw.slice(-half)] : raw;
 
-  return kept.map(parseFrame);
+  const kept =
+    frames.length > MAX_FRAMES ? [...frames.slice(0, half), ...frames.slice(-half)] : frames;
+
+  return kept.map(toStoredFrame);
 }
