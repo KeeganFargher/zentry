@@ -14,3 +14,17 @@ export function parseIsoMs(text: string): number | null {
 
   return Number.isNaN(ms) ? null : ms;
 }
+
+/** Start of the UTC month containing `ms`. */
+export function monthBucket(ms: number): number {
+  const date = new Date(ms);
+
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+}
+
+/** Start of the UTC month after the one containing `ms`. */
+export function nextMonthBucket(ms: number): number {
+  const date = new Date(ms);
+
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+}

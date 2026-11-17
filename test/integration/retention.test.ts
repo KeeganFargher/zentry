@@ -91,7 +91,9 @@ describe("retention", () => {
   it("clears a rate limit that has expired", async () => {
     const project = await createProject();
 
-    await env.DB.prepare(`UPDATE projects SET rate_limited_until = ?2 WHERE id = ?1`)
+    await env.DB.prepare(
+      `UPDATE projects SET rate_limited_until = ?2, rate_limit_reason = 'project_quota' WHERE id = ?1`,
+    )
       .bind(project.id, NOW - 1)
       .run();
 

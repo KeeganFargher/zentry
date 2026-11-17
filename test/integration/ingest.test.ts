@@ -4,17 +4,21 @@ import { describe, expect, it } from "vitest";
 import { SpillStore } from "@/blobs/spill";
 import { KeyStore } from "@/db/keys";
 import { ProjectStore } from "@/db/projects";
+import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
 import { handleIngest, matchIngestRoute } from "@/ingest/handler";
 import type { IngestDeps } from "@/ingest/handler";
+import { UsageCache } from "@/ingest/limits";
+import { monthBucket, nextMonthBucket, SECOND } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
-import { createProject, NOW } from "./helpers";
+import { createOrganization, createProject, NOW } from "./helpers";
 
 type Harness = { deps: IngestDeps; sent: QueueMessage[] };
 
 function harness(overrides: Partial<IngestDeps> = {}): Harness {
   const keyStore = new KeyStore(env.DB);
+  const usageStore = new UsageStore(env.DB);
   const spill = new SpillStore(env.BLOBS);
   const sent: QueueMessage[] = [];
 
@@ -22,6 +26,7 @@ function harness(overrides: Partial<IngestDeps> = {}): Harness {
     sent,
     deps: {
       keys: new KeyCache((publicKey) => keyStore.findActive(publicKey)),
+      usage: new UsageCache((organization, month) => usageStore.received(organization, month)),
       allow: async () => true,
       spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
       send: async (message) => {
@@ -33,8 +38,8 @@ function harness(overrides: Partial<IngestDeps> = {}): Harness {
   };
 }
 
-async function projectWithKey(): Promise<{ id: number; key: string }> {
-  const project = await createProject();
+async function projectWithKey(organizationId = 1): Promise<{ id: number; key: string }> {
+  const project = await createProject(null, organizationId);
   const [key] = await new ProjectStore(env.DB).listKeys(project.id);
 
   return { id: project.id, key: key?.publicKey ?? "" };
@@ -313,7 +318,10 @@ describe("ingest limits and CORS", () => {
   it("returns 429 with SDK back-off headers while a project is over quota", async () => {
     const project = await projectWithKey();
 
-    await env.DB.prepare(`UPDATE projects SET rate_limited_until = ?2 WHERE id = ?1`)
+    await env.DB.prepare(
+      `UPDATE projects SET rate_limited_until = ?2, rate_limit_reason = 'spike_protection'
+       WHERE id = ?1`,
+    )
       .bind(project.id, NOW + 90_000)
       .run();
 
@@ -327,7 +335,43 @@ describe("ingest limits and CORS", () => {
 
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("90");
-    expect(response.headers.get("x-sentry-rate-limits")).toBe("90::project");
+    expect(response.headers.get("x-sentry-rate-limits")).toBe("90::project:spike_protection");
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses an organization's projects once its month's cap is reached", async () => {
+    const organization = await createOrganization(5);
+    const project = await projectWithKey(organization);
+    const other = await projectWithKey();
+    const { deps, sent } = harness();
+
+    await env.DB.prepare(
+      `INSERT INTO usage_months (organization_id, month, received) VALUES (?1, ?2, 5)`,
+    )
+      .bind(organization, monthBucket(NOW))
+      .run();
+
+    // Another organization's cap is its own.
+    const unaffected = await post(
+      `https://i.test/api/${other.id}/store/?sentry_key=${other.key}`,
+      { body: '{"message":"hi"}' },
+      deps,
+    );
+
+    expect(unaffected.status).toBe(200);
+    sent.length = 0;
+
+    const response = await post(
+      `https://i.test/api/${project.id}/store/?sentry_key=${project.key}`,
+      { body: '{"message":"hi"}' },
+      deps,
+    );
+
+    const wait = String((nextMonthBucket(NOW) - NOW) / SECOND);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe(wait);
+    expect(response.headers.get("x-sentry-rate-limits")).toBe(`${wait}::organization:org_quota`);
     expect(sent).toEqual([]);
   });
 
@@ -343,6 +387,7 @@ describe("ingest limits and CORS", () => {
 
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("60");
+    expect(response.headers.get("x-sentry-rate-limits")).toBe("60::key:key_quota");
   });
 
   it("returns 503 when the queue is unavailable", async () => {

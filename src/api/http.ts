@@ -25,6 +25,10 @@ export function badRequest(detail: string): Response {
   return Response.json({ detail } satisfies ApiError, { status: 400 });
 }
 
+export function forbidden(detail: string): Response {
+  return Response.json({ detail } satisfies ApiError, { status: 403 });
+}
+
 export function unauthorized(): Response {
   return Response.json({ detail: "not signed in" } satisfies ApiError, { status: 401 });
 }

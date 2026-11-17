@@ -108,8 +108,16 @@ export default defineConfig({
       files: ["src/consumer/**"],
       rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
     },
-    { files: ["src/api/**"], rules: { "no-restricted-imports": except("shared", "db", "blobs") } },
-    { files: ["src/cron/**"], rules: { "no-restricted-imports": except("shared", "db", "blobs") } },
+    // api takes core for the spike floor a new project starts with (DESIGN.md §6).
+    {
+      files: ["src/api/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
+    },
+    // cron takes core for the spike-protection arithmetic, which is pure (DESIGN.md §6).
+    {
+      files: ["src/cron/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
+    },
     { files: ["ui/**"], rules: { "no-restricted-imports": except() } },
 
     // Named exemptions. Each is one file or one folder, with the reason.

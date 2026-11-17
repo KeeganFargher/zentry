@@ -139,8 +139,57 @@ which is git-ignored, and `pnpm deploy` and `pnpm migrate:remote` read that file
    pnpm deploy
    ```
 
+6. Sign in, open Projects > Spend limits and set the monthly cap (see below),
+   then add the account guards the Worker cannot set for itself, under
+   "Spend protection".
+
 `DEV_USER_EMAIL` is honoured only for requests to `localhost`. Leave it
 empty in `wrangler.jsonc`.
+
+## Spend protection
+
+A DSN is public, so anyone holding one can send events. These limits keep a
+crash loop or an abuser from running up the bill. DESIGN.md §6 has the detail.
+
+In the Worker, from broadest to narrowest:
+
+| Limit | Default | Where it is set | 429 reason |
+|---|---|---|---|
+| Events per UTC month, all of an organization's projects | 1,000,000 | Spend limits page (owners) | `org_quota` |
+| Spike protection, per project, recomputed hourly | on | project settings | `spike_protection` |
+| Events per hour, per project | 10,000 | project settings | `project_quota` |
+| Burst, per DSN key and Cloudflare location | 600 a minute | `ratelimits` in `wrangler.jsonc` | `key_quota` |
+| Full events stored per issue per hour | 100 | `MAX_STORED_PER_GROUP_HOUR` | (counted, not stored) |
+
+Every 429 carries `Retry-After` and `X-Sentry-Rate-Limits`, so the SDKs stop
+sending until it passes. The monthly cap is the ceiling on the bill: at the
+default, a whole month costs about $6 (DESIGN.md §12). When it is reached,
+nothing is accepted until the next month starts; an owner can raise the cap
+on the Spend limits page to resume sooner (it takes effect within a minute).
+
+A new project is spike-protected from its first event: it starts at the
+floor, derived from the monthly cap (4,167 events an hour for one project at
+the default), and the hourly job adjusts it from there.
+
+What the Worker cannot do is refuse a request without being invoked, and
+every invocation is billed, refused or not. Set these on the account:
+
+1. **Workers spending limit**, on the dashboard's Spend Management page
+   ([docs](https://developers.cloudflare.com/workers/platform/spend-management/)). It blocks every Worker on the account once request and CPU
+   charges pass the amount you set. It does not cover D1, R2 or Queues, which
+   the limits above bound.
+2. **Email alert** at a lower amount on the same page, so you hear about it
+   before the limit stops ingest.
+3. **A WAF rate limiting rule** on the ingest hostname
+   ([docs](https://developers.cloudflare.com/waf/rate-limiting-rules/)), for example 100 requests per 10 seconds per IP, action
+   Block. Requests it blocks never reach the Worker, so they are not billed as
+   Worker requests. The Free plan allows one such rule. Set the rate above
+   your busiest server's normal traffic: a fleet behind one NAT address shares
+   one IP.
+
+Workers Logs are sampled at 10% (`head_sampling_rate` in `wrangler.jsonc`),
+because every logged invocation past 20 million a month is billed too. Raise
+it while debugging.
 
 ## Licences
 

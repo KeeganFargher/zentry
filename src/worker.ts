@@ -10,21 +10,28 @@ import { handleBatch } from "@/consumer/handler";
 import type { ConsumerDeps } from "@/consumer/handler";
 import { runRetention } from "@/cron/retention";
 import type { RetentionDeps } from "@/cron/retention";
+import { runSpikeProtection } from "@/cron/spike";
+import type { SpikeDeps } from "@/cron/spike";
 import { BatchStore } from "@/db/batch";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
+import { OrganizationStore } from "@/db/organizations";
 import { ProjectStore } from "@/db/projects";
 import { RetentionStore } from "@/db/retention";
+import { SpikeStore } from "@/db/spike";
 import { TenancyStore } from "@/db/tenancy";
+import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
 import { handleIngest, matchIngestRoute } from "@/ingest/handler";
 import type { IngestDeps } from "@/ingest/handler";
+import { UsageCache } from "@/ingest/limits";
 import { errorText, logError } from "@/shared/log";
 import type { QueueMessage } from "@/shared/types";
 
 // Per-isolate caches, shared by every request the isolate serves.
 let keyCache: KeyCache | undefined;
+let usageCache: UsageCache | undefined;
 let accessVerifier: AccessVerifier | undefined;
 const sessions = new Sessions();
 
@@ -32,10 +39,16 @@ function ingestDeps(env: Env): IngestDeps {
   const keyStore = new KeyStore(env.DB);
   const spill = new SpillStore(env.BLOBS);
 
+  const usageStore = new UsageStore(env.DB);
+
   keyCache ??= new KeyCache((publicKey) => keyStore.findActive(publicKey));
+  usageCache ??= new UsageCache((organizationId, month) =>
+    usageStore.received(organizationId, month),
+  );
 
   return {
     keys: keyCache,
+    usage: usageCache,
     allow: async (publicKey) => (await env.INGEST_RL.limit({ key: publicKey })).success,
     spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
     send: async (message) => {
@@ -71,6 +84,7 @@ function apiDeps(env: Env): ApiDeps {
   return {
     access: accessVerifier,
     tenancy: new TenancyStore(env.DB),
+    organizations: new OrganizationStore(env.DB),
     projects: new ProjectStore(env.DB),
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
@@ -91,6 +105,36 @@ function retentionDeps(env: Env): RetentionDeps {
     retentionDays: Number(env.RETENTION_DAYS),
     now: () => Date.now(),
   };
+}
+
+function spikeDeps(env: Env): SpikeDeps {
+  const store = new SpikeStore(env.DB);
+
+  return {
+    read: (since, before) => store.read(since, before),
+    write: (limits) => store.write(limits),
+    now: () => Date.now(),
+  };
+}
+
+const RETENTION_CRON = "17 3 * * *";
+const SPIKE_CRON = "3 * * * *";
+
+async function runCron(cron: string, env: Env): Promise<void> {
+  if (cron === RETENTION_CRON) {
+    await runRetention(retentionDeps(env));
+
+    return;
+  }
+
+  if (cron === SPIKE_CRON) {
+    await runSpikeProtection(spikeDeps(env));
+
+    return;
+  }
+
+  // A cron added to wrangler.jsonc without a handler here is a bug to see, not to skip.
+  throw new Error(`no handler for cron "${cron}"`);
 }
 
 async function serveApi(request: Request, env: Env): Promise<Response> {
@@ -124,7 +168,7 @@ export default {
     await handleBatch(batch, consumerDeps(env));
   },
 
-  async scheduled(_controller, env): Promise<void> {
-    await runRetention(retentionDeps(env));
+  async scheduled(controller, env): Promise<void> {
+    await runCron(controller.cron, env);
   },
 } satisfies ExportedHandler<Env, QueueMessage>;

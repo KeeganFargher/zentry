@@ -2,7 +2,7 @@
 // Field names are short because each list is sent to D1 as one JSON parameter
 // and read back with json_each (DESIGN.md §7.4).
 
-import type { IssueStatus } from "./contract";
+import type { IssueStatus, RateLimitReason } from "./contract";
 
 // ── Read results ─────────────────────────────────────────────────────────
 
@@ -22,7 +22,14 @@ export type GroupHourKey = { g: number; b: number };
 
 export type GroupHourStored = { groupId: number; bucket: number; stored: number };
 
-export type ProjectQuota = { projectId: number; maxEventsPerHour: number | null; received: number };
+export type ProjectQuota = {
+  projectId: number;
+  organizationId: number;
+  maxEventsPerHour: number | null;
+  /** Null while spike protection is off. */
+  spikeLimitPerHour: number | null;
+  received: number;
+};
 
 export type BatchState = {
   existingEvents: EventKey[];
@@ -87,8 +94,11 @@ export type TagRow = { p: number; h: string; k: string; v: string; n: number; ts
 /** E7: project counts per hour. */
 export type ProjectStatRow = { p: number; b: number; n: number; stored: number };
 
-/** E8: a project that passed its hourly quota. */
-export type LimitRow = { p: number; until: number };
+/** E8: a project that passed its hourly quota or spike threshold. */
+export type LimitRow = { p: number; until: number; reason: RateLimitReason };
+
+/** E9: events accepted in one UTC month by one organization's projects. */
+export type UsageRow = { o: number; m: number; n: number };
 
 export type BatchWrites = {
   newGroups: NewGroupRow[];
@@ -98,4 +108,5 @@ export type BatchWrites = {
   tags: TagRow[];
   projectStats: ProjectStatRow[];
   limits: LimitRow[];
+  usage: UsageRow[];
 };

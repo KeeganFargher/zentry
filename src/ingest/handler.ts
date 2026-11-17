@@ -9,7 +9,7 @@ import type { KeyInfo } from "@/db/keys";
 import { newEventId, normalizeEventId, parseId } from "@/shared/ids";
 import { jsonText } from "@/shared/json";
 import { Label, lenient } from "@/shared/schema";
-import { SECOND } from "@/shared/time";
+import { nextMonthBucket, SECOND } from "@/shared/time";
 import { INLINE_PAYLOAD_MAX_BYTES, MAX_ENVELOPE_BYTES, MAX_EVENT_BYTES } from "@/shared/types";
 import type { QueueMessage } from "@/shared/types";
 
@@ -17,9 +17,11 @@ import { publicKeyOf, requestKey } from "./auth";
 import type { KeyCache } from "./auth";
 import { readBody } from "./body";
 import { accepted, acceptedNothing, preflight, rateLimited, rejected, unavailable } from "./http";
+import type { UsageCache } from "./limits";
 
 export type IngestDeps = {
   keys: KeyCache;
+  usage: UsageCache;
   /** Burst limiter; resolves to false when the key is over its limit. */
   allow: (publicKey: string) => Promise<boolean>;
   /** Stores an oversize payload and returns its key. */
@@ -137,7 +139,7 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
   // Only events count against the burst limit. Transactions, sessions and
   // other dropped items must not make the SDK back off from sending errors.
   if (!(await deps.allow(input.publicKey))) {
-    return rateLimited(60);
+    return rateLimited(60, { scope: "key", reason: "key_quota" });
   }
 
   const eventId = resolveEventId(head, input.parsed);
@@ -167,6 +169,28 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
   return accepted(eventId);
 }
 
+/**
+ * The monthly cap first, as the broadest limit, then the project's hourly
+ * limit. Both apply to every envelope, not only to events, so a limited SDK
+ * backs off from everything it sends.
+ */
+async function limitedFor(info: KeyInfo, deps: IngestDeps): Promise<Response | null> {
+  const now = deps.now();
+
+  if ((await deps.usage.received(info.organizationId, now)) >= info.maxEventsPerMonth) {
+    return rateLimited((nextMonthBucket(now) - now) / SECOND, {
+      scope: "organization",
+      reason: "org_quota",
+    });
+  }
+
+  const { rateLimit } = info;
+
+  return rateLimit !== null && rateLimit.until > now
+    ? rateLimited((rateLimit.until - now) / SECOND, { scope: "project", reason: rateLimit.reason })
+    : null;
+}
+
 async function accept(request: Request, route: Route, deps: IngestDeps): Promise<Response> {
   const body = await readBody(
     request,
@@ -189,10 +213,10 @@ async function accept(request: Request, route: Route, deps: IngestDeps): Promise
     return rejected(401, "invalid sentry key");
   }
 
-  const limitedFor = (auth.info.rateLimitedUntil ?? 0) - deps.now();
+  const limited = await limitedFor(auth.info, deps);
 
-  if (limitedFor > 0) {
-    return rateLimited(limitedFor / SECOND);
+  if (limited !== null) {
+    return limited;
   }
 
   return parsed.payload === null

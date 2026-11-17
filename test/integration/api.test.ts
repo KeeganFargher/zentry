@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { handleApi, Sessions } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
 import { processMessages } from "@/consumer/handler";
+import { spikeFloor } from "@/core/spike";
 import type {
   ApiActivity,
   ApiEventDetail,
@@ -13,6 +14,7 @@ import type {
   ApiIssueStats,
   ApiKey,
   ApiMe,
+  ApiOrganizationLimits,
   ApiProject,
   ApiTag,
 } from "@/shared/contract";
@@ -204,7 +206,9 @@ describe("projects and keys", () => {
         .then((row) => row?.until ?? null);
 
     await api(path, { method: "PUT", body: { maxEventsPerHour: 10 } });
-    await env.DB.prepare(`UPDATE projects SET rate_limited_until = 123 WHERE id = ?1`)
+    await env.DB.prepare(
+      `UPDATE projects SET rate_limited_until = 123, rate_limit_reason = 'project_quota' WHERE id = ?1`,
+    )
       .bind(project.id)
       .run();
 
@@ -214,6 +218,80 @@ describe("projects and keys", () => {
 
     await api(path, { method: "PUT", body: { maxEventsPerHour: 1000 } });
     expect(await limitedUntil()).toBeNull();
+  });
+
+  it("gives a new project the spike floor, so it is protected from its first event", async () => {
+    const project = await newProject("Fresh");
+    const response = await api("/organizations/default/limits/");
+    const limits = await response.json<ApiOrganizationLimits>();
+    const counted = env.DB.prepare(`SELECT count(*) AS n FROM projects WHERE organization_id = 1`);
+    const { n } = (await counted.first<{ n: number }>()) ?? { n: 0 };
+
+    expect(project.spikeLimitPerHour).toBe(spikeFloor(limits.maxEventsPerMonth, n));
+  });
+
+  it("lets an owner, and only an owner, change the monthly cap", async () => {
+    // USER is the first user, so the owner; anyone after is a member.
+    const member = "member@example.com";
+
+    expect(await (await api("/organizations/default/limits/")).json()).toMatchObject({
+      maxEventsPerMonth: 1_000_000,
+      canEdit: true,
+    });
+
+    const refused = await api("/organizations/default/limits/", {
+      method: "PUT",
+      body: { maxEventsPerMonth: 5 },
+      email: member,
+    });
+
+    const changed = await api("/organizations/default/limits/", {
+      method: "PUT",
+      body: { maxEventsPerMonth: 2_000_000 },
+    });
+
+    const invalid = await api("/organizations/default/limits/", {
+      method: "PUT",
+      body: { maxEventsPerMonth: 0 },
+    });
+
+    expect(refused.status).toBe(403);
+    expect(await changed.json()).toMatchObject({ maxEventsPerMonth: 2_000_000 });
+    expect(invalid.status).toBe(400);
+
+    expect(
+      await (await api("/organizations/default/limits/", { email: member })).json(),
+    ).toMatchObject({ maxEventsPerMonth: 2_000_000, canEdit: false });
+
+    await api("/organizations/default/limits/", {
+      method: "PUT",
+      body: { maxEventsPerMonth: 1_000_000 },
+    });
+  });
+
+  it("turns spike protection off and lifts a spike limit", async () => {
+    const project = await newProject("Bursty");
+    const path = `/projects/default/${project.slug}/`;
+
+    expect(project.spikeProtection).toBe(true);
+
+    await env.DB.prepare(
+      `UPDATE projects SET rate_limited_until = 123, rate_limit_reason = 'spike_protection'
+       WHERE id = ?1`,
+    )
+      .bind(project.id)
+      .run();
+
+    expect((await (await api(path)).json<ApiProject>()).rateLimit).toEqual({
+      until: 123,
+      reason: "spike_protection",
+    });
+
+    const updated = await (
+      await api(path, { method: "PUT", body: { spikeProtection: false } })
+    ).json<ApiProject>();
+
+    expect(updated).toMatchObject({ spikeProtection: false, rateLimit: null });
   });
   it("reports 24-hour counts in the project list", async () => {
     const project = await newProject("Counted");

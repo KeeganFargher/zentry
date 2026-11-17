@@ -1,11 +1,12 @@
-// One project's settings: name, hourly quota, DSN keys and an SDK snippet.
+// One project's settings: name, hourly quota, spike protection, DSN keys and an SDK snippet.
 
-import type { ApiKey, ApiProject } from "@contract";
+import type { ApiKey, ApiProject, RateLimitReason } from "@contract";
 import { useState } from "react";
 import type { FormEvent, JSX } from "react";
 
 import { Link, Notice } from "~/components/basics";
 import { api } from "~/lib/api";
+import { dateTime } from "~/lib/format";
 import { useResource } from "~/lib/resource";
 import { navigate } from "~/lib/router";
 
@@ -13,9 +14,23 @@ type Props = { org: string; project: string };
 
 type GeneralProps = Props & { current: ApiProject; onSaved: () => void };
 
+const LIMIT_REASONS: Record<RateLimitReason, string> = {
+  project_quota: "this hour's events passed the project's maximum",
+  spike_protection: "this hour's events passed the spike threshold",
+};
+
+function spikeHint(current: ApiProject): string {
+  if (!current.spikeProtection) {
+    return "Off: bursts are accepted up to the hourly maximum.";
+  }
+
+  return `Current threshold: ${current.spikeLimitPerHour.toLocaleString()} events per hour, recomputed hourly.`;
+}
+
 function General({ org, project, current, onSaved }: GeneralProps): JSX.Element {
   const [name, setName] = useState(current.name);
   const [quota, setQuota] = useState(String(current.maxEventsPerHour ?? ""));
+  const [spikeProtection, setSpikeProtection] = useState(current.spikeProtection);
 
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
@@ -23,6 +38,7 @@ function General({ org, project, current, onSaved }: GeneralProps): JSX.Element 
     await api.updateProject(org, project, {
       name,
       maxEventsPerHour: quota.trim() === "" ? null : Number(quota),
+      spikeProtection,
     });
 
     onSaved();
@@ -51,6 +67,22 @@ function General({ org, project, current, onSaved }: GeneralProps): JSX.Element 
           onChange={(event) => setQuota(event.target.value)}
         />
       </div>
+      <div className="form-row">
+        <input
+          id="project-spike"
+          type="checkbox"
+          checked={spikeProtection}
+          onChange={(event) => setSpikeProtection(event.target.checked)}
+        />
+        <label htmlFor="project-spike">Spike protection</label>
+        <span className="muted">{spikeHint(current)}</span>
+      </div>
+      {current.rateLimit !== null && (
+        <p className="muted">
+          Refusing events until {dateTime(current.rateLimit.until)}:{" "}
+          {LIMIT_REASONS[current.rateLimit.reason]}.
+        </p>
+      )}
       <button type="submit" className="primary">
         Save
       </button>

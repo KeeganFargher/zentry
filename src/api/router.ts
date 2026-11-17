@@ -19,6 +19,7 @@ import {
   updateIssue,
   updateIssues,
 } from "./issues";
+import { getLimits, updateLimits } from "./organization";
 import {
   createKey,
   createProject,
@@ -50,6 +51,8 @@ const ROUTES: Route[] = [
   route("GET", `/projects/${ORG}/${SLUG}/keys`, listKeys),
   route("POST", `/projects/${ORG}/${SLUG}/keys`, createKey),
   route("PUT", `/projects/${ORG}/${SLUG}/keys/${ID}`, updateKey),
+  route("GET", `/organizations/${ORG}/limits`, getLimits),
+  route("PUT", `/organizations/${ORG}/limits`, updateLimits),
   route("GET", `/organizations/${ORG}/issues`, listIssues),
   route("PUT", `/organizations/${ORG}/issues`, updateIssues),
   route("GET", `/organizations/${ORG}/issues/${ID}`, getIssue),
@@ -147,6 +150,7 @@ export async function handleApi(
     deps,
     user: session.user,
     organizationId: membership.id,
+    role: membership.role,
     now: deps.now(),
   };
 
