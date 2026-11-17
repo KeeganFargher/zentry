@@ -461,6 +461,30 @@ describe("issues", () => {
     expect(invalid.status).toBe(400);
   });
 
+  it("keeps the regressed mark when a regressed issue is ignored, and clears it on resolve", async () => {
+    const project = await newProject("Regressed");
+
+    await ingest(project.id, [{ index: 1, name: "checkout" }]);
+
+    const [issue] = (await issuesOf(project.id)).issues;
+    const path = `/organizations/default/issues/${issue?.id}/`;
+
+    await env.DB.prepare(`UPDATE groups SET substatus = 'regressed' WHERE id = ?1`)
+      .bind(issue?.id ?? 0)
+      .run();
+
+    const ignored = await (
+      await api(path, { method: "PUT", body: { status: "ignored" } })
+    ).json<ApiIssue>();
+
+    const resolved = await (
+      await api(path, { method: "PUT", body: { status: "resolved" } })
+    ).json<ApiIssue>();
+
+    expect(ignored).toMatchObject({ status: "ignored", substatus: "regressed" });
+    expect(resolved).toMatchObject({ status: "resolved", substatus: null });
+  });
+
   it("changes several issues at once", async () => {
     const project = await newProject("Bulk");
 

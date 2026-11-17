@@ -8,6 +8,7 @@ import { findEventItem, parseEnvelope } from "@/core/envelope";
 import type { KeyInfo } from "@/db/keys";
 import { newEventId, normalizeEventId, parseId } from "@/shared/ids";
 import { jsonText } from "@/shared/json";
+import { errorText, logError } from "@/shared/log";
 import { Label, lenient } from "@/shared/schema";
 import { nextMonthBucket, SECOND } from "@/shared/time";
 import { INLINE_PAYLOAD_MAX_BYTES, MAX_ENVELOPE_BYTES, MAX_EVENT_BYTES } from "@/shared/types";
@@ -160,11 +161,7 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
     spill_key: inline ? null : await deps.spill(projectId, eventId, input.payload),
   };
 
-  try {
-    await deps.send(message);
-  } catch {
-    return unavailable();
-  }
+  await deps.send(message);
 
   return accepted(eventId);
 }
@@ -233,7 +230,20 @@ export async function handleIngest(
     return preflight();
   }
 
-  return request.method === "POST"
-    ? accept(request, route, deps)
-    : rejected(405, "method not allowed");
+  if (request.method !== "POST") {
+    return rejected(405, "method not allowed");
+  }
+
+  // Anything that throws past here is our storage failing, not the request: the
+  // queue send, the R2 spill, or the D1 reads behind the key and usage caches.
+  // It is logged so the failure is seen, and answered with a 503 carrying CORS
+  // headers, because a bare runtime error has none and a browser SDK could not
+  // read it, let alone retry it.
+  try {
+    return await accept(request, route, deps);
+  } catch (cause) {
+    logError("ingest failed", { project_id: route.projectId, error: errorText(cause) });
+
+    return unavailable();
+  }
 }

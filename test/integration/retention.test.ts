@@ -14,7 +14,8 @@ function retentionDeps(now: number): RetentionDeps {
 
   return {
     deleteEventsBefore: (cutoff) => store.deleteEventsBefore(cutoff),
-    deleteStatsBefore: (cutoffs) => store.deleteStatsBefore(cutoffs),
+    deleteGroupStatsBefore: (cutoff) => store.deleteGroupStatsBefore(cutoff),
+    deleteProjectStatsBefore: (cutoff) => store.deleteProjectStatsBefore(cutoff),
     pruneTags: (keep) => store.pruneTags(keep),
     clearExpiredLimits: (time) => store.clearExpiredLimits(time),
     retentionDays: 90,
@@ -106,5 +107,50 @@ describe("retention", () => {
       .first<{ until: number | null }>();
 
     expect(row?.until).toBeNull();
+  });
+
+  it("removes hourly stats past their cutoffs", async () => {
+    const project = await createProject();
+
+    await processMessages(
+      [message({ projectId: project.id, index: 1, event: errorEvent("checkout") })],
+      consumerDeps(),
+    );
+
+    // 40 days on, the issue's hourly bucket (30-day cutoff) has expired but the
+    // project's (90-day cutoff) has not.
+    await runRetention(retentionDeps(NOW + 40 * DAY));
+
+    expect(await count("group_stats", project.id)).toBe(0);
+    expect(await count("project_stats", project.id)).toBe(1);
+
+    await runRetention(retentionDeps(NOW + 100 * DAY));
+
+    expect(await count("project_stats", project.id)).toBe(0);
+  });
+
+  it("leaves the remaining steps for the next run once the budget is spent", async () => {
+    const calls: string[] = [];
+    let clock = NOW;
+
+    const step = (name: string) => async (): Promise<number> => {
+      calls.push(name);
+      // The first chunk of events takes the whole budget.
+      clock += 30_000;
+
+      return 1;
+    };
+
+    await runRetention({
+      deleteEventsBefore: step("events"),
+      deleteGroupStatsBefore: step("groupStats"),
+      deleteProjectStatsBefore: step("projectStats"),
+      pruneTags: step("tags"),
+      clearExpiredLimits: step("limits"),
+      retentionDays: 90,
+      now: () => clock,
+    });
+
+    expect(calls).toEqual(["events"]);
   });
 });

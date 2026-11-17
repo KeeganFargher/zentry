@@ -32,7 +32,6 @@ export default defineConfig({
   ignorePatterns: [
     "ui/dist/**",
     "tools/oxlint/anti-slop/**",
-    "tools/oxlint/zentry/**",
     ".wrangler/**",
     ".claude/**",
     "worker-configuration.d.ts",
@@ -179,6 +178,7 @@ export default defineConfig({
         "vitest.config.ts",
         "oxlint.config.ts",
         "e2e/playwright.config.ts",
+        "tools/oxlint/zentry/index.ts",
       ],
       rules: { "import/no-default-export": "off" },
     },

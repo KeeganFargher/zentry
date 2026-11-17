@@ -3,7 +3,7 @@
 
 import type { JsonObject, Pair, StoredRequest } from "@/shared/contract";
 
-import { scrubBody, scrubObject, scrubPairs, scrubQueryString } from "./scrub";
+import { scrubBody, scrubObject, scrubPairs, scrubQueryString, scrubText } from "./scrub";
 import type { ContextFacts, UserFacts } from "./tags";
 import { cut, MAX_STRING, trimJson, trimObject } from "./trim";
 import type { Agent, AgentPart } from "./useragent";
@@ -69,7 +69,8 @@ export function toStoredRequest(raw: WireRequest, origin: Origin): StoredRequest
   const query = raw.query_string ?? urlQuery;
 
   return {
-    url: path === "" ? null : cut(path, MAX_STRING),
+    // The path can carry `user:pass@` credentials, so it gets the text scrub.
+    url: path === "" ? null : scrubText(cut(path, MAX_STRING)),
     method: raw.method,
     queryString: query === null ? null : scrubQueryString(cut(query, MAX_STRING)),
     headers: toStoredHeaders(raw.headers, origin),

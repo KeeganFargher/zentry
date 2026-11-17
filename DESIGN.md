@@ -109,21 +109,28 @@ without them), Analytics Engine.
 zentry/
 ├─ wrangler.jsonc
 ├─ oxlint.config.ts  .oxfmtrc.json  tsconfig.json  lefthook.yml      # §16
-├─ migrations/0001_init.sql            # §8
+├─ migrations/0001_init.sql  0002_group_seen.sql  0003_spend_limits.sql   # §8, §6
 ├─ src/
-│  ├─ worker.ts                        # composition root: exports { fetch, queue, scheduled }
-│  ├─ shared/   types.ts  ids.ts  time.ts  json.ts  schema.ts  contract.ts  # no internal imports
-│  ├─ core/     envelope.ts  normalize.ts  scrub.ts  grouping.ts  parameterize.ts  plan.ts
-│  │                                   # pure functions: no bindings, no I/O, no clock
-│  ├─ db/       keys.ts  groups.ts  events.ts  stats.ts  tenancy.ts  # the only place SQL lives
-│  ├─ blobs/    events.ts  spill.ts    # the only place R2 keys are built
-│  ├─ ingest/   auth.ts  handler.ts  limits.ts
-│  ├─ consumer/ handler.ts  write.ts
-│  ├─ api/      access.ts  issues.ts  events.ts  projects.ts  keys.ts
-│  └─ cron/     retention.ts
-├─ ui/                                  # Vite + React SPA, built to ui/dist
-├─ tools/oxlint/anti-slop/              # vendored lint rules, §16
-└─ test/      fixtures/envelopes/*.bin  grouping.test.ts  envelope.test.ts  consumer.test.ts
+│  ├─ worker.ts      # composition root: exports { fetch, queue, scheduled }
+│  ├─ shared/        # no internal imports
+│  │    types  ids  time  json  schema  contract  plan  log
+│  ├─ core/          # pure functions: no bindings, no I/O, no clock
+│  │    wire  envelope  normalize  fields  context  exceptions  frames  inapp
+│  │    logentry  useragent  trim  scrub  secrets  derive  tags  grouping
+│  │    fingerprint  parameterize  md5  buckets  plan  spike
+│  ├─ db/            # the only place SQL lives
+│  │    keys  batch  projects  issues  events  tenancy  organizations
+│  │    usage  spike  retention
+│  ├─ blobs/         events  spill            # the only place R2 keys are built
+│  ├─ ingest/        auth  body  handler  http  limits
+│  ├─ consumer/      handler
+│  ├─ api/           access  context  router  http  series  issues  events
+│  │                 projects  organization
+│  └─ cron/          retention  spike
+├─ ui/               # Vite + React SPA, built to ui/dist
+├─ tools/oxlint/     anti-slop/ (vendored)  zentry/ (our own rules), §16
+├─ test/             core/ (pure)  integration/ (Workers runtime)  fixtures/envelopes/*.bin
+└─ e2e/              Playwright: the stock browser SDK against a local Zentry
 ```
 
 The allowed imports between these folders are fixed and lint-enforced; see §16.3.
@@ -232,8 +239,11 @@ The public key is taken from the first of these that is present:
 Lookup:
 
 ```sql
-SELECT k.id AS key_id, k.project_id, p.rate_limited_until
-FROM project_keys k JOIN projects p ON p.id = k.project_id
+SELECT k.id AS key_id, k.project_id, p.organization_id,
+       p.rate_limited_until, p.rate_limit_reason, o.max_events_per_month
+FROM project_keys k
+JOIN projects p ON p.id = k.project_id
+JOIN organizations o ON o.id = p.organization_id
 WHERE k.public_key = ?1 AND k.status = 'active';
 ```
 
@@ -303,8 +313,8 @@ type QueueMessage = {
   client_ip: string | null;   // CF-Connecting-IP
   user_agent: string | null;
   sent_at: string | null;     // envelope header, for clock-drift correction
-  payload?: string;           // event JSON, when it is at most 100,000 bytes
-  spill_key?: string;         // R2 key, when it is larger
+  payload: string | null;     // event JSON, when it is at most 100,000 bytes
+  spill_key: string | null;   // R2 key, when it is larger; exactly one is set
 };
 ```
 
@@ -314,7 +324,11 @@ covers nearly all of them. Larger events are written to
 
 The Worker awaits `EVENTS_Q.send()` before responding. If the send throws
 (the queue allows 5,000 messages per second), the response is `503` with
-`Retry-After: 30`, and the SDK retries.
+`Retry-After: 30`, and the SDK retries. The same holds for anything else that
+throws while accepting a request, which can only be storage failing: the R2
+spill write, or the D1 reads behind the key and usage caches. The error is
+logged, and the 503 carries the CORS headers, which a bare runtime error page
+would not.
 
 ### 5.7 Responses
 
@@ -326,7 +340,7 @@ The Worker awaits `EVENTS_Q.send()` before responding. If the send throws
 | Malformed | 400 | `{"detail":"…"}` |
 | Too large | 413 | `{"detail":"…"}` |
 | Rate limited | 429 | `Retry-After: <s>`, `X-Sentry-Rate-Limits: <s>::<scope>:<reason>` (§6) |
-| Queue unavailable | 503 | `Retry-After: 30` |
+| Storage unavailable (queue, R2 spill, D1) | 503 | `Retry-After: 30` |
 
 SDKs read `X-Sentry-Rate-Limits` and stop sending for that many seconds, which
 is what makes rate limiting cheap.
@@ -493,11 +507,13 @@ refused. Normalization then works on the typed result and applies:
 `production`), `release`, `server_name`, `transaction`, `browser`
 (`"{name} {major}"`), `browser.name`, `os`, `os.name`, `runtime`, `device`,
 `url` (from `request.url`, without query string), `user` (`"id:…"`,
-`"email:…"` or `"ip:…"`), `handled` and `mechanism` from the last exception,
+`"email:…"`, `"username:…"` or `"ip:…"`), `handled` and `mechanism` from the last exception,
 then the event's own `tags`. At most 50 tags per event are indexed.
 
-**Scrubbing.** Applied to `request` (data, cookies, headers, query string),
-`extra`, `contexts`, `user`, `frame.vars`, `breadcrumbs[].data`, and `tags`:
+**Scrubbing.** Applied to `request` (URL, data, cookies, headers, query string),
+`extra`, `contexts`, `user`, `frame.vars`, `breadcrumbs[].data`, and `tags`,
+and by shape only to the message (template and formatted text), exception
+values and breadcrumb messages:
 
 - Any value under a key matching, case-insensitively,
   `password|passwd|secret|api[_-]?key|access[_-]?key|auth|credentials|mysql_pwd|private[_-]?key|token|session|cookie|csrf|bearer`
@@ -740,7 +756,11 @@ Notes on the SQL:
   backstop described in §7.1.
 - Issues with `status = 'ignored'` keep that status and still count.
 
-**After commit:** ack every message. Delete any `spill/` objects used.
+**After commit:** ack every message, then delete any `spill/` objects used.
+The delete comes after the ack so that its failure cannot send committed
+events back to the queue (sampled events would be counted twice). A failed
+delete throws and is logged; the 7-day lifecycle rule on `spill/` removes
+what it left.
 
 ### 7.5 Limits this design stays inside
 
@@ -764,7 +784,9 @@ Notes on the SQL:
 | R2 put fails | Throw. The whole batch is retried. |
 | D1 batch fails | Throw. The whole batch is retried. |
 | Same batch fails twice | On the third attempt (`msg.attempts >= 3`), process messages one at a time so a single bad message is isolated. |
-| Message fails 5 times | Goes to `zentry-events-dlq`. Nothing consumes it automatically; a script can replay it. |
+| Spill delete fails after the ack | Throw and log. The messages stay acked; R2's lifecycle rule removes the objects. |
+| Spilled payload is gone | Ack and log; nothing can be stored. |
+| Message still fails after `max_retries` (5) retries | Goes to `zentry-events-dlq`. Nothing consumes it automatically; a script can replay it. |
 
 ---
 
@@ -944,7 +966,7 @@ VALUES (1, 'default', 'Default', unixepoch() * 1000);
 | Issue list by last seen | `groups_by_last_seen` |
 | Issue list by first seen | `groups_by_first_seen` |
 | Issue by short id (`API-42`) | `groups (project_id, short_id)` (unique) |
-| Issue list filtered by a tag | `group_tag_values_filter`, then `groups` by id |
+| Issue list filtered by a tag | `projects` by org, `group_tag_values_filter`, then `groups` by id; the matches are sorted in memory |
 | Events of an issue; latest, oldest, next, previous | `events_by_group` |
 | Event by id | `events` primary key |
 | Dedupe | `events` primary key |
@@ -964,15 +986,18 @@ VALUES (1, 'default', 'Default', unixepoch() * 1000);
 
 ## 9. Retention (cron, 03:17 UTC daily)
 
-Each step loops in chunks until done or until 20 seconds have passed; the next
-run continues.
+Each step loops in chunks of 5,000 rows until it has nothing left. All steps
+share one 20-second budget, in the order below; a step the budget does not
+reach waits for the next run.
 
 1. `DELETE FROM events WHERE (project_id, event_id) IN (SELECT project_id, event_id FROM events WHERE received_at < ?cutoff ORDER BY received_at LIMIT 5000)`
 2. Issues are not deleted, as in Sentry: only their events expire. An issue
    with no events left stays in the list and opens without an event; if it
    recurs, it is a regression, not a new issue.
-3. `DELETE FROM group_stats WHERE bucket < ?now − 30 days`, and the same for
-   `project_stats` at 90 days.
+3. `DELETE FROM group_stats WHERE (group_id, bucket) IN (SELECT group_id, bucket FROM group_stats WHERE bucket < ?now − 30 days LIMIT 5000)`,
+   and the same for `project_stats` at 90 days. Both tables are keyed by
+   owner first, so each chunk scans the table. An index on `bucket` would
+   avoid the scan but add a write to every event, for a once-a-day job.
 4. Tag pruning: for any `(group_id, key)` with more than 200 values, delete
    all but the 200 with the highest `times_seen`. This bounds `user`, `url`
    and similar tags. Counts for such tags are therefore approximate.
@@ -1018,25 +1043,27 @@ costs nothing. This is not a compatibility promise.
 | `PUT /api/0/organizations/{org}/issues/?id=…&id=…` | Bulk status change |
 | `GET, PUT, DELETE /api/0/organizations/{org}/issues/{id}/` | One issue; status change; delete |
 | `GET /api/0/organizations/{org}/issues/{id}/events/` | The issue's events, newest first |
-| `GET /api/0/organizations/{org}/issues/{id}/events/{latest\|oldest\|event_id}/` | Full event JSON from R2, plus `previousEventID` and `nextEventID` |
+| `GET /api/0/organizations/{org}/issues/{id}/events/{latest\|oldest\|event_id}/` | `{event, previousEventId, nextEventId}`: the full event JSON from R2 and its neighbours |
 | `GET /api/0/organizations/{org}/issues/{id}/tags/` | Top 10 values per key with counts |
 | `GET /api/0/organizations/{org}/issues/{id}/stats/?period=24h\|14d\|30d` | Time series |
 | `GET /api/0/organizations/{org}/issues/{id}/activity/` | Activity feed |
 | `GET /api/0/organizations/{org}/shortids/{short_id}/` | Resolve `API-42` to an issue |
+| `GET, PUT /api/0/organizations/{org}/limits/` | Read the monthly event cap (§6); `PUT` is owner-only and returns 403 otherwise |
 
-**Issue list parameters:** `project` (id, repeatable), `status` (default
-`unresolved`), `level`, `tag` (`key:value`, repeatable), `query` (substring of
+**Issue list parameters:** `project` (id), `status` (default
+`unresolved`; `all` drops the filter), `level`, `tag` (`key:value`), `query` (substring of
 title or culprit, matched with `LIKE`), `sort` (`date`, `new`, `freq`),
 `limit` (default 25, max 100), `cursor`.
 
 **Pagination:** keyset. The cursor is the base64 of the last row's sort value
 and id, and the next page is `WHERE (last_seen, id) < (?, ?)`. The list
-response includes each issue's 24-hour or 14-day series, fetched with one
+response includes each issue's 24-hour series, fetched with one
 `group_stats` query for the page's ids.
 
 **Status changes:** `resolved` sets `resolved_at` and `resolved_by` and clears
-`substatus`. `unresolved` and `ignored` clear `resolved_at`. Each writes an
-`activity` row.
+`substatus`. `unresolved` and `ignored` clear `resolved_at` and `resolved_by`
+and keep `substatus`, so an ignored regression is still marked regressed.
+Each writes an `activity` row.
 
 ---
 
@@ -1054,6 +1081,7 @@ is in the URL but the UI shows no org switcher while there is one org.
 | `/{org}/issues/{id}/events/` | Table of the issue's events | `events` |
 | `/{org}/projects/` | Project cards with 24-hour charts | `projects` |
 | `/{org}/settings/projects/{project}/` | Name, quota, DSN keys, SDK snippet | `projects`, `keys` |
+| `/{org}/settings/` | Organization settings: the monthly event cap | `limits` |
 
 **Layout.** After Sentry's current UI, in light and dark themes. The theme
 follows the system setting until the toggle at the foot of the icon rail is
@@ -1216,6 +1244,7 @@ been run.
 | Format | **oxfmt** (`oxfmt`, config `.oxfmtrc.json`) | `oxfmt --check` in CI. |
 | Lint | **oxlint** (`oxlint.config.ts`) | Native plugins plus type-aware rules. |
 | Slop rules | **anti-slop**, vendored at `tools/oxlint/anti-slop/` | MIT. Meant to be copied in, not installed. Runs as an oxlint JS plugin. |
+| Edge rules | **zentry**, our own, at `tools/oxlint/zentry/` | `no-json-parse`, `no-nullable-parameters`, `zod-only-at-boundaries` (§16.6). Linted like the rest of the code. |
 | Boundaries | oxlint `no-restricted-imports` per folder, plus `import/no-cycle` | Native rules, no extra tool. |
 | Types | `tsc --noEmit` with the strict flags in §16.5 | |
 | Hooks | lefthook | Format and lint staged files before commit. |
@@ -1233,20 +1262,30 @@ Two cautions:
 
 ```jsonc
 {
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "printWidth": 100,
   "semi": true,
   "singleQuote": false,
   "trailingComma": "all",
   "sortImports": true,
   "sortPackageJson": true,
-  "ignorePatterns": ["ui/dist/**", "tools/oxlint/anti-slop/**", "test/fixtures/**", ".wrangler/**"]
+  "ignorePatterns": [
+    "ui/dist/**",
+    "tools/oxlint/anti-slop/**",
+    "test/fixtures/**",
+    ".wrangler/**",
+    "worker-configuration.d.ts",
+    "pnpm-lock.yaml",
+    "README.md",
+    "DESIGN.md"
+  ]
 }
 ```
 
-`sortImports` is shown as a boolean; the docs confirm the option exists and is
-off by default, but its exact value shape should be checked when this file is
-created. Formatting is never discussed in review: if `oxfmt --check` passes,
-it is right.
+`README.md` and `DESIGN.md` are not formatted: oxfmt pads every Markdown
+table to its widest cell, which makes the wide tables here unreadable as text
+and turns each edit to a row into a diff of the whole table. Formatting is
+never discussed in review: if `oxfmt --check` passes, it is right.
 
 ### 16.3 Domain boundaries
 
@@ -1297,28 +1336,42 @@ has no `no-restricted-syntax`, so nothing stops a handler calling
 ```ts
 import { defineConfig } from "oxlint";
 
-const forbid = (...domains: string[]) => [
+// Domain boundaries. See DESIGN.md §16.3 before changing any of this.
+const DOMAINS = ["shared", "core", "db", "blobs", "ingest", "consumer", "api", "cron"];
+
+type Pattern = { group: string[]; message: string };
+
+const forbid = (...domains: string[]): ["error", { patterns: Pattern[] }] => [
   "error",
   {
     patterns: [
-      { group: ["../*"], message: "Use the @/ alias for imports outside this folder." },
-      ...domains.map((d) => ({
-        group: [`@/${d}`, `@/${d}/**`],
-        message: `This folder may not import from ${d}/. See DESIGN.md §16.3.`,
+      { group: ["../*", "../**/*"], message: "Use the @/ alias for imports outside this folder." },
+      ...domains.map((domain) => ({
+        group: [`@/${domain}`, `@/${domain}/**`],
+        message: `This folder may not import from ${domain}/. See DESIGN.md §16.3.`,
       })),
     ],
   },
 ];
 
-const ALL = ["shared", "core", "db", "blobs", "ingest", "consumer", "api", "cron"];
-const except = (...allowed: string[]) => forbid(...ALL.filter((d) => !allowed.includes(d)));
+const except = (...allowed: string[]): ["error", { patterns: Pattern[] }] =>
+  forbid(...DOMAINS.filter((domain) => !allowed.includes(domain)));
 
 export default defineConfig({
-  plugins: ["typescript", "import", "unicorn", "oxc", "promise", "vitest"],
-  jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
+  plugins: ["typescript", "import", "unicorn", "oxc", "promise", "vitest", "react"],
+  jsPlugins: [
+    { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
+    { name: "zentry", specifier: "./tools/oxlint/zentry/index.ts" },
+  ],
   options: { typeAware: true },
   categories: { correctness: "error", suspicious: "error", perf: "error" },
-  ignorePatterns: ["ui/dist/**", "tools/oxlint/anti-slop/**", ".wrangler/**", ".claude/**"],
+  ignorePatterns: [
+    "ui/dist/**",
+    "tools/oxlint/anti-slop/**",
+    ".wrangler/**",
+    ".claude/**",
+    "worker-configuration.d.ts",
+  ],
   rules: {
     // ── Boundaries ──────────────────────────────────────────────
     "import/no-cycle": "error",
@@ -1339,13 +1392,18 @@ export default defineConfig({
     "max-lines-per-function": ["error", { max: 60, skipBlankLines: true, skipComments: true }],
     "max-depth": ["error", 3],
     "max-params": ["error", 3],
-    "complexity": ["error", 10],
+    complexity: ["error", 10],
 
     // ── Hygiene ─────────────────────────────────────────────────
-    "eqeqeq": "error",
+    eqeqeq: "error",
     "no-console": "error",
     "no-param-reassign": "error",
     "oxc/no-accumulating-spread": "error",
+    // Sequential awaits are deliberate here: bounded R2 concurrency, chunked
+    // deletes, and time-boxed retention loops.
+    "no-await-in-loop": "off",
+    // The UI uses the automatic JSX runtime, which needs no React import.
+    "react/react-in-jsx-scope": "off",
 
     // ── anti-slop: every generic rule ───────────────────────────
     "anti-slop/no-array-filter-map": "error",
@@ -1366,23 +1424,82 @@ export default defineConfig({
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-readable-spacing": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
+
+    // ── zentry: validate once at the edge (DESIGN.md §16.6) ────
+    "zentry/no-json-parse": "error",
+    "zentry/no-nullable-parameters": "error",
+    "zentry/zod-only-at-boundaries": "error",
   },
   overrides: [
-    { files: ["src/shared/**"],   rules: { "no-restricted-imports": except() } },
-    { files: ["src/core/**"],     rules: { "no-restricted-imports": except("shared") } },
-    { files: ["src/db/**"],       rules: { "no-restricted-imports": except("shared") } },
-    { files: ["src/blobs/**"],    rules: { "no-restricted-imports": except("shared") } },
-    { files: ["src/ingest/**"],   rules: { "no-restricted-imports": except("shared", "core", "db") } },
-    { files: ["src/consumer/**"], rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
-    { files: ["src/api/**"],      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
-    { files: ["src/cron/**"],     rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
-    { files: ["ui/**"],           rules: { "no-restricted-imports": except() } },
+    { files: ["src/shared/**"], rules: { "no-restricted-imports": except() } },
+    { files: ["src/core/**"], rules: { "no-restricted-imports": except("shared") } },
+    { files: ["src/db/**"], rules: { "no-restricted-imports": except("shared") } },
+    { files: ["src/blobs/**"], rules: { "no-restricted-imports": except("shared") } },
+    {
+      files: ["src/ingest/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db") },
+    },
+    {
+      files: ["src/consumer/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
+    },
+    // api takes core for the spike floor a new project starts with (DESIGN.md §6).
+    {
+      files: ["src/api/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
+    },
+    // cron takes core for the spike-protection arithmetic, which is pure (DESIGN.md §6).
+    {
+      files: ["src/cron/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
+    },
+    { files: ["ui/**"], rules: { "no-restricted-imports": except() } },
 
     // Named exemptions. Each is one file or one folder, with the reason.
     {
-      // `jsonKind` tells the members of the Json union apart for trim and scrub.
+      // `jsonKind` tells the members of the Json union apart for trim and scrub, and
+      // `jsonText` hands a parsed value to a schema; both need what these rules forbid.
       files: ["src/shared/json.ts"],
-      rules: { "anti-slop/no-runtime-typeof": "off", "anti-slop/no-unknown-parameters": "off" },
+      rules: {
+        "anti-slop/no-runtime-typeof": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+      },
+    },
+    {
+      // `jsonText` is the one place JSON text is parsed, straight into a schema.
+      files: ["src/shared/json.ts"],
+      rules: { "zentry/no-json-parse": "off" },
+    },
+    {
+      // Where outside data enters, and so where its schemas live: the event and
+      // envelope from SDKs, the queue payload, API requests, the Access JWT, and
+      // JSON columns read back from D1. A new entry point is added here, by name.
+      files: [
+        "src/shared/json.ts",
+        "src/shared/schema.ts",
+        "src/core/wire.ts",
+        "src/core/envelope.ts",
+        "src/ingest/handler.ts",
+        "src/consumer/handler.ts",
+        "src/api/**",
+        "src/db/**",
+      ],
+      rules: { "zentry/zod-only-at-boundaries": "off" },
+    },
+    {
+      // The UI's JSON viewer has to tell strings, numbers, lists and objects apart.
+      files: ["ui/src/lib/json.ts"],
+      rules: { "anti-slop/no-runtime-typeof": "off" },
+    },
+    {
+      // The UI's API client and the e2e helpers assert that responses match the shared contract.
+      files: ["ui/src/lib/api.ts", "e2e/support.ts"],
+      rules: { "typescript/no-unsafe-type-assertion": "off" },
+    },
+    {
+      // The logger is the one module allowed to write to the console.
+      files: ["src/shared/log.ts"],
+      rules: { "no-console": "off" },
     },
     {
       // SQL is long; statements are kept whole rather than split to fit a line count.
@@ -1390,20 +1507,31 @@ export default defineConfig({
       rules: { "max-lines-per-function": "off" },
     },
     {
-      // Workers and Vite require a default export in these files.
-      files: ["src/worker.ts", "ui/vite.config.ts", "oxlint.config.ts"],
+      // Workers, Vite, Vitest, Playwright and oxlint require a default export in these files.
+      files: [
+        "src/worker.ts",
+        "ui/vite.config.ts",
+        "vitest.config.ts",
+        "oxlint.config.ts",
+        "e2e/playwright.config.ts",
+        "tools/oxlint/zentry/index.ts",
+      ],
       rules: { "import/no-default-export": "off" },
     },
     {
-      files: ["test/**"],
-      rules: { "max-lines-per-function": "off", "max-lines": "off" },
+      // Test suites are long by nature, and small helpers read best next to their test.
+      files: ["test/**", "e2e/**"],
+      rules: {
+        "max-lines-per-function": "off",
+        "max-lines": "off",
+        "unicorn/consistent-function-scoping": "off",
+      },
     },
   ],
 });
 ```
 
-Option shapes for `no-restricted-imports` and the size rules follow ESLint's;
-confirm each when the config is first run. The `ui/**` override blocks every
+This is the file as it stands; change both together. The `ui/**` override blocks every
 `@/` domain; the one allowed import, `src/shared/contract.ts`, is reached
 through a separate `@contract` alias.
 
@@ -1461,15 +1589,17 @@ which the Workers runtime supports.
 ### 16.7 Scripts, hook and CI
 
 ```jsonc
-// package.json
+// package.json (excerpt)
 "scripts": {
+  "build": "vite build ui",
+  "check": "pnpm fmt:check && pnpm lint && pnpm typecheck && pnpm test",
   "fmt": "oxfmt",
   "fmt:check": "oxfmt --check",
   "lint": "oxlint --deny-warnings",
   "lint:fix": "oxlint --fix",
-  "typecheck": "tsc --noEmit && tsc --noEmit -p ui",
+  "typecheck": "tsc --noEmit && tsc --noEmit -p ui && tsc --noEmit -p e2e",
   "test": "vitest run",
-  "check": "pnpm fmt:check && pnpm lint && pnpm typecheck && pnpm test"
+  "e2e": "pnpm build && playwright test -c e2e"
 }
 ```
 
@@ -1478,12 +1608,16 @@ which the Workers runtime supports.
 pre-commit:
   parallel: true
   commands:
-    fmt:  { glob: "*.{ts,tsx,json,jsonc,md}", run: "pnpm oxfmt {staged_files}", stage_fixed: true }
+    fmt:  { glob: "*.{ts,tsx,json,jsonc,css}", run: "pnpm oxfmt {staged_files}", stage_fixed: true }
     lint: { glob: "*.{ts,tsx}", run: "pnpm oxlint --deny-warnings {staged_files}" }
 ```
 
-CI runs `pnpm install --frozen-lockfile` then `pnpm check` on every pull
-request, and deploys only from `main` after it passes.
+CI runs `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm check` and
+`pnpm e2e` on every pull request and every push to `main`. It does not deploy.
+Deploys are run by hand with `pnpm deploy`, which reads the git-ignored
+`wrangler.production.jsonc` holding the account's real IDs and hostnames
+(README "Deploy"); CI has neither. Deploying from CI can come once the
+hostnames in §15 are settled and the config can live in CI secrets.
 
 ### 16.8 Policy
 
@@ -1606,14 +1740,13 @@ What changed when the design met running code. The code is the reference.
 - `User-Agent` is added to the request headers only for browser events.
 - The card rule needs a known issuer prefix and a Luhn pass, and replaces
   only the number, not the whole value.
-- The retention cron has one 20-second budget across its steps, not one per
-  step.
 - The issue list is index-ordered only with one project and one status; the
-  all-projects feed sorts. Retention's event delete scans a project's range
-  per chunk. Both are fine at the sizes in §12 and are the first things to
-  revisit beyond them.
+  all-projects feed and tag-filtered lists sort their matches. This is fine
+  at the sizes in §12 and is the first thing to revisit beyond them.
 - Issue ids can be reused after an issue is deleted (SQLite rowids).
-- Query strings inside breadcrumb `data.url` get the card rule only.
+- Query strings inside breadcrumb `data.url` get the shape rules (cards,
+  IBANs, keys, URL credentials, bearer tokens) but not the key rule, so
+  `?token=abc` there is kept.
 - The issue list has no environment picker; filter by clicking a tag value.
 
 **Spend limits (migration `0003_spend_limits.sql`)**
@@ -1622,8 +1755,8 @@ What changed when the design met running code. The code is the reference.
   review against Sentry's quota code. The migration clears any rate limit set
   before it, since those carry no reason; the next batch over quota sets them
   again.
-- `cron/` may import `core/` (§16.3) for the spike arithmetic, and `api/` for
-  the floor a new project starts with.
+- `cron/` imports `core/` (§16.3) for the spike arithmetic, and `api/`
+  imports `core/` for the floor a new project starts with.
 - The monthly cap is a column on `organizations`, not a variable, so owners
   can change it in the UI without a deploy.
 
@@ -1649,17 +1782,6 @@ What changed when the design met running code. The code is the reference.
 - **The parameterizer uses `<hash>`** for both SHA-1 and MD5, because a
   placeholder containing a digit would be re-matched by the `<int>` rule.
 
-**Repository layout as built**
-
-- `src/core/` is split further than §3 shows: `wire` (the event schema),
-  `md5`, `envelope`, `parameterize`, `trim`, `scrub`, `frames`, `exceptions`, `fields`,
-  `context`, `useragent`, `derive`, `normalize`, `tags`, `grouping`,
-  `buckets`, `plan`.
-- `src/db/`: `keys`, `batch`, `projects`, `issues`, `events`, `tenancy`,
-  `retention`. `src/api/` adds `http`, `context`, `series`, `router`.
-- `src/shared/` adds `plan.ts` (batch row types), `log.ts`, and `schema.ts`
-  (the lenient building blocks the SDK-facing schemas share).
-
 **Tooling as built (§16)**
 
 - `oxlint` and `@oxlint/plugins` are pinned to 1.93.0; `oxfmt` 0.78.0.
@@ -1669,13 +1791,8 @@ What changed when the design met running code. The code is the reference.
 - The UI imports its own files through a `~/` alias, since `../` is banned.
 - End-to-end tests live in `e2e/` and run with Playwright (`pnpm e2e`): a
   fixture shop page using the stock `@sentry/browser` SDK reports to a local
-  Zentry started on a clean database. They are not part of `pnpm check`.
-- Exemptions beyond those in §16.4, each named in `oxlint.config.ts`:
-  `src/shared/log.ts` (console), `ui/src/lib/json.ts` (typeof),
-  `ui/src/lib/api.ts` and `e2e/support.ts` (contract assertion), tests
-  (function scoping).
-  `no-await-in-loop` and `react/react-in-jsx-scope` are off globally, with
-  the reasons beside them.
+  Zentry started on a clean database. They are not part of `pnpm check`, but
+  CI runs them after it (§16.7).
 
 **Not done yet**
 
@@ -1683,5 +1800,6 @@ What changed when the design met running code. The code is the reference.
   `@sentry/node` 11 was checked by hand against a local server.
 - DLQ replay script (§14 step 5).
 - Everything in §13.
-- Nothing has been deployed. The R2 lifecycle rules, the Access application
-  and the queue retention setting are manual steps listed in `README.md`.
+- Nothing has been deployed, and CI does not deploy (§16.7). The R2
+  lifecycle rules, the Access application and the queue retention setting
+  are manual steps listed in `README.md`.

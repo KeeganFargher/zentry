@@ -25,6 +25,7 @@ import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
 import { handleIngest, matchIngestRoute } from "@/ingest/handler";
 import type { IngestDeps } from "@/ingest/handler";
+import { rejected } from "@/ingest/http";
 import { UsageCache } from "@/ingest/limits";
 import { errorText, logError } from "@/shared/log";
 import type { QueueMessage } from "@/shared/types";
@@ -99,7 +100,8 @@ function retentionDeps(env: Env): RetentionDeps {
 
   return {
     deleteEventsBefore: (cutoff) => store.deleteEventsBefore(cutoff),
-    deleteStatsBefore: (cutoffs) => store.deleteStatsBefore(cutoffs),
+    deleteGroupStatsBefore: (cutoff) => store.deleteGroupStatsBefore(cutoff),
+    deleteProjectStatsBefore: (cutoff) => store.deleteProjectStatsBefore(cutoff),
     pruneTags: (keep) => store.pruneTags(keep),
     clearExpiredLimits: (now) => store.clearExpiredLimits(now),
     retentionDays: Number(env.RETENTION_DAYS),
@@ -158,7 +160,7 @@ export default {
 
     // The ingest hostname is public, so it serves nothing but the ingest routes.
     if (url.hostname === env.INGEST_HOST) {
-      return new Response("not found", { status: 404 });
+      return rejected(404, "not found");
     }
 
     return url.pathname.startsWith("/api/") ? serveApi(request, env) : env.ASSETS.fetch(request);

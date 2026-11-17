@@ -3,13 +3,13 @@
 // nothing left or the time budget is spent; the next run picks up the rest.
 // R2 objects are removed by the bucket's lifecycle rules, not here.
 
-import type { StatsCutoffs } from "@/db/retention";
 import { logInfo } from "@/shared/log";
 import { DAY, SECOND } from "@/shared/time";
 
 export type RetentionDeps = {
   deleteEventsBefore: (cutoff: number) => Promise<number>;
-  deleteStatsBefore: (cutoffs: StatsCutoffs) => Promise<number>;
+  deleteGroupStatsBefore: (cutoff: number) => Promise<number>;
+  deleteProjectStatsBefore: (cutoff: number) => Promise<number>;
   pruneTags: (keep: number) => Promise<number>;
   clearExpiredLimits: (now: number) => Promise<number>;
   retentionDays: number;
@@ -45,16 +45,28 @@ async function drain(
 export async function runRetention(deps: RetentionDeps): Promise<void> {
   const started = deps.now();
   const deadline = started + TIME_BUDGET;
-  const cutoff = started - deps.retentionDays * DAY;
-  const events = await drain(() => deps.deleteEventsBefore(cutoff), deadline, deps.now);
-  const tags = await drain(() => deps.pruneTags(MAX_TAG_VALUES), deadline, deps.now);
 
-  const stats = await deps.deleteStatsBefore({
-    groupStatsBefore: started - GROUP_STATS_DAYS * DAY,
-    projectStatsBefore: started - PROJECT_STATS_DAYS * DAY,
+  const run = async (step: () => Promise<number>): Promise<number> =>
+    drain(step, deadline, deps.now);
+
+  // Every step shares one budget, in the order of DESIGN.md §9. A step the
+  // budget does not reach waits for tomorrow's run rather than overrunning.
+  const events = await run(() => deps.deleteEventsBefore(started - deps.retentionDays * DAY));
+  const groupStats = await run(() => deps.deleteGroupStatsBefore(started - GROUP_STATS_DAYS * DAY));
+
+  const projectStats = await run(() =>
+    deps.deleteProjectStatsBefore(started - PROJECT_STATS_DAYS * DAY),
+  );
+
+  const tags = await run(() => deps.pruneTags(MAX_TAG_VALUES));
+  const limits = await run(() => deps.clearExpiredLimits(started));
+
+  logInfo("retention finished", {
+    events,
+    groupStats,
+    projectStats,
+    tags,
+    limits,
+    ms: deps.now() - started,
   });
-
-  await deps.clearExpiredLimits(started);
-
-  logInfo("retention finished", { events, tags, stats, ms: deps.now() - started });
 }
