@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { prepareEvent } from "@/core/buckets";
 import { indexedTags, userLabel } from "@/core/tags";
 
 import { normalize, pythonError, RECEIVED_AT } from "./helpers";
@@ -186,5 +187,25 @@ describe("indexedTags", () => {
     expect(tags.get("user")).toBe("email:bob@example.com");
     expect(tags.get("feature")).toBe("checkout");
     expect(userLabel(event.user)).toBe("bob@example.com");
+  });
+
+  it("scrubs a request body sent as text, whether JSON or form fields", () => {
+    const json = normalize({ request: { data: '{"user":"ada","password":"hunter2"}' } });
+    const form = normalize({ request: { data: "user=ada&password=hunter2&csrf=abc" } });
+    const prose = normalize({ request: { data: "card 4111 1111 1111 1111 on file" } });
+
+    expect(json.request?.data).toBe('{"user":"ada","password":"[Filtered]"}');
+    expect(form.request?.data).toBe("user=ada&password=[Filtered]&csrf=[Filtered]");
+    expect(prose.request?.data).toBe("card [Filtered] on file");
+  });
+});
+
+describe("logger", () => {
+  it("keeps the logger name and indexes it as a tag", () => {
+    const event = normalize({ logger: "Shop.Checkout.PaymentService", message: "declined" });
+
+    expect(event.logger).toBe("Shop.Checkout.PaymentService");
+    expect(new Map(indexedTags(event)).get("logger")).toBe("Shop.Checkout.PaymentService");
+    expect(prepareEvent(event).metadata.logger).toBe("Shop.Checkout.PaymentService");
   });
 });

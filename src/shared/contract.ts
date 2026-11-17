@@ -31,6 +31,8 @@ export type StoredMechanism = {
   type: string | null;
   handled: boolean | null;
   synthetic: boolean;
+  /** The SDK marked this as an exception group (`AggregateException`, `ExceptionGroup`). */
+  exceptionGroup: boolean;
 };
 
 export type StoredException = {
@@ -89,6 +91,8 @@ export type StoredEvent = {
   release: string | null;
   environment: string;
   serverName: string | null;
+  /** Absent on events stored before this field existed. */
+  logger?: string | null;
   transaction: string | null;
   fingerprint: string[] | null;
 };
@@ -100,6 +104,7 @@ export type IssueMetadata = {
   value: string | null;
   filename: string | null;
   function: string | null;
+  logger: string | null;
 };
 
 export type StatPoint = [bucket: number, count: number];
@@ -152,6 +157,8 @@ export type ApiIssue = {
   resolvedAt: number | null;
   lastEventId: string | null;
   firstRelease: string | null;
+  /** Whether the signed-in user has opened the issue since it last became active. */
+  hasSeen: boolean;
   stats: StatPoint[];
 };
 

@@ -72,6 +72,7 @@ function builtInTags(event: StoredEvent): Candidate[] {
     ["environment", event.environment],
     ["release", event.release],
     ["server_name", event.serverName],
+    ["logger", event.logger ?? null],
     ["transaction", event.transaction],
     ["browser", browserTag(event)],
     ["browser.name", contextField(event, "browser", "name")],

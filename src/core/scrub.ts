@@ -2,43 +2,21 @@
 // before anything is stored.
 
 import type { Json, JsonObject, Pair } from "@/shared/contract";
-import { asArray, asObject, asString } from "@/shared/json";
+import { asArray, asObject, asString, parseJson } from "@/shared/json";
 
-export const FILTERED = "[Filtered]";
+import { FILTERED, scrubSecrets } from "./secrets";
+
+export { FILTERED };
 
 const SENSITIVE_KEY =
-  /password|passwd|secret|api_?key|apikey|auth|credentials|mysql_pwd|private_?key|token|session|cookie|csrf|bearer/i;
-
-const CARD_CANDIDATE = /\b\d(?:[ -]?\d){12,18}\b/g;
-const CARD_PREFIX = /^(?:4\d{12}(?:\d{3})?|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})$/;
-
-function passesLuhn(digits: string): boolean {
-  let sum = 0;
-
-  for (let index = 0; index < digits.length; index += 1) {
-    const digit = Number(digits[digits.length - 1 - index]);
-    const doubled = index % 2 === 1 ? digit * 2 : digit;
-
-    sum += doubled > 9 ? doubled - 9 : doubled;
-  }
-
-  return sum % 10 === 0;
-}
-
-function isCardNumber(candidate: string): boolean {
-  const digits = candidate.replaceAll(/[ -]/g, "");
-
-  return CARD_PREFIX.test(digits) && passesLuhn(digits);
-}
+  /password|passwd|secret|api[_-]?key|access[_-]?key|auth|credentials|mysql_pwd|private[_-]?key|token|session|cookie|csrf|bearer/i;
 
 export function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY.test(key);
 }
 
 export function scrubText(text: string): string {
-  return text.replace(CARD_CANDIDATE, (candidate) =>
-    isCardNumber(candidate) ? FILTERED : candidate,
-  );
+  return scrubSecrets(text);
 }
 
 export function scrubObject(source: JsonObject): JsonObject {
@@ -81,4 +59,26 @@ export function scrubQueryString(query: string): string {
       return isSensitiveKey(key) ? `${key}=${FILTERED}` : scrubText(part);
     })
     .join("&");
+}
+
+const FORM_ENCODED = /^[^=&\s]+=[^\s]*$/;
+
+/**
+ * Scrubs a request body. SDKs often send the body as text, so a string that
+ * holds JSON or form fields is scrubbed by key like structured data.
+ */
+export function scrubBody(body: Json): Json {
+  const text = asString(body);
+
+  if (text === null) {
+    return scrubJson(body);
+  }
+
+  const parsed = parseJson(text) ?? null;
+
+  if (asObject(parsed) !== null || asArray(parsed) !== null) {
+    return JSON.stringify(scrubJson(parsed));
+  }
+
+  return FORM_ENCODED.test(text) ? scrubQueryString(text) : scrubText(text);
 }

@@ -19,5 +19,10 @@ export type QueueMessage = {
 };
 
 export const INLINE_PAYLOAD_MAX_BYTES = 100_000;
-export const MAX_BODY_BYTES = 1_000_000;
-export const GROUPING_CONFIG = "lite:2026-11-17";
+
+/** One event, as Relay's `max_event_size`. */
+export const MAX_EVENT_BYTES = 1_000_000;
+
+/** A whole envelope, so an event can travel with attachments. Only the event is kept. */
+export const MAX_ENVELOPE_BYTES = 10_000_000;
+export const GROUPING_CONFIG = "lite:2026-11-18";

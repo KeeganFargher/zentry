@@ -13,6 +13,7 @@
     ".wrangler/**",
     "worker-configuration.d.ts",
     "pnpm-lock.yaml",
+    "README.md",
     "DESIGN.md"
   ]
 }

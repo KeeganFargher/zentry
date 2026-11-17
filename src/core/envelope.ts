@@ -78,13 +78,18 @@ export function parseEnvelope(bytes: Uint8Array): Envelope | null {
   return { header, items };
 }
 
-/** The payload of the first `event` item. Every other item type is dropped. */
-export function findEventPayload(envelope: Envelope): string | null {
-  const item = envelope.items.find(
-    (candidate) => getNonEmpty(candidate.header, "type") === "event",
+/** The first `event` item. Every other item type is dropped. */
+export function findEventItem(envelope: Envelope): EnvelopeItem | null {
+  return (
+    envelope.items.find((candidate) => getNonEmpty(candidate.header, "type") === "event") ?? null
   );
+}
 
-  return item === undefined ? null : decoder.decode(item.payload);
+/** The payload of the first `event` item, as text. */
+export function findEventPayload(envelope: Envelope): string | null {
+  const item = findEventItem(envelope);
+
+  return item === null ? null : decoder.decode(item.payload);
 }
 
 /** The public key from the envelope header's `dsn`, if there is one. */

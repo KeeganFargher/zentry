@@ -10,13 +10,16 @@ const MAX_TITLE = 200;
 export const UNLABELED = "<unlabeled event>";
 
 /** The frame an issue is "in": the last in-app frame, else the last frame. */
-function culpritFrame(exception: StoredException | undefined): StoredFrame | null {
+export function culpritFrame(exception: StoredException | undefined): StoredFrame | null {
   const frames = exception?.frames ?? [];
 
   return frames.findLast((frame) => frame.inApp) ?? frames.at(-1) ?? null;
 }
 
-export function deriveMetadata(exceptions: StoredException[]): IssueMetadata {
+export function deriveMetadata(
+  exceptions: StoredException[],
+  logger: string | null,
+): IssueMetadata {
   const exception = exceptions.at(-1);
   const frame = culpritFrame(exception);
   const value = exception?.value ?? null;
@@ -26,11 +29,12 @@ export function deriveMetadata(exceptions: StoredException[]): IssueMetadata {
     value: value === null ? null : cut(firstLine(value), MAX_TITLE),
     filename: frame?.filename ?? null,
     function: frame?.function ?? null,
+    logger,
   };
 }
 
 export function deriveTitle(exceptions: StoredException[], message: StoredMessage | null): string {
-  const { type, value } = deriveMetadata(exceptions);
+  const { type, value } = deriveMetadata(exceptions, null);
   const parts = [type, value].filter((part) => part !== null);
 
   if (parts.length > 0) {
@@ -50,5 +54,7 @@ export function deriveCulprit(exceptions: StoredException[], transaction: string
     return transaction ?? "";
   }
 
-  return frame.function === null ? location : `${location} in ${frame.function}`;
+  return frame.function === null || frame.function === "?"
+    ? location
+    : `${location} in ${frame.function}`;
 }

@@ -22,18 +22,52 @@ import {
 } from "@/shared/json";
 import { DAY, MINUTE, parseIsoMs, SECOND } from "@/shared/time";
 
+import { fillTemplate } from "./logentry";
 import { scrubObject, scrubPairs, scrubText } from "./scrub";
 import { cut, cutOrNull, MAX_STRING, trimObject } from "./trim";
 
-const LEVELS: Level[] = ["fatal", "error", "warning", "info", "debug"];
+const LEVEL_NAMES = new Map<string, Level>([
+  ["fatal", "fatal"],
+  ["critical", "fatal"],
+  ["error", "error"],
+  ["warning", "warning"],
+  ["warn", "warning"],
+  ["info", "info"],
+  ["log", "info"],
+  ["debug", "debug"],
+]);
+
+// Python's logging numbers, which some SDKs send as they are.
+const LEVEL_NUMBERS: [from: number, level: Level][] = [
+  [50, "fatal"],
+  [40, "error"],
+  [30, "warning"],
+  [20, "info"],
+  [0, "debug"],
+];
+
 const MAX_BREADCRUMBS = 100;
 const MAX_TAG_KEY = 32;
 const MAX_TAG_VALUE = 200;
 const DRIFT_THRESHOLD = 5 * MINUTE;
 const BREADCRUMB_LIMITS = { depth: 3, maxKeys: 50, maxString: 1024 };
 
-export function parseLevel(raw: string | null): Level {
-  return LEVELS.find((level) => level === raw) ?? "error";
+function levelNumber(value: Json | undefined): number | null {
+  const text = asString(value)?.trim() ?? "";
+  const number = asNumber(value) ?? (text === "" ? null : Number(text));
+
+  return number !== null && Number.isFinite(number) ? number : null;
+}
+
+/** A level name (any case, with Sentry's aliases) or a Python logging number. */
+export function parseLevel(value: Json | undefined): Level {
+  const number = levelNumber(value);
+
+  if (number !== null) {
+    return LEVEL_NUMBERS.find(([from]) => number >= from)?.[1] ?? "error";
+  }
+
+  return LEVEL_NAMES.get(asString(value)?.trim().toLowerCase() ?? "") ?? "error";
 }
 
 /** Epoch seconds (number) or ISO 8601 (string), as milliseconds. */
@@ -69,7 +103,7 @@ export function resolveTimestamp(value: Json | undefined, clock: Clock): number 
 
 function messageFrom(source: JsonObject): StoredMessage | null {
   const message = getNonEmpty(source, "message");
-  const formatted = getNonEmpty(source, "formatted") ?? message;
+  const formatted = getNonEmpty(source, "formatted") ?? fillTemplate(message, source["params"]);
 
   if (formatted === null) {
     return null;

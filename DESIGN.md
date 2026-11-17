@@ -1,4 +1,4 @@
-# "Sentry Lite" on Cloudflare — design (rev 2)
+# Zentry: "Sentry Lite" on Cloudflare — design (rev 2)
 
 Goal: errors and stack traces, grouped into issues, browsable in a Sentry-like
 UI. No tracing, performance, profiling, replays, sessions, metrics or alerting.
@@ -7,14 +7,16 @@ UI. No tracing, performance, profiling, replays, sessions, metrics or alerting.
 `@sentry/*` / `sentry-sdk` packages and only change the DSN:
 
 ```
-https://<public_key>@ingest.errors.example.com/<project_id>
+https://<public_key>@ingest.zentry.example.com/<project_id>
 ```
 
 Cloudflare limits and prices quoted here were read from the Cloudflare docs on
 2026-11-17. Sentry behaviour was read from `getsentry/sentry` and
-`getsentry/relay` at HEAD on the same day. Nothing in this document has been
-run yet; the SQL in §7 in particular needs the tests in §14 before it is
-trusted.
+`getsentry/relay` at HEAD on the same day.
+
+**Status:** v1 is implemented in this repository and covered by tests. Where
+the code differs from the text below, §17 lists the difference and the code
+is right.
 
 ---
 
@@ -73,7 +75,7 @@ logs, metrics, native symbolication, teams, SSO, integrations.
 ## 3. Architecture
 
 ```
-                 ingest.errors.example.com            errors.example.com
+                 ingest.zentry.example.com            zentry.example.com
                  (public, no Access)                  (behind Cloudflare Access)
  SDKs ──HTTPS──▶ ┌──────────────────────────── one Worker ───────────────────────────┐ ◀── browser
                  │ fetch: ingest routes        │ fetch: /api/0/* JSON API + SPA assets│
@@ -85,7 +87,7 @@ logs, metrics, native symbolication, teams, SSO, integrations.
                  └────────────────────────────────────────────────────────────────────┘
                      │              │                   │                │
                   Queue          Queue (DLQ)           D1               R2
-              errors-events   errors-events-dlq      errors        errors-blobs
+              zentry-events   zentry-events-dlq      zentry        zentry-blobs
 ```
 
 | Concern | Product | Why |
@@ -104,7 +106,7 @@ without them), Analytics Engine.
 ### Repository layout
 
 ```
-errors/
+zentry/
 ├─ wrangler.jsonc
 ├─ oxlint.config.ts  .oxfmtrc.json  tsconfig.json  lefthook.yml      # §16
 ├─ migrations/0001_init.sql            # §8
@@ -130,34 +132,34 @@ The allowed imports between these folders are fixed and lint-enforced; see §16.
 
 ```jsonc
 {
-  "name": "errors",
+  "name": "zentry",
   "main": "src/worker.ts",
   "compatibility_date": "2026-11-01",
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
-    { "pattern": "ingest.errors.example.com", "custom_domain": true },
-    { "pattern": "errors.example.com", "custom_domain": true }
+    { "pattern": "ingest.zentry.example.com", "custom_domain": true },
+    { "pattern": "zentry.example.com", "custom_domain": true }
   ],
   "assets": {
     "directory": "./ui/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": true
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "errors", "database_id": "<id>", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "zentry", "database_id": "<id>", "migrations_dir": "migrations" }
   ],
-  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "errors-blobs" }],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "zentry-blobs" }],
   "queues": {
-    "producers": [{ "binding": "EVENTS_Q", "queue": "errors-events" }],
+    "producers": [{ "binding": "EVENTS_Q", "queue": "zentry-events" }],
     "consumers": [{
-      "queue": "errors-events",
+      "queue": "zentry-events",
       "max_batch_size": 100,
       "max_batch_timeout": 5,
       "max_concurrency": 1,
       "max_retries": 5,
-      "dead_letter_queue": "errors-events-dlq"
+      "dead_letter_queue": "zentry-events-dlq"
     }]
   },
   "ratelimits": [
@@ -166,7 +168,7 @@ The allowed imports between these folders are fixed and lint-enforced; see §16.
   "triggers": { "crons": ["17 3 * * *"] },
   "observability": { "enabled": true },
   "vars": {
-    "INGEST_HOST": "ingest.errors.example.com",
+    "INGEST_HOST": "ingest.zentry.example.com",
     "ACCESS_TEAM_DOMAIN": "<team>.cloudflareaccess.com",
     "ACCESS_AUD": "<application audience tag>",
     "RETENTION_DAYS": "90",
@@ -244,10 +246,15 @@ per isolate, and a project's rate-limit flag takes the same time to be seen.
 
 ### 5.4 Body handling
 
-- `Content-Encoding`: `gzip`, `deflate` and `br` are decoded with
-  `DecompressionStream`. Anything else is `415`.
-- Size cap: 1,000,000 bytes after decompression, counted while streaming so a
-  compressed bomb is cut off. Over the cap is `413`.
+- `Content-Encoding`: `gzip` and `deflate` are decoded with
+  `DecompressionStream`. Anything else, including `br`, is `415` (the Workers
+  runtime has no Brotli decompression stream).
+- Size caps, counted on the decompressed bytes while streaming so a
+  compressed bomb is cut off. Over a cap is `413`. `/store/` bodies and the
+  `event` item of an envelope are capped at 1,000,000 bytes (Relay's
+  `max_event_size`). A whole envelope is capped at 10,000,000 bytes, so an
+  event sent with a screenshot or other attachment is not refused for the
+  attachment's size. Attachments themselves are dropped.
 
 ### 5.5 Envelope parsing
 
@@ -378,15 +385,16 @@ Load the payload (inline or from `spill_key`), `JSON.parse`, then:
 |---|---|
 | `event_id` | From the message. |
 | `timestamp` | ISO 8601 or epoch seconds (float). If `sent_at` is present, shift by `received_at − sent_at` when that drift exceeds 5 minutes. Then clamp: more than 1 minute in the future or more than 30 days old becomes `received_at`. |
-| `level` | One of `fatal`, `error`, `warning`, `info`, `debug`. Default `error`. |
+| `level` | One of `fatal`, `error`, `warning`, `info`, `debug`. Aliases: `critical` is `fatal`, `warn` is `warning`, `log` is `info`. Python logging numbers map by band (50, 40, 30, 20, below). Default `error`. |
 | `platform` | Default `other`. |
 | `exception` | Accept `{values:[…]}` and the legacy bare array. Keep at most 20 exceptions. |
-| `stacktrace.frames` | Keep at most 250 frames: the first 125 and the last 125. |
-| `frame.in_app` | If the SDK set it, keep it. Otherwise `false` when the path contains `node_modules/`, `site-packages/`, `dist-packages/`, `/usr/lib/`, `vendor/bundle/`, `/gems/`, `/go/pkg/mod/`, `<frozen `, or `node:internal`; `true` otherwise. |
+| `stacktrace.frames` | Keep at most 250 frames: the first 125 and the last 125. Source context keeps the 10 `pre_context` lines nearest the error (the last ones) and the 10 `post_context` lines nearest it (the first ones). |
+| `threads`, top-level `stacktrace` | Used only when no exception has frames. The stack of the crashed thread (else the current one, else the first with frames) goes on the last exception, or on a bare exception with no type or value when the event has none. |
+| `frame.in_app` | If the SDK set it, keep it. Otherwise `false` for platform and framework code (`core/inapp.ts`): library paths (`node_modules/`, `site-packages/`, `/usr/lib/`, `/System/Library/`, …), module prefixes (`java.`, `android.`, `org.springframework.`, `System.`, `Microsoft.`, …) and Go runtime functions; `true` otherwise. |
 | `frame.vars` | Depth 3, 50 keys, strings cut at 512 characters. |
 | `breadcrumbs` | Accept `{values:[…]}` and a bare array. Keep the last 100. |
-| `logentry` / `message` | Normalize to `logentry: {message, formatted, params}`. |
-| `user.ip_address` | `{{auto}}`, or absent on platform `javascript`, becomes `client_ip`. |
+| `logentry` / `message` | Normalize to `logentry: {message, formatted, params}`. With `params` and no `formatted`, fill `%s`, `%d`, `%(name)s`, `{}`, `{0}` and `{name}` placeholders; the title uses the filled text and grouping uses the template. |
+| `user.ip_address` | `{{auto}}`, or absent on platform `javascript`, becomes `client_ip`, unless the SDK set `sdk.settings.infer_ip` to `never`, in which case no address is stored. An address the SDK sent is kept. |
 | `request.headers` | Normalize to a list of pairs. Add `User-Agent` from the message if absent. |
 | `contexts.browser`, `contexts.os` | If absent and a User-Agent exists, fill name and version from a small UA parser. |
 | `tags` | Accept an object or a list of pairs. Keys cut at 32 characters, values at 200. |
@@ -416,10 +424,12 @@ then the event's own `tags`. At most 50 tags per event are indexed.
 `extra`, `contexts`, `user`, `frame.vars`, `breadcrumbs[].data`, and `tags`:
 
 - Any value under a key matching, case-insensitively,
-  `password|passwd|secret|api_?key|apikey|auth|credentials|mysql_pwd|private_?key|token|session|cookie|csrf|bearer`
+  `password|passwd|secret|api[_-]?key|access[_-]?key|auth|credentials|mysql_pwd|private[_-]?key|token|session|cookie|csrf|bearer`
   becomes `"[Filtered]"`. `request.cookies` is replaced whole.
-- Any string value matching a 13–19 digit card-number pattern becomes
-  `"[Filtered]"`.
+- Inside any string, by shape (`core/secrets.ts`): card numbers (13–19
+  digits, Luhn-checked), IBANs (mod-97), PEM private keys, the user and
+  password in a URL (`scheme://[Filtered]:[Filtered]@host`), and bearer tokens
+  become `"[Filtered]"`.
 
 This is a reduced form of Relay's default rules, applied before anything is
 stored.
@@ -429,7 +439,7 @@ project and event id. Retrying would not help.
 
 ### 7.3 Grouping
 
-Output: one md5 hex hash per event, plus the config id `lite:2026-11-17`,
+Output: one md5 hex hash per event, plus the config id `lite:2026-11-18`,
 which is stored with the hash so a later algorithm change can be handled
 deliberately.
 
@@ -444,6 +454,11 @@ deliberately.
 
    The hash is md5 of everything collected. If nothing was collected, go to
    step 3.
+
+   **Exception groups** (`AggregateException`, `AggregateError`, Python
+   `ExceptionGroup`, or `mechanism.is_exception_group`): the wrappers hash
+   first, then each distinct child once in a fixed order, so the number and
+   order of failed children do not split the issue.
 3. **Message.** `logentry.message` (the unformatted template) if present,
    otherwise `logentry.formatted`, parameterized.
 4. **Fallback.** md5 of the empty string. All such events share one issue.
@@ -463,6 +478,9 @@ deliberately.
   `<anonymous function>`, `Anonymous function`, or ends in `/<`. For
   JavaScript, `Object.foo` is reduced to `foo`. Ruby `block …` becomes
   `block`. Java functions starting `lambda$` do not contribute.
+- Class and function names have generated suffixes removed first: CGLIB and
+  Spring proxies (`$$EnhancerBySpringCGLIB$$ab12`), Hibernate proxies,
+  `$$Lambda…` and `$ProxyN`.
 - A JavaScript frame whose function is `eval`, or whose `abs_path` is
   `[native code]`, `native code`, `eval code` or `<anonymous>`, is skipped.
 
@@ -484,10 +502,12 @@ this order, each match replaced by its placeholder:
 | `<uuid>` | 8-4-4-4-12 hex |
 | `<sha1>`, `<md5>` | 40 or 32 hex characters as a word |
 | `<date>` | ISO 8601 dates and datetimes |
+| `<time>` | `14:05`, `14:05:09.5`, `2:30 PM` |
+| `<host>` | lower-case host names ending in `com`, `net`, `org`, `dev`, `app`, `local`, `internal`, `lan`, `svc`, or (with two dots) a country or other short suffix such as `io`, `co.za` |
 | `<ip>` | IPv4, IPv6 |
 | `<duration>` | `123ms`, `1.5s` |
-| `<hex>` | `0x…`, or 8 or more hex characters containing a digit |
-| `<float>`, `<int>` | numbers as whole words |
+| `<hex>` | `0x…`, or 8 or more hex characters containing a digit, also after `_` or `-` (`req_8f3a9c01`) |
+| `<float>`, `<int>` | numbers as whole words, and digits after `_` (`job_123`) |
 | `<quoted>` | not applied; quoted strings are kept |
 
 The result is trimmed to its first line.
@@ -668,7 +688,7 @@ Notes on the SQL:
 | R2 put fails | Throw. The whole batch is retried. |
 | D1 batch fails | Throw. The whole batch is retried. |
 | Same batch fails twice | On the third attempt (`msg.attempts >= 3`), process messages one at a time so a single bad message is isolated. |
-| Message fails 5 times | Goes to `errors-events-dlq`. Nothing consumes it automatically; a script can replay it. |
+| Message fails 5 times | Goes to `zentry-events-dlq`. Nothing consumes it automatically; a script can replay it. |
 
 ---
 
@@ -857,7 +877,7 @@ VALUES (1, 'default', 'Default', unixepoch() * 1000);
 | Activity feed | `activity_by_group` |
 | Retention | `events_by_received` |
 
-### R2 layout (bucket `errors-blobs`)
+### R2 layout (bucket `zentry-blobs`)
 
 | Prefix | Content | Lifecycle rule |
 |---|---|---|
@@ -872,8 +892,9 @@ Each step loops in chunks until done or until 20 seconds have passed; the next
 run continues.
 
 1. `DELETE FROM events WHERE (project_id, event_id) IN (SELECT project_id, event_id FROM events WHERE received_at < ?cutoff ORDER BY received_at LIMIT 5000)`
-2. `DELETE FROM groups WHERE id IN (SELECT id FROM groups WHERE last_seen < ?cutoff LIMIT 200)`.
-   Cascades remove the issue's hashes, tags, stats, activity and events.
+2. Issues are not deleted, as in Sentry: only their events expire. An issue
+   with no events left stays in the list and opens without an event; if it
+   recurs, it is a regression, not a new issue.
 3. `DELETE FROM group_stats WHERE bucket < ?now − 30 days`, and the same for
    `project_stats` at 90 days.
 4. Tag pruning: for any `(group_id, key)` with more than 200 values, delete
@@ -890,8 +911,8 @@ issue by hand from the UI also deletes its R2 objects, 1,000 keys per call.
 
 ### Authentication
 
-- `errors.example.com` is one Cloudflare Access application covering the
-  whole hostname. `ingest.errors.example.com` has no Access application.
+- `zentry.example.com` is one Cloudflare Access application covering the
+  whole hostname. `ingest.zentry.example.com` has no Access application.
 - `workers_dev` and preview URLs are off, so there is no unprotected route.
 - The Worker verifies the `Cf-Access-Jwt-Assertion` header on every `/api/0/*`
   request: signature against
@@ -958,27 +979,38 @@ is in the URL but the UI shows no org switcher while there is one org.
 | `/{org}/projects/` | Project cards with 24-hour charts | `projects` |
 | `/{org}/settings/projects/{project}/` | Name, quota, DSN keys, SDK snippet | `projects`, `keys` |
 
-**Issue list.** Project selector, status tabs, level and environment filters,
-search box, sort menu. Each row: level colour bar, exception type in bold,
-value, culprit, short id, `New` badge (first seen under 24 hours ago) or
-`Regressed` badge, sparkline, event count, last seen, first seen. Checkboxes
-with bulk Resolve and Ignore.
+**Layout.** After Sentry's current UI, in light and dark themes. The theme
+follows the system setting until the toggle at the foot of the icon rail is
+used; that choice is kept in `localStorage`. The shell is an icon rail (Issues,
+Projects), a second column of links for the section (Feed, Errors, Warnings,
+Resolved, Archived, All issues, then one link per project), and the page.
+"Archived" is the UI's word for the `ignored` status.
+
+**Issue list ("Feed").** A joined row of project, level and status selects;
+a search box that shows the status and tag filters as removable tokens; a
+sort menu. Each row: exception type (bold with a dot while unread) with a `Regressed`,
+`Resolved` or `Archived` badge; the value beside a
+level colour bar; platform, short id and culprit; then Last Seen, Age, a
+24-hour trend with its peak, and the event count. The header checkbox selects
+all, and the header turns into bulk Resolve / Archive / Unresolve.
 
 **Issue detail.**
-- Header: short id, title, culprit, status, Resolve / Ignore / Unresolve,
-  event count, first and last seen, 30-day chart.
-- Event bar: event id, time, Oldest / Previous / Next / Latest, link to raw
-  JSON.
-- Exception panel: each exception in the chain, with type, value and
-  mechanism. Frames are shown newest first. Non-in-app frames are collapsed
-  into "N framework frames" rows, with a toggle for the full trace. A frame
-  expands to source context with line numbers and its local variables.
-- Breadcrumbs: time, category, level, message, data.
-- Tags: top values per key with percentage bars. Clicking a value filters the
-  issue list.
-- Context cards: user, request, browser, OS, runtime, device, release,
-  environment, SDK, extra data.
-- Activity feed.
+- Header: breadcrumb with short id, type, value with level bar, a status line
+  (New, Ongoing, Regressed, Resolved, Archived), total events, then Resolve /
+  Archive / Unresolve / Delete.
+- Graph band: 30-day event chart with event and stored counts; beside it the
+  leading value of the top tags as percentage bars, expandable to every tag.
+  Clicking a value filters the issue list.
+- Event tab: Older / Newer / First / Latest / View More Events; event id,
+  age, link to raw JSON, jump links; a line with user, browser or runtime,
+  release and environment.
+- Foldable sections: Highlights, Message, Stack Trace, Breadcrumbs (newest
+  first), Tags, Contexts (user, request, each SDK context, SDK), Additional
+  Data.
+- Stack trace: each exception in the chain with type, value, mechanism and
+  handled. Frames newest first; library frames collapse into "Show N more
+  frames". A frame expands to source context and local variables.
+- Right column: last seen, first seen with release, activity timeline.
 
 **Flood-sampled issues** show "N of M events stored" so the gap between the
 count and the event list is explained.
@@ -1374,3 +1406,182 @@ request, and deploys only from `main` after it passes.
 - The vendored anti-slop rules are ours to edit. A rule that proves wrong for
   this codebase is changed or removed there, with a note in the commit, rather
   than worked around.
+
+---
+
+## 17. Implementation notes
+
+What changed when the design met running code. The code is the reference.
+
+**Fixed while building**
+
+- **E3 did not run as written.** In `UPDATE … FROM`, unqualified column names
+  such as `title` are ambiguous between `groups` and the joined rows. Every
+  right-hand reference is now `groups.<column>`. See `src/db/batch.ts`.
+- **Brotli request bodies are refused** (§5.4).
+- **`wrangler dev` presents requests as the first route's hostname**, which
+  made the Worker treat local requests as ingest-only. `wrangler.jsonc` sets
+  `dev.host` to `localhost:8787`.
+
+**Fixed after an independent audit against this document**
+
+- **Request bodies sent as text are scrubbed by key** when they hold JSON or
+  form fields (§7.2). Before, only the card-number rule applied to them.
+- **The inline queue payload is measured as it is serialized** (a JSON
+  string, with quotes escaped), so a quote-heavy event under 100 KB spills to
+  R2 instead of exceeding the 128 KB message limit (§5.6).
+- **The burst limiter counts only envelopes that carry an event** (§6.1).
+  Transactions, sessions and other dropped items no longer make the SDK back
+  off from sending errors.
+- **`run_worker_first` is `true`**, so the ingest hostname really does refuse
+  the UI (§5.1). With a path list, static assets were served before the
+  Worker's hostname check ran.
+- **Access signing keys**: a failed fetch of the certs keeps the keys already
+  held, and an unknown key id triggers a refetch, at most once a minute (§10).
+- **A project deleted while its events are in flight** no longer fails the
+  batch: E7 skips projects that no longer exist (§7.4).
+- **Membership of organization 1 is granted only when the user row is
+  created**, not on every session (§10).
+- **Changing a project's quota clears its current rate limit** (§6).
+- **An event that throws during normalization is logged and dropped**, like
+  one that is not JSON (§7.6).
+- **Event by id uses the `events` primary key** (project, event id), as the
+  index table in §8 says.
+
+**Added after the first deploy**
+
+- **Unread issues, per user** (migration `0002_group_seen.sql`). Modelled on
+  Sentry's `GroupSeen`: one row per (user, issue) with `last_seen`. An issue
+  is unread for a user until they open it, and again after it regresses:
+  `hasSeen` is true when the row's `last_seen` is later than the issue's
+  latest `regressed` activity, or its `first_seen` if it never regressed.
+  `PUT /organizations/{org}/issues/{id}/` accepts `{"hasSeen": true}`; the UI
+  sends it when an issue page loads. In the issue list an unread issue has a
+  dot and a bold title; a seen one has neither. This replaces the `New` badge.
+- **`logger`** is kept on the event, indexed as a tag, and stored in the
+  issue's metadata. The issue row shows it after the culprit, which is where
+  .NET and Java events show their class or namespace.
+- **Grouping closer to Sentry** (config id `lite:2026-11-18`; existing issues
+  may split once when their next event arrives, because their hashes change):
+  exception groups hash by their distinct children; messages parameterize
+  clock times, host names, `job_123` and `req_8f3a9c01`; proxy class names are
+  normalized; the default in-app rule also knows JVM, Android, .NET, Apple, Go,
+  Dart and Rust platform code (`core/inapp.ts`, a small subset of Sentry's
+  roughly 550 rules). Not done: Sentry's second, system-frames hash.
+- **Fixes from the Sentry comparison (backend)**: stacks in `threads` or a
+  top-level `stacktrace` are kept (§7.2); an event sent with attachments is no
+  longer refused for their size, only for an event over 1 MB (§5.4);
+  hyphenated key names and secrets inside text are scrubbed; no IP is stored
+  when the SDK says `infer_ip: never`; `{{default}}` without spaces and
+  variables such as `{{ transaction }}` and `{{ tags.key }}` work in custom
+  fingerprints; issues are kept when their events expire (§9); `log`,
+  `critical` and numeric levels map to Sentry's; message templates are filled
+  from `params`; `post_context` keeps its first lines.
+- **Closer to Sentry's UI, in the browser only** (no API or schema change):
+  - Issue list: the whole row opens the issue; shift-click selects a range,
+    cmd/ctrl-click toggles a row; the header checkbox is tri-state and the
+    header sticks under the top bar. Status (New, Ongoing, Regressed,
+    Resolved, Archived) sits under the trend. Times tick every minute and show
+    local and UTC on hover; counts show the exact number on hover. Columns
+    drop out as the table narrows (container queries). Bulk changes over a
+    whole page are confirmed, and every status change shows a toast with Undo.
+    Three empty states (no projects, waiting for the first event, nothing
+    matches), skeleton rows while loading, Retry on errors. The sort is
+    remembered per browser.
+  - **Real-time updates**: a play/pause button in the top bar. While on, the
+    first page reloads every 5 seconds when the tab is visible. Off by
+    default; the choice is kept in `localStorage` (Sentry uses a cookie).
+  - Issue page: a banner with Unresolve or Unarchive replaces the actions on a
+    closed issue; Delete moved into a "…" menu with a confirmation dialog.
+    The event bar sticks, has First / Latest, Previous / Next, copy event ID
+    and Copy as Markdown. The graph marks the bucket of the event shown. Tag
+    previews follow the platform's tag order and use segmented bars with
+    "<1%" and ">99%"; "View all tags" shows cards with a filter. Sections fold
+    and remember it per browser; "Jump to" lists only the sections present.
+    New sections: HTTP Request (with a curl view), SDK and Event Grouping
+    Information (both folded). The stack trace has Most Relevant / Full,
+    Newest / Oldest, a raw platform-style view and copy; library runs fold
+    behind the frame nearest the crash; repeated frames are counted; source
+    lines are coloured. Breadcrumbs are a timeline with type icons, the event
+    itself on top, the newest six shown, a filter and absolute or relative
+    times. Tags are a tree of dotted keys with All / Custom / Application /
+    Client tabs and a menu per value; the derived tags the Worker indexes are
+    shown too (a copy of `src/core/tags.ts` in the UI). Context cards follow
+    Sentry's order and titles, hide `type`, sort their rows and format bytes,
+    battery level, yes/no flags and start times. Relative times on this page
+    read "5 minutes ago".
+
+**Known differences from the text above, left as they are**
+
+- A non-POST request to an ingest route gets 405, not 404.
+- `request.cookies` and `logentry.params` are dropped rather than kept.
+- `User-Agent` is added to the request headers only for browser events.
+- The card rule needs a known issuer prefix and a Luhn pass, and replaces
+  only the number, not the whole value.
+- The retention cron has one 20-second budget across its steps, not one per
+  step.
+- The issue list is index-ordered only with one project and one status; the
+  all-projects feed sorts. Retention's event delete scans a project's range
+  per chunk. Both are fine at the sizes in §12 and are the first things to
+  revisit beyond them.
+- Issue ids can be reused after an issue is deleted (SQLite rowids).
+- Query strings inside breadcrumb `data.url` get the card rule only.
+- The issue list has no environment picker; filter by clicking a tag value.
+
+**Decisions the design left open**
+
+- **Stored event format.** R2 holds our own typed `StoredEvent`
+  (`src/shared/contract.ts`), not the SDK's raw JSON. The UI and the Worker
+  compile against the same type.
+- **Hourly buckets use the receive time**, not the event's own timestamp, for
+  `group_stats`, `project_stats` and flood sampling.
+- **Ingest routes answer on any hostname; the read API and the UI are refused
+  on `INGEST_HOST`.** This keeps local development on one port.
+- **Local sign-in.** On `localhost` only, `DEV_USER_EMAIL` (from `.dev.vars`)
+  stands in for the Access JWT.
+- **B1, B2 and B4 run as three parallel queries** rather than one `batch()`,
+  so each result keeps its row type.
+- **MD5 is implemented in `src/core/md5.ts`** so that `core/` stays
+  synchronous and free of runtime APIs.
+- **The issue list takes one `project` and one `tag` filter**, not repeated
+  parameters.
+- **The API returns the stored event as text spliced into the response**, so
+  the Worker never parses it.
+- **The parameterizer uses `<hash>`** for both SHA-1 and MD5, because a
+  placeholder containing a digit would be re-matched by the `<int>` rule.
+
+**Repository layout as built**
+
+- `src/core/` is split further than §3 shows: `md5`, `envelope`,
+  `parameterize`, `trim`, `scrub`, `frames`, `exceptions`, `fields`,
+  `context`, `useragent`, `derive`, `normalize`, `tags`, `grouping`,
+  `buckets`, `plan`.
+- `src/db/`: `keys`, `batch`, `projects`, `issues`, `events`, `tenancy`,
+  `retention`. `src/api/` adds `http`, `context`, `series`, `router`.
+- `src/shared/` adds `plan.ts` (batch row types) and `log.ts`.
+
+**Tooling as built (§16)**
+
+- `oxlint` and `@oxlint/plugins` are pinned to 1.93.0; `oxfmt` 0.78.0.
+  `sortImports: true` and `--deny-warnings` both work as written.
+- Tests run in the Workers runtime through `@cloudflare/vitest-plugin`
+  (the renamed `vitest-pool-workers`), on vitest 4.
+- The UI imports its own files through a `~/` alias, since `../` is banned.
+- End-to-end tests live in `e2e/` and run with Playwright (`pnpm e2e`): a
+  fixture shop page using the stock `@sentry/browser` SDK reports to a local
+  Zentry started on a clean database. They are not part of `pnpm check`.
+- Exemptions beyond those in §16.4, each named in `oxlint.config.ts`:
+  `src/shared/log.ts` (console), `ui/src/lib/json.ts` (typeof),
+  `ui/src/lib/api.ts` and `e2e/support.ts` (contract assertion), tests
+  (function scoping).
+  `no-await-in-loop` and `react/react-in-jsx-scope` are off globally, with
+  the reasons beside them.
+
+**Not done yet**
+
+- Captured-envelope fixtures from the browser and Python SDKs (§14 step 1).
+  `@sentry/node` 11 was checked by hand against a local server.
+- DLQ replay script (§14 step 5).
+- Everything in §13.
+- Nothing has been deployed. The R2 lifecycle rules, the Access application
+  and the queue retention setting are manual steps listed in `README.md`.

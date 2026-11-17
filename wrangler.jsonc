@@ -5,7 +5,9 @@
   "compatibility_date": "2026-11-01",
   "workers_dev": false,
   "preview_urls": false,
-  // Replace both hostnames with your own before the first deploy.
+  // Placeholders: the real values live in wrangler.production.jsonc, which is
+  // not committed. See README.md, Deploy.
+  // The UI hostname sits behind Cloudflare Access; the ingest hostname must not.
   "routes": [
     { "pattern": "ingest.zentry.example.com", "custom_domain": true },
     { "pattern": "zentry.example.com", "custom_domain": true },
@@ -14,7 +16,9 @@
     "directory": "./ui/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"],
+    // Every request reaches the Worker first, so the ingest hostname can refuse
+    // the UI. The Worker hands UI paths back to the assets binding itself.
+    "run_worker_first": true,
   },
   "d1_databases": [
     {
@@ -42,11 +46,14 @@
     { "name": "INGEST_RL", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } },
   ],
   "triggers": { "crons": ["17 3 * * *"] },
+  // Without this, `wrangler dev` presents requests as if they came to the
+  // first route above, and the Worker would treat everything as ingest-only.
+  "dev": { "port": 8787, "host": "localhost:8787", "upstream_protocol": "http" },
   "observability": { "enabled": true },
   "vars": {
     "INGEST_HOST": "ingest.zentry.example.com",
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
+    "ACCESS_AUD": "replace-with-the-access-application-audience-tag",
     "RETENTION_DAYS": "90",
     "MAX_STORED_PER_GROUP_HOUR": "100",
     // Local development only: honoured when the request host is localhost.

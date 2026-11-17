@@ -4,3 +4,6 @@ ui/dist/
 .dev.vars
 *.log
 .DS_Store
+wrangler.production.jsonc
+.claude/
+x

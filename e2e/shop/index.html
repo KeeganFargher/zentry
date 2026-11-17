@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixture shop</title>
+  </head>
+  <body>
+    <h1>Fixture shop</h1>
+    <p>Each button breaks in a different way. The Sentry SDK reports to the DSN in the URL.</p>
+    <button type="button" id="apply-discount">Apply discount (uncaught error)</button>
+    <button type="button" id="pay">Pay (unhandled rejection)</button>
+    <button type="button" id="save-profile">Save profile (handled, with context)</button>
+    <button type="button" id="check-stock">Check stock (warning message)</button>
+    <button type="button" id="load-order">Load order (message with a changing id)</button>
+    <button type="button" id="checkout">Checkout (error with a cause)</button>
+    <button type="button" id="sync-eu">Sync EU (custom fingerprint)</button>
+    <button type="button" id="sync-us">Sync US (same fingerprint)</button>
+    <button type="button" id="search">Search (same error, fingerprint per shard)</button>
+    <button type="button" id="throw-text">Legacy widget (throws a string)</button>
+    <p id="status">idle</p>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

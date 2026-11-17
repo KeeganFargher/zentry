@@ -16,6 +16,11 @@ describe("parameterize", () => {
     ["from 192.168.1.20", "from <ip>"],
     ["pointer 0x7ffe12ab", "pointer <hex>"],
     ["ratio 0.75 exceeded", "ratio <float> exceeded"],
+    ["job_123 failed", "job_<int> failed"],
+    ["retry at 14:05:09 or 2:30 PM", "retry at <time> or <time>"],
+    ["req_8f3a9c01 rejected", "req_<hex> rejected"],
+    ["cannot reach db-1.internal and api.example.co.za", "cannot reach <host> and <host>"],
+    ["java.io.IOException in System.Net.Http", "java.io.IOException in System.Net.Http"],
     [
       "Cannot read properties of undefined (reading 'name')",
       "Cannot read properties of undefined (reading 'name')",

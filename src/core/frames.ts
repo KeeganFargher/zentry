@@ -11,6 +11,7 @@ import {
   stringsIn,
 } from "@/shared/json";
 
+import { looksLikeLibrary } from "./inapp";
 import { scrubObject } from "./scrub";
 import { cut, cutOrNull, MAX_LINE, MAX_STRING, trimObject } from "./trim";
 
@@ -18,26 +19,14 @@ const MAX_FRAMES = 250;
 const MAX_CONTEXT_LINES = 10;
 const VARS_LIMITS = { depth: 3, maxKeys: 50, maxString: 512 };
 
-const LIBRARY_PATH_MARKERS = [
-  "node_modules/",
-  "site-packages/",
-  "dist-packages/",
-  "/usr/lib/",
-  "vendor/bundle/",
-  "/gems/",
-  "/go/pkg/mod/",
-  "<frozen ",
-  "node:internal",
-];
+/** Keeps the lines nearest the error: the last of `pre_context`, the first of `post_context`. */
+function contextLines(raw: JsonObject, key: "pre_context" | "post_context"): string[] {
+  const lines = stringsIn(getArray(raw, key));
 
-function looksLikeLibrary(path: string): boolean {
-  return LIBRARY_PATH_MARKERS.some((marker) => path.includes(marker));
-}
+  const nearest =
+    key === "pre_context" ? lines.slice(-MAX_CONTEXT_LINES) : lines.slice(0, MAX_CONTEXT_LINES);
 
-function contextLines(raw: JsonObject, key: string): string[] {
-  return stringsIn(getArray(raw, key))
-    .slice(-MAX_CONTEXT_LINES)
-    .map((line) => cut(line, MAX_LINE));
+  return nearest.map((line) => cut(line, MAX_LINE));
 }
 
 function parseVars(raw: JsonObject): JsonObject | null {
@@ -49,16 +38,18 @@ function parseVars(raw: JsonObject): JsonObject | null {
 function parseFrame(raw: JsonObject): StoredFrame {
   const filename = cutOrNull(getNonEmpty(raw, "filename"), MAX_STRING);
   const absPath = cutOrNull(getNonEmpty(raw, "abs_path"), MAX_STRING);
-  const path = absPath ?? filename ?? "";
+  const module = cutOrNull(getNonEmpty(raw, "module"), MAX_STRING);
+  const fn = cutOrNull(getNonEmpty(raw, "function"), MAX_STRING);
 
   return {
     filename,
     absPath,
-    module: cutOrNull(getNonEmpty(raw, "module"), MAX_STRING),
-    function: cutOrNull(getNonEmpty(raw, "function"), MAX_STRING),
+    module,
+    function: fn,
     lineno: getNumber(raw, "lineno"),
     colno: getNumber(raw, "colno"),
-    inApp: getBoolean(raw, "in_app") ?? !looksLikeLibrary(path),
+    inApp:
+      getBoolean(raw, "in_app") ?? !looksLikeLibrary({ absPath, filename, module, function: fn }),
     contextLine: cutOrNull(getNonEmpty(raw, "context_line"), MAX_LINE),
     preContext: contextLines(raw, "pre_context"),
     postContext: contextLines(raw, "post_context"),

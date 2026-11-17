@@ -4,12 +4,18 @@ import type { JsonObject, Pair, StoredRequest } from "@/shared/contract";
 import { getNonEmpty, getObject, getString } from "@/shared/json";
 
 import { parsePairs } from "./fields";
-import { scrubJson, scrubObject, scrubPairs, scrubQueryString } from "./scrub";
+import { scrubBody, scrubObject, scrubPairs, scrubQueryString } from "./scrub";
 import { cut, cutOrNull, MAX_STRING, trimJson, trimObject } from "./trim";
 import { parseUserAgent } from "./useragent";
 
 /** Where the event came from, as seen by the ingest Worker. */
-export type Origin = { clientIp: string | null; userAgent: string | null; platform: string };
+export type Origin = {
+  clientIp: string | null;
+  userAgent: string | null;
+  platform: string;
+  /** False when the SDK set `sdk.settings.infer_ip` to "never". */
+  inferIp: boolean;
+};
 
 const AUTO_IP = "{{auto}}";
 const USER_LIMITS = { depth: 3, maxKeys: 50, maxString: 1024 };
@@ -60,14 +66,18 @@ export function parseRequest(raw: JsonObject | null, origin: Origin): StoredRequ
     method: cutOrNull(getNonEmpty(source, "method"), 20),
     queryString: parseQuery(source, urlQuery),
     headers,
-    data: scrubJson(trimJson(source["data"] ?? null, DATA_LIMITS)),
+    data: scrubBody(trimJson(source["data"] ?? null, DATA_LIMITS)),
   };
 }
 
 function resolveIp(claimed: string | null, origin: Origin): string | null {
   const wantsAuto = claimed === AUTO_IP || (claimed === null && isBrowser(origin));
 
-  return wantsAuto ? origin.clientIp : claimed;
+  if (!wantsAuto) {
+    return claimed;
+  }
+
+  return origin.inferIp ? origin.clientIp : null;
 }
 
 export function parseUser(raw: JsonObject | null, origin: Origin): JsonObject | null {

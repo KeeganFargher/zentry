@@ -1,0 +1,282 @@
+// Issue queries for the read API. Every query is scoped to an organization.
+
+import type { ApiActivity, ApiIssue, IssueMetadata, IssueStatus, Pair } from "@/shared/contract";
+import { asObject, getString, parseJson } from "@/shared/json";
+
+export type IssueRecord = Omit<ApiIssue, "stats" | "hasSeen">;
+
+export type IssueSort = "date" | "new" | "freq";
+
+export type IssueCursor = { value: number; id: number };
+
+export type IssueFilter = {
+  organizationId: number;
+  projectId: number | null;
+  status: IssueStatus | null;
+  level: string | null;
+  query: string | null;
+  tag: Pair | null;
+  sort: IssueSort;
+  cursor: IssueCursor | null;
+  limit: number;
+};
+
+export type StatusChange = {
+  organizationId: number;
+  issueIds: number[];
+  status: IssueStatus;
+  userId: number;
+  now: number;
+};
+
+export type IssueHour = { groupId: number; bucket: number; count: number; stored: number };
+
+export type TagCount = { key: string; value: string; count: number; total: number };
+
+type IssueRow = Omit<IssueRecord, "metadata" | "shortId"> & {
+  metadata: string;
+  shortNumber: number;
+};
+
+type Bind = string | number;
+
+type Conditions = { clauses: string[]; binds: Bind[] };
+
+const SORT_COLUMNS = {
+  date: "g.last_seen",
+  new: "g.first_seen",
+  freq: "g.times_seen",
+} satisfies { [sort in IssueSort]: string };
+
+const SELECT_ISSUES = `
+  SELECT g.id, g.short_id AS shortNumber, g.project_id AS projectId, p.slug AS projectSlug,
+         g.title, g.culprit, g.level, g.platform, g.metadata, g.status, g.substatus,
+         g.times_seen AS timesSeen, g.first_seen AS firstSeen, g.last_seen AS lastSeen,
+         g.resolved_at AS resolvedAt, g.last_event_id AS lastEventId, g.first_release AS firstRelease
+  FROM groups g JOIN projects p ON p.id = g.project_id`;
+
+const IN_ORGANIZATION = `project_id IN (SELECT id FROM projects WHERE organization_id = ?2)`;
+
+function parseMetadata(text: string): IssueMetadata {
+  const metadata = asObject(parseJson(text)) ?? {};
+
+  return {
+    type: getString(metadata, "type"),
+    value: getString(metadata, "value"),
+    filename: getString(metadata, "filename"),
+    function: getString(metadata, "function"),
+    logger: getString(metadata, "logger"),
+  };
+}
+
+function toRecord({ metadata, shortNumber, ...row }: IssueRow): IssueRecord {
+  return {
+    ...row,
+    shortId: `${row.projectSlug.toUpperCase()}-${shortNumber}`,
+    metadata: parseMetadata(metadata),
+  };
+}
+
+function escapeLike(text: string): string {
+  return text.replaceAll(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+/** Builds the WHERE clause for the issue list. Binds are positional. */
+function listConditions(filter: IssueFilter): Conditions {
+  const clauses = ["p.organization_id = ?"];
+  const binds: Bind[] = [filter.organizationId];
+
+  const add = (clause: string, ...values: Bind[]): void => {
+    clauses.push(clause);
+    binds.push(...values);
+  };
+
+  if (filter.projectId !== null) {
+    add("g.project_id = ?", filter.projectId);
+  }
+
+  if (filter.status !== null) {
+    add("g.status = ?", filter.status);
+  }
+
+  if (filter.level !== null) {
+    add("g.level = ?", filter.level);
+  }
+
+  if (filter.query !== null) {
+    const pattern = `%${escapeLike(filter.query)}%`;
+
+    add(`(g.title LIKE ? ESCAPE '\\' OR g.culprit LIKE ? ESCAPE '\\')`, pattern, pattern);
+  }
+
+  if (filter.tag !== null) {
+    add(
+      `g.id IN (SELECT t.group_id FROM group_tag_values t
+                WHERE t.project_id = g.project_id AND t.key = ? AND t.value = ?)`,
+      ...filter.tag,
+    );
+  }
+
+  if (filter.cursor !== null) {
+    add(`(${SORT_COLUMNS[filter.sort]}, g.id) < (?, ?)`, filter.cursor.value, filter.cursor.id);
+  }
+
+  return { clauses, binds };
+}
+
+export class IssueStore {
+  readonly #db: D1Database;
+
+  constructor(db: D1Database) {
+    this.#db = db;
+  }
+
+  async list(filter: IssueFilter): Promise<IssueRecord[]> {
+    const { clauses, binds } = listConditions(filter);
+    const column = SORT_COLUMNS[filter.sort];
+
+    const { results } = await this.#db
+      .prepare(
+        `${SELECT_ISSUES} WHERE ${clauses.join(" AND ")}
+         ORDER BY ${column} DESC, g.id DESC LIMIT ?`,
+      )
+      .bind(...binds, filter.limit)
+      .all<IssueRow>();
+
+    return results.map(toRecord);
+  }
+
+  async find(organizationId: number, issueId: number): Promise<IssueRecord | null> {
+    const row = await this.#db
+      .prepare(`${SELECT_ISSUES} WHERE g.id = ?1 AND p.organization_id = ?2`)
+      .bind(issueId, organizationId)
+      .first<IssueRow>();
+
+    return row === null ? null : toRecord(row);
+  }
+
+  /** Resolves `API-42`: project slug (any case) and the per-project number. */
+  async findByShortId(
+    organizationId: number,
+    slug: string,
+    shortNumber: number,
+  ): Promise<IssueRecord | null> {
+    const row = await this.#db
+      .prepare(
+        `${SELECT_ISSUES}
+         WHERE p.organization_id = ?1 AND lower(p.slug) = lower(?2) AND g.short_id = ?3`,
+      )
+      .bind(organizationId, slug, shortNumber)
+      .first<IssueRow>();
+
+    return row === null ? null : toRecord(row);
+  }
+
+  /** Changes status and records an activity row for each issue that changed. */
+  async setStatus(change: StatusChange): Promise<void> {
+    const db = this.#db;
+    const ids = JSON.stringify(change.issueIds);
+    const changed = `id IN (SELECT value FROM json_each(?1)) AND ${IN_ORGANIZATION} AND status != ?3`;
+
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO activity (group_id, project_id, type, user_id, data, created_at)
+           SELECT id, project_id, ?3, ?4, '{}', ?5 FROM groups WHERE ${changed}`,
+        )
+        .bind(ids, change.organizationId, change.status, change.userId, change.now),
+      db
+        .prepare(
+          `UPDATE groups SET
+             status = ?3,
+             substatus = NULL,
+             resolved_at = CASE WHEN ?3 = 'resolved' THEN ?5 ELSE NULL END,
+             resolved_by = CASE WHEN ?3 = 'resolved' THEN ?4 ELSE NULL END
+           WHERE ${changed}`,
+        )
+        .bind(ids, change.organizationId, change.status, change.userId, change.now),
+    ]);
+  }
+
+  /** Records that the user opened the issue now. */
+  async markSeen(userId: number, issue: IssueRecord, now: number): Promise<void> {
+    await this.#db
+      .prepare(
+        `INSERT INTO group_seen (user_id, group_id, project_id, last_seen) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(user_id, group_id) DO UPDATE SET last_seen = excluded.last_seen`,
+      )
+      .bind(userId, issue.id, issue.projectId, now)
+      .run();
+  }
+
+  /**
+   * Which of these issues the user has opened since each last became active:
+   * since it was first seen, or since its latest regression.
+   */
+  async seenBy(userId: number, issueIds: number[]): Promise<Set<number>> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT g.id FROM groups g
+         JOIN group_seen s ON s.group_id = g.id AND s.user_id = ?1
+         WHERE g.id IN (SELECT value FROM json_each(?2))
+           AND s.last_seen > COALESCE(
+             (SELECT MAX(a.created_at) FROM activity a
+              WHERE a.group_id = g.id AND a.type = 'regressed'),
+             g.first_seen)`,
+      )
+      .bind(userId, JSON.stringify(issueIds))
+      .all<{ id: number }>();
+
+    return new Set(results.map((row) => row.id));
+  }
+
+  /** Cascades to the issue's hashes, events, tags, stats, activity and seen marks. */
+  async delete(organizationId: number, issueId: number): Promise<void> {
+    await this.#db
+      .prepare(`DELETE FROM groups WHERE id = ?1 AND ${IN_ORGANIZATION}`)
+      .bind(issueId, organizationId)
+      .run();
+  }
+
+  async hourlyCounts(issueIds: number[], since: number): Promise<IssueHour[]> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT group_id AS groupId, bucket, count, stored FROM group_stats
+         WHERE group_id IN (SELECT value FROM json_each(?1)) AND bucket >= ?2`,
+      )
+      .bind(JSON.stringify(issueIds), since)
+      .all<IssueHour>();
+
+    return results;
+  }
+
+  /** The top `perKey` values of every tag key, with the key's total. */
+  async topTags(issueId: number, perKey: number): Promise<TagCount[]> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT key, value, count, total FROM (
+           SELECT key, value, times_seen AS count,
+                  SUM(times_seen) OVER (PARTITION BY key) AS total,
+                  ROW_NUMBER() OVER (PARTITION BY key ORDER BY times_seen DESC, value) AS position
+           FROM group_tag_values WHERE group_id = ?1
+         ) WHERE position <= ?2 ORDER BY key, count DESC, value`,
+      )
+      .bind(issueId, perKey)
+      .all<TagCount>();
+
+    return results;
+  }
+
+  async activity(issueId: number): Promise<ApiActivity[]> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT a.id, a.type, u.email AS userEmail, a.created_at AS createdAt
+         FROM activity a LEFT JOIN users u ON u.id = a.user_id
+         WHERE a.group_id = ?1 ORDER BY a.created_at DESC, a.id DESC LIMIT 100`,
+      )
+      .bind(issueId)
+      .all<ApiActivity>();
+
+    return results;
+  }
+}

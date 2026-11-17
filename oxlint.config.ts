@@ -60,6 +60,11 @@ export default defineConfig({
     "no-console": "error",
     "no-param-reassign": "error",
     "oxc/no-accumulating-spread": "error",
+    // Sequential awaits are deliberate here: bounded R2 concurrency, chunked
+    // deletes, and time-boxed retention loops.
+    "no-await-in-loop": "off",
+    // The UI uses the automatic JSX runtime, which needs no React import.
+    "react/react-in-jsx-scope": "off",
 
     // ── anti-slop: every generic rule ───────────────────────────
     "anti-slop/no-array-filter-map": "error",
@@ -108,6 +113,16 @@ export default defineConfig({
       },
     },
     {
+      // The UI's JSON viewer has to tell strings, numbers, lists and objects apart.
+      files: ["ui/src/lib/json.ts"],
+      rules: { "anti-slop/no-runtime-typeof": "off" },
+    },
+    {
+      // The UI's API client and the e2e helpers assert that responses match the shared contract.
+      files: ["ui/src/lib/api.ts", "e2e/support.ts"],
+      rules: { "typescript/no-unsafe-type-assertion": "off" },
+    },
+    {
       // The logger is the one module allowed to write to the console.
       files: ["src/shared/log.ts"],
       rules: { "no-console": "off" },
@@ -118,13 +133,19 @@ export default defineConfig({
       rules: { "max-lines-per-function": "off" },
     },
     {
-      // Workers, Vite, Vitest and oxlint require a default export in these files.
-      files: ["src/worker.ts", "ui/vite.config.ts", "vitest.config.ts", "oxlint.config.ts"],
+      // Workers, Vite, Vitest, Playwright and oxlint require a default export in these files.
+      files: [
+        "src/worker.ts",
+        "ui/vite.config.ts",
+        "vitest.config.ts",
+        "oxlint.config.ts",
+        "e2e/playwright.config.ts",
+      ],
       rules: { "import/no-default-export": "off" },
     },
     {
       // Test suites are long by nature, and small helpers read best next to their test.
-      files: ["test/**"],
+      files: ["test/**", "e2e/**"],
       rules: {
         "max-lines-per-function": "off",
         "max-lines": "off",

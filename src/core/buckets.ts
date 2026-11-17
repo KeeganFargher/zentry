@@ -38,7 +38,7 @@ export function prepareEvent(event: StoredEvent): Prepared {
     hash: computeHash(event),
     tags: indexedTags(event),
     userLabel: userLabel(event.user),
-    metadata: deriveMetadata(event.exceptions),
+    metadata: deriveMetadata(event.exceptions, event.logger ?? null),
   };
 }
 

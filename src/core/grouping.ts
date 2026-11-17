@@ -3,10 +3,10 @@
 
 import type { StoredEvent, StoredException, StoredFrame } from "@/shared/contract";
 
+import { expandVariables, isDefaultPart } from "./fingerprint";
 import { md5Hex } from "./md5";
 import { parameterize } from "./parameterize";
 
-const DEFAULT_MARKER = "{{ default }}";
 const CONTEXT_LINE_PLATFORMS = new Set(["javascript", "node", "python", "php", "ruby"]);
 const MAX_CONTEXT_LINE = 120;
 const IGNORED_FILENAMES = new Set(["<anonymous>", "[native code]"]);
@@ -20,6 +20,21 @@ const IGNORED_FUNCTIONS = new Set([
 ]);
 
 const JAVASCRIPT_PLATFORMS = new Set(["javascript", "node"]);
+
+// Generated class names change on every restart: CGLIB and Spring proxies,
+// Hibernate proxies, JVM lambdas and dynamic proxies.
+const PROXY_SUFFIXES = [
+  /\$\$[A-Za-z]*By[A-Za-z]*\$\$[0-9a-f]+/g,
+  /\$\$[A-Za-z]+\$\$[0-9a-f]+/g,
+  /\$HibernateProxy\$\w+/g,
+  /\$\$Lambda[$/\w.]*/g,
+  /\$Proxy\d+/g,
+  /_\$\$_\w+/g,
+];
+
+function stripProxy(name: string): string {
+  return PROXY_SUFFIXES.reduce((result, pattern) => result.replace(pattern, ""), name);
+}
 
 function hashParts(parts: string[]): string {
   return md5Hex(parts.join("\u0000"));
@@ -61,12 +76,12 @@ function functionPart(name: string | null, platform: string): string | null {
     return "block";
   }
 
-  return platform === "java" && name.startsWith("lambda$") ? null : name;
+  return platform === "java" && name.startsWith("lambda$") ? null : stripProxy(name);
 }
 
 function filePart(frame: StoredFrame): string | null {
   if (frame.module !== null) {
-    return frame.module;
+    return stripProxy(frame.module);
   }
 
   const usable =
@@ -130,10 +145,44 @@ function exceptionParts(exception: StoredException, platform: string): string[] 
   return [...parts, ...stack];
 }
 
-function defaultHash(event: StoredEvent): string {
-  const fromExceptions = event.exceptions.flatMap((exception) =>
-    exceptionParts(exception, event.platform),
+const GROUP_TYPE = /^(?:Aggregate(?:Exception|Error)|(?:Base)?ExceptionGroup)$/;
+
+function isExceptionGroup(exception: StoredException): boolean {
+  return exception.mechanism?.exceptionGroup === true || GROUP_TYPE.test(exception.type ?? "");
+}
+
+/**
+ * Exceptions in the order they hash. An exception group wraps several
+ * children, which SDKs list in whatever order they finished. So each distinct
+ * child counts once, in a fixed order, after the wrappers; ten failures of the
+ * same kind are one issue, not ten.
+ */
+function exceptionComponents(event: StoredEvent): string[] {
+  const entries = event.exceptions.map((exception) => ({
+    wrapper: isExceptionGroup(exception),
+    parts: exceptionParts(exception, event.platform),
+  }));
+
+  if (!entries.some(({ wrapper }) => wrapper)) {
+    return entries.flatMap(({ parts }) => parts);
+  }
+
+  const distinct = new Map(
+    entries.map(({ wrapper, parts }) => [hashParts(parts), { wrapper, parts }]),
   );
+
+  const kept = [...distinct.entries()];
+  const wrappers = kept.filter(([, entry]) => entry.wrapper);
+
+  const children = kept
+    .filter(([, entry]) => !entry.wrapper)
+    .toSorted(([a], [b]) => a.localeCompare(b));
+
+  return [...wrappers, ...children].flatMap(([, entry]) => entry.parts);
+}
+
+function defaultHash(event: StoredEvent): string {
+  const fromExceptions = exceptionComponents(event);
 
   if (fromExceptions.length > 0) {
     return hashParts(fromExceptions);
@@ -145,14 +194,15 @@ function defaultHash(event: StoredEvent): string {
 }
 
 export function computeHash(event: StoredEvent): string {
-  const fingerprint = event.fingerprint ?? [DEFAULT_MARKER];
-  const isDefault = fingerprint.length === 1 && fingerprint[0]?.trim() === DEFAULT_MARKER;
+  const fingerprint = event.fingerprint;
 
-  if (isDefault) {
+  if (fingerprint === null || (fingerprint.length === 1 && isDefaultPart(fingerprint[0] ?? ""))) {
     return defaultHash(event);
   }
 
   return hashParts(
-    fingerprint.map((part) => (part.trim() === DEFAULT_MARKER ? defaultHash(event) : part)),
+    fingerprint.map((part) =>
+      isDefaultPart(part) ? defaultHash(event) : expandVariables(part, event),
+    ),
   );
 }

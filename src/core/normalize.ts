@@ -7,7 +7,7 @@ import { getArray, getNonEmpty, getObject, stringsIn } from "@/shared/json";
 import { parseContexts, parseRequest, parseUser, requestUserAgent } from "./context";
 import type { Origin } from "./context";
 import { deriveCulprit, deriveTitle } from "./derive";
-import { parseExceptions } from "./exceptions";
+import { parseEventExceptions } from "./exceptions";
 import { parseBreadcrumbs, parseLevel, parseMessage, parseTags, resolveTimestamp } from "./fields";
 import { scrubObject } from "./scrub";
 import { cut, cutOrNull, MAX_STRING, trimObject } from "./trim";
@@ -47,14 +47,28 @@ function parseExtra(raw: JsonObject): JsonObject {
   return extra === null ? {} : scrubObject(trimObject(extra, EXTRA_LIMITS));
 }
 
+/** SDKs that were told not to collect IPs say so in `sdk.settings.infer_ip`. */
+function infersIp(raw: JsonObject): boolean {
+  const settings = getObject(getObject(raw, "sdk") ?? {}, "settings");
+
+  return settings === null || getNonEmpty(settings, "infer_ip") !== "never";
+}
+
 function label(raw: JsonObject, key: string): string | null {
   return cutOrNull(getNonEmpty(raw, key), 200);
 }
 
 export function normalizeEvent(raw: JsonObject, meta: EventMeta): StoredEvent {
   const platform = label(raw, "platform") ?? "other";
-  const origin: Origin = { clientIp: meta.clientIp, userAgent: meta.userAgent, platform };
-  const exceptions = parseExceptions(raw["exception"]);
+
+  const origin: Origin = {
+    clientIp: meta.clientIp,
+    userAgent: meta.userAgent,
+    platform,
+    inferIp: infersIp(raw),
+  };
+
+  const exceptions = parseEventExceptions(raw);
   const message = parseMessage(raw);
   const request = parseRequest(getObject(raw, "request"), origin);
   const transaction = label(raw, "transaction");
@@ -64,7 +78,7 @@ export function normalizeEvent(raw: JsonObject, meta: EventMeta): StoredEvent {
     projectId: meta.projectId,
     timestamp: resolveTimestamp(raw["timestamp"], meta),
     receivedAt: meta.receivedAt,
-    level: parseLevel(getNonEmpty(raw, "level")),
+    level: parseLevel(raw["level"]),
     platform,
     title: deriveTitle(exceptions, message),
     culprit: deriveCulprit(exceptions, transaction),
@@ -80,6 +94,7 @@ export function normalizeEvent(raw: JsonObject, meta: EventMeta): StoredEvent {
     release: label(raw, "release"),
     environment: label(raw, "environment") ?? "production",
     serverName: label(raw, "server_name"),
+    logger: label(raw, "logger"),
     transaction,
     fingerprint: parseFingerprint(raw),
   };
