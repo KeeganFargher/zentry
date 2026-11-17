@@ -651,6 +651,7 @@ input[type="checkbox"]:checked {
 
 .trend .bars {
   border-top: 1px dashed var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 .trend .bars .slot {
@@ -658,7 +659,7 @@ input[type="checkbox"]:checked {
 }
 
 .trend .bars .bar {
-  background: var(--faint);
+  background: color-mix(in srgb, var(--faint) 55%, transparent);
   border-radius: 1px 1px 0 0;
 }
 
@@ -783,7 +784,9 @@ input[type="checkbox"]:checked {
 
 .issue-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 96px 64px 168px 72px;
+  grid-template-columns:
+    16px minmax(0, 2.6fr) minmax(96px, 0.75fr) minmax(64px, 0.5fr) minmax(168px, 1.15fr)
+    minmax(72px, 0.55fr);
   gap: 16px;
   align-items: center;
   padding: 12px 16px;
@@ -819,6 +822,33 @@ input[type="checkbox"]:checked {
   position: sticky;
   top: 44px;
   z-index: 1;
+}
+
+.trend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trend-head .periods {
+  display: flex;
+  gap: 2px;
+}
+
+.trend-head .period {
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  font: inherit;
+  font-weight: 400;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.trend-head .period:hover,
+.trend-head .period.active {
+  color: var(--text);
 }
 
 .issue-row.head .bulk {
@@ -2075,18 +2105,6 @@ button.plain.link {
   line-height: 1;
 }
 
-.trend-status.regressed {
-  color: var(--error);
-}
-
-.trend-status.new {
-  color: var(--link);
-}
-
-.trend-status.resolved {
-  color: var(--ok);
-}
-
 .issue-sub .logger {
   color: var(--muted);
 }
@@ -2158,13 +2176,10 @@ label.sort select {
   }
 }
 
+/* Phones keep "Last Seen": it is short, and it is what you check first. */
 @container (max-width: 440px) {
   .issue-row {
-    grid-template-columns: 16px minmax(0, 1fr);
-  }
-
-  .col-last {
-    display: none;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
   }
 }
 
@@ -2562,4 +2577,81 @@ pre.raw-trace {
   margin: 0;
   padding-left: 18px;
   line-height: 1.6;
+}
+
+/* ── Phones ───────────────────────────────────────────────────────────── */
+
+/* The icon rail becomes a bar across the top, so the list gets the full width. */
+@media (max-width: 640px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .rail {
+    flex-direction: row;
+    padding: 0 12px;
+    height: 52px;
+    gap: 4px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .org-tile {
+    margin: 0 6px 0 0;
+  }
+
+  .rail a {
+    width: auto;
+    flex-direction: row;
+    gap: 6px;
+    padding: 0 8px 0 0;
+  }
+
+  .shell.menu-open .subnav {
+    left: 0;
+    top: 52px;
+  }
+
+  .content {
+    padding: 12px 12px 32px;
+  }
+
+  .filters {
+    gap: 8px;
+  }
+
+  .filters > .joined {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .filters > .joined > * {
+    flex: 1 1 0;
+    min-width: 0;
+    text-overflow: ellipsis;
+  }
+
+  .searchbox form,
+  .searchbox input {
+    min-width: 0;
+  }
+
+  .issue-row {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .issue-row.head {
+    padding: 0 12px;
+  }
+
+  /* Half the date labels, so a 30-day axis does not run together. */
+  .big-chart .dates span:nth-child(even) {
+    display: none;
+  }
+
+  .event-tabs > .muted {
+    display: none;
+  }
 }

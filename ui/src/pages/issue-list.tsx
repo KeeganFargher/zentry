@@ -9,12 +9,13 @@ import type { Confirmation } from "~/components/overlays";
 import { api } from "~/lib/api";
 import { useResource } from "~/lib/resource";
 import { replaceQuery, useUrl } from "~/lib/router";
-import { useFlag } from "~/lib/storage";
+import { useChoice, useFlag } from "~/lib/storage";
 
 import { applyStatus, confirmation, copyItems, needsConfirming, useSelection } from "./issue-bulk";
 import type { Selection } from "./issue-bulk";
 import { IssueFilters } from "./issue-filters";
-import { effectiveQuery, useLaterPages, useLive } from "./issue-list-data";
+import { effectiveQuery, TREND_PERIODS, useLaterPages, useLive } from "./issue-list-data";
+import type { TrendPeriod } from "./issue-list-data";
 import { EmptyIssues, LiveButton, useDocumentTitle, viewTitle } from "./issue-list-parts";
 import { IssueRow, IssueRowHead, SkeletonRows } from "./issue-row";
 
@@ -24,9 +25,11 @@ type TableProps = {
   selection: Selection;
   loading: boolean;
   onApply: (status: IssueStatus) => void;
+  period: TrendPeriod;
+  onPeriod: (period: TrendPeriod) => void;
 };
 
-function IssueTable({ org, issues, selection, loading, onApply }: TableProps): JSX.Element {
+function IssueTable({ org, issues, selection, loading, ...props }: TableProps): JSX.Element {
   return (
     <>
       {(issues.length > 0 || loading) && (
@@ -34,8 +37,10 @@ function IssueTable({ org, issues, selection, loading, onApply }: TableProps): J
           selected={selection.ids.size}
           total={issues.length}
           onToggleAll={selection.toggleAll}
-          onApply={onApply}
+          onApply={props.onApply}
           more={copyItems(org, selection.chosen)}
+          period={props.period}
+          onPeriod={props.onPeriod}
         />
       )}
       {loading && <SkeletonRows />}
@@ -116,7 +121,8 @@ function filterProps(
 
 export function IssueList({ org }: { org: string }): JSX.Element {
   const url = useUrl().searchParams;
-  const query = effectiveQuery(url);
+  const [period, setPeriod] = useChoice("trend-period", TREND_PERIODS);
+  const query = effectiveQuery(url, period);
   const [live, setLive] = useFlag("realtime", false);
   const [ask, dialog] = useConfirm();
   const projects = useResource(`projects:${org}`, () => api.projects(org));
@@ -151,6 +157,8 @@ export function IssueList({ org }: { org: string }): JSX.Element {
             selection={selection}
             loading={first.data === null && first.error === null}
             onApply={(status) => bulkApply(bulk, status)}
+            period={period}
+            onPeriod={setPeriod}
           />
           {first.error !== null && (
             <Notice loading={false} error={first.error} onRetry={first.reload} />

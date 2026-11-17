@@ -1699,6 +1699,15 @@ What changed when the design met running code. The code is the reference.
   fingerprints; issues are kept when their events expire (§9); `log`,
   `critical` and numeric levels map to Sentry's; message templates are filled
   from `params`; `post_context` keeps its first lines.
+- **Issue list trend and layout**: the trend column has Sentry's 24h / 30d
+  switch (`groupStatsPeriod` on the list API, remembered per browser), a
+  baseline under light bars, and a gray status label. The Issue column takes
+  about two fifths of the table rather than all the leftover width. On phones
+  the icon rail becomes a top bar, the filters wrap, and rows keep Last Seen.
+- **Old issues and the strict metadata parse**: migration
+  `0004_metadata_logger.sql` writes `logger: null` into issues created before
+  `logger` was part of the metadata. Without it, the parse added in
+  `db/issues.ts` rejected those rows and the whole issue list failed.
 - **Closer to Sentry's UI, in the browser only** (no API or schema change):
   - Issue list: the whole row opens the issue; shift-click selects a range,
     cmd/ctrl-click toggles a row; the header checkbox is tri-state and the

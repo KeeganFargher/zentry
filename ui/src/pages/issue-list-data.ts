@@ -63,10 +63,21 @@ export function useLaterPages(org: string, key: string, first: ApiIssueList | nu
   return { issues, nextCursor, loadMore, reset };
 }
 
-/** The URL's filters, plus the sort remembered from last time when the URL has none. */
-export function effectiveQuery(query: URLSearchParams): URLSearchParams {
+export const TREND_PERIODS = ["24h", "30d"] as const;
+
+export type TrendPeriod = (typeof TREND_PERIODS)[number];
+
+/**
+ * The URL's filters, plus the sort remembered from last time when the URL has
+ * none, plus the trend column's period.
+ */
+export function effectiveQuery(query: URLSearchParams, period: TrendPeriod): URLSearchParams {
   const sort = readSetting(SORT_SETTING);
   const next = new URLSearchParams(query);
+
+  if (period !== "24h") {
+    next.set("groupStatsPeriod", period);
+  }
 
   if (!next.has("sort") && sort !== null && sort !== "date") {
     next.set("sort", sort);

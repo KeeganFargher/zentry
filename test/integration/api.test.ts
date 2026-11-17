@@ -335,6 +335,21 @@ describe("issues", () => {
     expect(nextCursor).toBeNull();
   });
 
+  it("gives the trend in days when asked for 30d", async () => {
+    const project = await newProject("Monthly");
+
+    await ingest(project.id, [
+      { index: 1, name: "daily", at: NOW - 60_000 },
+      { index: 2, name: "daily", at: NOW },
+    ]);
+
+    const { issues } = await issuesOf(project.id, "&groupStatsPeriod=30d");
+
+    expect(issues[0]?.stats).toHaveLength(30);
+    expect(issues[0]?.stats.reduce((total, [, count]) => total + count, 0)).toBe(2);
+    expect((await api("/organizations/default/issues/?groupStatsPeriod=7d")).status).toBe(400);
+  });
+
   it("pages with a cursor", async () => {
     const project = await newProject("Pager");
 

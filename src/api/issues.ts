@@ -49,8 +49,14 @@ const IssueCursorParam = CursorParam.pipe(
   z.tuple([IntParam, IntParam]).transform(([value, id]): IssueCursor => ({ value, id })),
 );
 
+/** The list's trend column: Sentry's `groupStatsPeriod`. */
+const GroupStatsPeriod = z.enum(["24h", "30d"]);
+
+type GroupStatsPeriod = z.infer<typeof GroupStatsPeriod>;
+
 const IssueListQuery = z.object({
   project: IdParam.nullable().default(null),
+  groupStatsPeriod: GroupStatsPeriod.default("24h"),
   // "all" lifts the status filter.
   status: z
     .union([Status, z.literal("all")])
@@ -79,12 +85,19 @@ const UpdateIssueBody = z
   })
   .refine((body) => body.status !== null || body.hasSeen === true, STATUS_REQUIRED);
 
+const PERIODS = { "24h": LAST_24_HOURS, "14d": LAST_14_DAYS, "30d": LAST_30_DAYS };
+
 const StatsQuery = z.object({ period: z.enum(["24h", "14d", "30d"]).default("24h") });
 
-function parseFilter(context: ApiContext): IssueFilter {
-  const { project, ...filter } = readQuery(context.url, IssueListQuery);
+function parseFilter(context: ApiContext): IssueFilter & { period: GroupStatsPeriod } {
+  const { project, groupStatsPeriod, ...filter } = readQuery(context.url, IssueListQuery);
 
-  return { ...filter, organizationId: context.organizationId, projectId: project };
+  return {
+    ...filter,
+    organizationId: context.organizationId,
+    projectId: project,
+    period: groupStatsPeriod,
+  };
 }
 
 function sortValue(issue: IssueRecord, sort: IssueSort): number {
@@ -95,8 +108,12 @@ function sortValue(issue: IssueRecord, sort: IssueSort): number {
   return sort === "freq" ? issue.timesSeen : issue.lastSeen;
 }
 
-async function withStats(context: ApiContext, issues: IssueRecord[]): Promise<ApiIssue[]> {
-  const window = { ...LAST_24_HOURS, now: context.now };
+async function withStats(
+  context: ApiContext,
+  issues: IssueRecord[],
+  period: GroupStatsPeriod,
+): Promise<ApiIssue[]> {
+  const window = { ...PERIODS[period], now: context.now };
   const ids = issues.map((issue) => issue.id);
 
   if (ids.length === 0) {
@@ -133,7 +150,7 @@ export const listIssues: Handler = async (context) => {
   const hasMore = rows.length > filter.limit && last !== undefined;
 
   return Response.json({
-    issues: await withStats(context, page),
+    issues: await withStats(context, page, filter.period),
     nextCursor: hasMore ? encodeCursor([sortValue(last, filter.sort), last.id]) : null,
   } satisfies ApiIssueList);
 };
@@ -164,7 +181,7 @@ export const updateIssues: Handler = async (context) => {
 export const getIssue: Handler = async (context, args) => {
   const issue = await issueOf(context, args);
 
-  return issue === null ? notFound() : Response.json((await withStats(context, [issue]))[0]);
+  return issue === null ? notFound() : Response.json((await withStats(context, [issue], "24h"))[0]);
 };
 
 /** Accepts `status`, `hasSeen: true` (the user opened the issue), or both. */
@@ -187,7 +204,7 @@ export const updateIssue: Handler = async (context, args) => {
 
   const updated = await context.deps.issues.find(context.organizationId, issue.id);
 
-  return Response.json((await withStats(context, updated === null ? [] : [updated]))[0]);
+  return Response.json((await withStats(context, updated === null ? [] : [updated], "24h"))[0]);
 };
 
 /** Removes the issue's R2 objects first, then the issue and everything it owns. */
@@ -222,8 +239,6 @@ export const getIssueTags: Handler = async (context, args) => {
 
   return Response.json([...tags.values()]);
 };
-
-const PERIODS = { "24h": LAST_24_HOURS, "14d": LAST_14_DAYS, "30d": LAST_30_DAYS };
 
 function sum(hours: IssueHour[], pick: (hour: IssueHour) => number): number {
   return hours.reduce((total, hour) => total + pick(hour), 0);
@@ -265,5 +280,5 @@ export const getShortId: Handler = async (context, args) => {
       ? null
       : await context.deps.issues.findByShortId(context.organizationId, slug, number);
 
-  return issue === null ? notFound() : Response.json((await withStats(context, [issue]))[0]);
+  return issue === null ? notFound() : Response.json((await withStats(context, [issue], "24h"))[0]);
 };

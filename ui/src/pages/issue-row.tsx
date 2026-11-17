@@ -13,6 +13,9 @@ import { useNow } from "~/lib/clock";
 import { issueMessage, issueTitle, substatus } from "~/lib/issue";
 import { navigate } from "~/lib/router";
 
+import { TREND_PERIODS } from "./issue-list-data";
+import type { TrendPeriod } from "./issue-list-data";
+
 type RowProps = {
   org: string;
   issue: ApiIssue;
@@ -121,13 +124,37 @@ type HeadProps = {
   onToggleAll: () => void;
   onApply: (status: IssueStatus) => void;
   more: MenuItem[];
+  period: TrendPeriod;
+  onPeriod: (period: TrendPeriod) => void;
 };
+
+/** "Trend" with Sentry's 24h / 30d switch beside it. */
+function TrendHead({ period, onPeriod }: Pick<HeadProps, "period" | "onPeriod">): JSX.Element {
+  return (
+    <span className="col-trend trend-head">
+      <span>Trend</span>
+      <span className="periods" role="group" aria-label="Trend period">
+        {TREND_PERIODS.map((choice) => (
+          <button
+            key={choice}
+            type="button"
+            className={choice === period ? "period active" : "period"}
+            aria-pressed={choice === period}
+            onClick={() => onPeriod(choice)}
+          >
+            {choice}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
 
 function BulkActions({
   selected,
   onApply,
   more,
-}: Omit<HeadProps, "total" | "onToggleAll">): JSX.Element {
+}: Pick<HeadProps, "selected" | "onApply" | "more">): JSX.Element {
   return (
     <div className="bulk">
       <button type="button" className="small primary" onClick={() => onApply("resolved")}>
@@ -174,7 +201,7 @@ export function IssueRowHead(props: HeadProps): JSX.Element {
           <span>Issue</span>
           <span className="num col-last">Last Seen</span>
           <span className="num col-age">Age</span>
-          <span className="col-trend">Trend · 24h</span>
+          <TrendHead period={props.period} onPeriod={props.onPeriod} />
           <span className="num col-events">Events</span>
         </>
       )}
