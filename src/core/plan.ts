@@ -196,16 +196,28 @@ function limitRows(projectStats: ProjectStatRow[], input: PlanInput): LimitRow[]
   return rows;
 }
 
-/** Accepted events per UTC month, for the installation-wide monthly cap. */
-function usageRows(projectStats: ProjectStatRow[]): UsageRow[] {
-  const rows = new Map<number, UsageRow>();
+/**
+ * Accepted events per organization and UTC month, for the monthly cap. A
+ * project with no quota row was deleted while its events were queued; like
+ * E7, its events are not counted.
+ */
+function usageRows(projectStats: ProjectStatRow[], quotas: ProjectQuota[]): UsageRow[] {
+  const organizationOf = new Map(quotas.map((quota) => [quota.projectId, quota.organizationId]));
+  const rows = new Map<string, UsageRow>();
 
   for (const stat of projectStats) {
+    const organization = organizationOf.get(stat.p);
+
+    if (organization === undefined) {
+      continue;
+    }
+
     const month = monthBucket(stat.b);
-    const row = rows.get(month) ?? { m: month, n: 0 };
+    const key = `${organization}:${month}`;
+    const row = rows.get(key) ?? { o: organization, m: month, n: 0 };
 
     row.n += stat.n;
-    rows.set(month, row);
+    rows.set(key, row);
   }
 
   return [...rows.values()];
@@ -230,7 +242,7 @@ export function planBatch(input: PlanInput): Plan {
       tags: buckets.flatMap(tagRows),
       projectStats,
       limits: limitRows(projectStats, input),
-      usage: usageRows(projectStats),
+      usage: usageRows(projectStats, input.state.quotas),
     },
   };
 }

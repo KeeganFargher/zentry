@@ -16,6 +16,7 @@ import { BatchStore } from "@/db/batch";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
+import { OrganizationStore } from "@/db/organizations";
 import { ProjectStore } from "@/db/projects";
 import { RetentionStore } from "@/db/retention";
 import { SpikeStore } from "@/db/spike";
@@ -34,21 +35,6 @@ let usageCache: UsageCache | undefined;
 let accessVerifier: AccessVerifier | undefined;
 const sessions = new Sessions();
 
-/**
- * A spend limit that is missing or mistyped must stop the Worker, not be read
- * as zero or as no limit: either would fail silently, one by refusing every
- * event, the other by removing the ceiling on the bill.
- */
-function positiveInt(value: string, name: string): number {
-  const parsed = Number(value);
-
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer, got "${value}"`);
-  }
-
-  return parsed;
-}
-
 function ingestDeps(env: Env): IngestDeps {
   const keyStore = new KeyStore(env.DB);
   const spill = new SpillStore(env.BLOBS);
@@ -56,12 +42,13 @@ function ingestDeps(env: Env): IngestDeps {
   const usageStore = new UsageStore(env.DB);
 
   keyCache ??= new KeyCache((publicKey) => keyStore.findActive(publicKey));
-  usageCache ??= new UsageCache((month) => usageStore.received(month));
+  usageCache ??= new UsageCache((organizationId, month) =>
+    usageStore.received(organizationId, month),
+  );
 
   return {
     keys: keyCache,
     usage: usageCache,
-    maxEventsPerMonth: positiveInt(env.MAX_EVENTS_PER_MONTH, "MAX_EVENTS_PER_MONTH"),
     allow: async (publicKey) => (await env.INGEST_RL.limit({ key: publicKey })).success,
     spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
     send: async (message) => {
@@ -97,6 +84,7 @@ function apiDeps(env: Env): ApiDeps {
   return {
     access: accessVerifier,
     tenancy: new TenancyStore(env.DB),
+    organizations: new OrganizationStore(env.DB),
     projects: new ProjectStore(env.DB),
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
@@ -125,7 +113,6 @@ function spikeDeps(env: Env): SpikeDeps {
   return {
     read: (since, before) => store.read(since, before),
     write: (limits) => store.write(limits),
-    maxEventsPerMonth: positiveInt(env.MAX_EVENTS_PER_MONTH, "MAX_EVENTS_PER_MONTH"),
     now: () => Date.now(),
   };
 }

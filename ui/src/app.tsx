@@ -15,6 +15,7 @@ import type { Route } from "~/lib/router";
 import { IssueDetail } from "~/pages/issue-detail";
 import { IssueEvents } from "~/pages/issue-events";
 import { IssueList } from "~/pages/issue-list";
+import { OrganizationSettings } from "~/pages/organization-settings";
 import { ProjectSettings } from "~/pages/project-settings";
 import { Projects } from "~/pages/projects";
 
@@ -40,6 +41,10 @@ function Page({ route }: { route: Route }): JSX.Element {
       return <ProjectSettings org={route.org} project={route.project} />;
     }
 
+    case "organizationSettings": {
+      return <OrganizationSettings org={route.org} />;
+    }
+
     default: {
       return <div className="notice">Page not found.</div>;
     }
@@ -47,7 +52,9 @@ function Page({ route }: { route: Route }): JSX.Element {
 }
 
 function sectionOf(route: Route): Section {
-  return route.name === "projects" || route.name === "settings" ? "projects" : "issues";
+  return route.name === "issues" || route.name === "issue" || route.name === "events"
+    ? "issues"
+    : "projects";
 }
 
 type ShellProps = { org: string; route: Route; me: ApiMe; location: string };

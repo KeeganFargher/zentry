@@ -16,17 +16,20 @@ let sequence = 0;
 /** A fresh project per test, so tests do not see each other's rows. */
 export async function createProject(
   maxEventsPerHour: number | null = null,
+  organizationId = 1,
 ): Promise<ProjectRecord> {
   sequence += 1;
 
   const projects = new ProjectStore(env.DB);
 
   const created = await projects.create({
-    organizationId: 1,
+    organizationId,
     slug: `p${sequence}-${crypto.randomUUID().slice(0, 8)}`,
     name: "Test",
     platform: "python",
     publicKey: crypto.randomUUID().replaceAll("-", ""),
+    // High enough that no test trips it by accident; spike tests set their own.
+    spikeLimitPerHour: 1_000_000_000,
     now: NOW,
   });
 
@@ -41,6 +44,26 @@ export async function createProject(
   });
 
   return created;
+}
+
+let organizations = 0;
+
+/** A fresh organization, for tests that change organization-wide limits. */
+export async function createOrganization(maxEventsPerMonth: number): Promise<number> {
+  organizations += 1;
+
+  const row = await env.DB.prepare(
+    `INSERT INTO organizations (slug, name, max_events_per_month, created_at)
+     VALUES (?1, 'Test', ?2, ?3) RETURNING id`,
+  )
+    .bind(`org${organizations}-${crypto.randomUUID().slice(0, 8)}`, maxEventsPerMonth, NOW)
+    .first<{ id: number }>();
+
+  if (row === null) {
+    throw new Error("organization was not created");
+  }
+
+  return row.id;
 }
 
 export function consumerDeps(overrides: Partial<ConsumerDeps> = {}): ConsumerDeps {

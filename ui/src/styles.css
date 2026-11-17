@@ -2535,3 +2535,31 @@ pre.raw-trace {
 .title-cell > .clip {
   display: block;
 }
+
+/* Organization spend limits: how much of the monthly cap is used. */
+.usage {
+  margin: 12px 0;
+}
+
+.usage-meter {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.usage-meter span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.usage-meter span.full {
+  background: var(--danger);
+}
+
+.limit-list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}

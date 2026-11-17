@@ -139,8 +139,9 @@ which is git-ignored, and `pnpm deploy` and `pnpm migrate:remote` read that file
    pnpm deploy
    ```
 
-6. Set `MAX_EVENTS_PER_MONTH` in the copy (see below), then add the account
-   guards the Worker cannot set for itself, under "Spend protection".
+6. Sign in, open Projects > Spend limits and set the monthly cap (see below),
+   then add the account guards the Worker cannot set for itself, under
+   "Spend protection".
 
 `DEV_USER_EMAIL` is honoured only for requests to `localhost`. Leave it
 empty in `wrangler.jsonc`.
@@ -154,7 +155,7 @@ In the Worker, from broadest to narrowest:
 
 | Limit | Default | Where it is set | 429 reason |
 |---|---|---|---|
-| Events per UTC month, all projects | 1,000,000 | `MAX_EVENTS_PER_MONTH` | `org_quota` |
+| Events per UTC month, all of an organization's projects | 1,000,000 | Spend limits page (owners) | `org_quota` |
 | Spike protection, per project, recomputed hourly | on | project settings | `spike_protection` |
 | Events per hour, per project | 10,000 | project settings | `project_quota` |
 | Burst, per DSN key and Cloudflare location | 600 a minute | `ratelimits` in `wrangler.jsonc` | `key_quota` |
@@ -163,8 +164,12 @@ In the Worker, from broadest to narrowest:
 Every 429 carries `Retry-After` and `X-Sentry-Rate-Limits`, so the SDKs stop
 sending until it passes. The monthly cap is the ceiling on the bill: at the
 default, a whole month costs about $6 (DESIGN.md §12). When it is reached,
-nothing is accepted until the next month starts; raise the variable and
-redeploy to resume sooner.
+nothing is accepted until the next month starts; an owner can raise the cap
+on the Spend limits page to resume sooner (it takes effect within a minute).
+
+A new project is spike-protected from its first event: it starts at the
+floor, derived from the monthly cap (4,167 events an hour for one project at
+the default), and the hourly job adjusts it from there.
 
 What the Worker cannot do is refuse a request without being invoked, and
 every invocation is billed, refused or not. Set these on the account:

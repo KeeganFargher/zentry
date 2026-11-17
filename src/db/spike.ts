@@ -1,14 +1,21 @@
-// Statements for the hourly spike-protection cron (DESIGN.md §6).
+// Statements for spike-protection thresholds (DESIGN.md §6).
 
 export type SpikeHour = { projectId: number; bucket: number; received: number };
 
 export type SpikeLimit = { p: number; limit: number };
 
-export type SpikeInput = {
-  /** Every project, protected or not: the floor depends on how many there are. */
+/** A protected project, with what its floor depends on. */
+export type SpikeProject = {
+  projectId: number;
+  /** The organization's monthly cap. */
+  maxEventsPerMonth: number;
+  /** All of the organization's projects, protected or not. */
   projectCount: number;
-  protectedIds: number[];
-  /** Hourly accepted counts of the protected projects since the window start. */
+};
+
+export type SpikeInput = {
+  projects: SpikeProject[];
+  /** Hourly accepted counts of the protected projects. */
   hours: SpikeHour[];
 };
 
@@ -25,8 +32,14 @@ export class SpikeStore {
 
     const [projects, hours] = await Promise.all([
       db
-        .prepare(`SELECT id, spike_protection AS protected FROM projects`)
-        .all<{ id: number; protected: number }>(),
+        .prepare(
+          `SELECT p.id AS projectId, o.max_events_per_month AS maxEventsPerMonth,
+                  (SELECT count(*) FROM projects q WHERE q.organization_id = p.organization_id)
+                    AS projectCount
+           FROM projects p JOIN organizations o ON o.id = p.organization_id
+           WHERE p.spike_protection = 1`,
+        )
+        .all<SpikeProject>(),
       db
         .prepare(
           `SELECT ps.project_id AS projectId, ps.bucket, ps.received
@@ -37,11 +50,7 @@ export class SpikeStore {
         .all<SpikeHour>(),
     ]);
 
-    return {
-      projectCount: projects.results.length,
-      protectedIds: projects.results.flatMap((row) => (row.protected === 1 ? [row.id] : [])),
-      hours: hours.results,
-    };
+    return { projects: projects.results, hours: hours.results };
   }
 
   /** One statement for every project, whatever their number. */

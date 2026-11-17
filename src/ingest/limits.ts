@@ -1,38 +1,41 @@
-// The installation-wide monthly cap (DESIGN.md §6). The count is kept by the
+// The monthly cap per organization (DESIGN.md §6). The count is kept by the
 // consumer in usage_months; ingest reads it through this cache.
 
 import { MINUTE, monthBucket } from "@/shared/time";
 
 const CACHE_TTL = MINUTE;
 
-export type UsageLookup = (month: number) => Promise<number>;
+export type UsageLookup = (organizationId: number, month: number) => Promise<number>;
+
+type Entry = { month: number; received: number; expiresAt: number };
 
 /**
- * One count per isolate, refreshed every minute, like the key cache: the cap
- * costs one D1 read per isolate per minute instead of one per request. It
- * therefore lags by up to a minute plus queue delay, so a month can overshoot
- * the cap by what arrives in that time (bounded by the burst limiter).
+ * One count per organization per isolate, refreshed every minute, like the key
+ * cache: the cap costs one D1 read per isolate per minute instead of one per
+ * request. It therefore lags by up to a minute plus queue delay, so a month can
+ * overshoot the cap by what arrives in that time (bounded by the burst limiter).
+ * Organizations are few, so the map is not bounded.
  */
 export class UsageCache {
   readonly #lookup: UsageLookup;
-  #cached: { month: number; received: number; expiresAt: number } | null = null;
+  readonly #entries = new Map<number, Entry>();
 
   constructor(lookup: UsageLookup) {
     this.#lookup = lookup;
   }
 
-  async received(now: number): Promise<number> {
+  async received(organizationId: number, now: number): Promise<number> {
     const month = monthBucket(now);
-    const cached = this.#cached;
+    const cached = this.#entries.get(organizationId);
 
     // A new month starts from its own row, not last month's cached count.
-    if (cached !== null && cached.month === month && cached.expiresAt > now) {
+    if (cached !== undefined && cached.month === month && cached.expiresAt > now) {
       return cached.received;
     }
 
-    const received = await this.#lookup(month);
+    const received = await this.#lookup(organizationId, month);
 
-    this.#cached = { month, received, expiresAt: now + CACHE_TTL };
+    this.#entries.set(organizationId, { month, received, expiresAt: now + CACHE_TTL });
 
     return received;
   }

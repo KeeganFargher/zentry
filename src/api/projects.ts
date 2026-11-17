@@ -2,9 +2,11 @@
 
 import { z } from "zod";
 
+import { spikeFloor } from "@/core/spike";
 import type { KeyRecord, ProjectHour, ProjectRecord } from "@/db/projects";
 import type { ApiKey, ApiProject } from "@/shared/contract";
 import { newPublicKey } from "@/shared/ids";
+import { monthBucket } from "@/shared/time";
 
 import type { ApiContext, Handler } from "./context";
 import { badRequest, IdParam, isLocal, noContent, notFound, readBody, readParams } from "./http";
@@ -101,12 +103,21 @@ export const createProject: Handler = async (context) => {
     return badRequest(`could not make a slug from this name; ${SLUG_RULE}`);
   }
 
+  const limits = await context.deps.organizations.limits(
+    context.organizationId,
+    monthBucket(context.now),
+  );
+
+  // A new project has no history, so its threshold is the floor, counting
+  // itself among the organization's projects. Setting it here rather than
+  // waiting for the hourly cron means a project is protected from its first event.
   const created = await context.deps.projects.create({
     organizationId: context.organizationId,
     slug,
     name,
     platform,
     publicKey: newPublicKey(),
+    spikeLimitPerHour: spikeFloor(limits.maxEventsPerMonth, limits.projectCount + 1),
     now: context.now,
   });
 

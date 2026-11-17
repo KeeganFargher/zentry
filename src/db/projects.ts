@@ -10,7 +10,7 @@ export type ProjectRecord = {
   maxEventsPerHour: number | null;
   rateLimit: { until: number; reason: RateLimitReason } | null;
   spikeProtection: boolean;
-  spikeLimitPerHour: number | null;
+  spikeLimitPerHour: number;
   firstEventAt: number | null;
   createdAt: number;
 };
@@ -35,6 +35,8 @@ export type NewProject = {
   name: string;
   platform: string | null;
   publicKey: string;
+  /** The spike floor, so the project is protected before the hourly cron first runs. */
+  spikeLimitPerHour: number;
   now: number;
 };
 
@@ -115,10 +117,18 @@ export class ProjectStore {
     await db.batch([
       db
         .prepare(
-          `INSERT INTO projects (organization_id, slug, name, platform, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5)`,
+          `INSERT INTO projects
+             (organization_id, slug, name, platform, spike_limit_per_hour, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
         )
-        .bind(project.organizationId, project.slug, project.name, project.platform, project.now),
+        .bind(
+          project.organizationId,
+          project.slug,
+          project.name,
+          project.platform,
+          project.spikeLimitPerHour,
+          project.now,
+        ),
       db
         .prepare(
           `INSERT INTO project_keys (project_id, public_key, created_at)

@@ -12,7 +12,7 @@ import { UsageCache } from "@/ingest/limits";
 import { monthBucket, nextMonthBucket, SECOND } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
-import { createProject, NOW } from "./helpers";
+import { createOrganization, createProject, NOW } from "./helpers";
 
 type Harness = { deps: IngestDeps; sent: QueueMessage[] };
 
@@ -26,8 +26,7 @@ function harness(overrides: Partial<IngestDeps> = {}): Harness {
     sent,
     deps: {
       keys: new KeyCache((publicKey) => keyStore.findActive(publicKey)),
-      usage: new UsageCache((month) => usageStore.received(month)),
-      maxEventsPerMonth: 1_000_000_000,
+      usage: new UsageCache((organization, month) => usageStore.received(organization, month)),
       allow: async () => true,
       spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
       send: async (message) => {
@@ -39,8 +38,8 @@ function harness(overrides: Partial<IngestDeps> = {}): Harness {
   };
 }
 
-async function projectWithKey(): Promise<{ id: number; key: string }> {
-  const project = await createProject();
+async function projectWithKey(organizationId = 1): Promise<{ id: number; key: string }> {
+  const project = await createProject(null, organizationId);
   const [key] = await new ProjectStore(env.DB).listKeys(project.id);
 
   return { id: project.id, key: key?.publicKey ?? "" };
@@ -340,16 +339,27 @@ describe("ingest limits and CORS", () => {
     expect(sent).toEqual([]);
   });
 
-  it("refuses every project once the month's cap is reached, until the month ends", async () => {
-    const project = await projectWithKey();
-    const { deps, sent } = harness({ maxEventsPerMonth: 5 });
+  it("refuses an organization's projects once its month's cap is reached", async () => {
+    const organization = await createOrganization(5);
+    const project = await projectWithKey(organization);
+    const other = await projectWithKey();
+    const { deps, sent } = harness();
 
     await env.DB.prepare(
-      `INSERT INTO usage_months (month, received) VALUES (?1, 5)
-       ON CONFLICT(month) DO UPDATE SET received = max(received, 5)`,
+      `INSERT INTO usage_months (organization_id, month, received) VALUES (?1, ?2, 5)`,
     )
-      .bind(monthBucket(NOW))
+      .bind(organization, monthBucket(NOW))
       .run();
+
+    // Another organization's cap is its own.
+    const unaffected = await post(
+      `https://i.test/api/${other.id}/store/?sentry_key=${other.key}`,
+      { body: '{"message":"hi"}' },
+      deps,
+    );
+
+    expect(unaffected.status).toBe(200);
+    sent.length = 0;
 
     const response = await post(
       `https://i.test/api/${project.id}/store/?sentry_key=${project.key}`,

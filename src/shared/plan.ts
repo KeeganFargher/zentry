@@ -24,8 +24,9 @@ export type GroupHourStored = { groupId: number; bucket: number; stored: number 
 
 export type ProjectQuota = {
   projectId: number;
+  organizationId: number;
   maxEventsPerHour: number | null;
-  /** Null when spike protection is off or no threshold has been computed yet. */
+  /** Null while spike protection is off. */
   spikeLimitPerHour: number | null;
   received: number;
 };
@@ -96,8 +97,8 @@ export type ProjectStatRow = { p: number; b: number; n: number; stored: number }
 /** E8: a project that passed its hourly quota or spike threshold. */
 export type LimitRow = { p: number; until: number; reason: RateLimitReason };
 
-/** E9: events accepted in one UTC month, all projects together. */
-export type UsageRow = { m: number; n: number };
+/** E9: events accepted in one UTC month by one organization's projects. */
+export type UsageRow = { o: number; m: number; n: number };
 
 export type BatchWrites = {
   newGroups: NewGroupRow[];

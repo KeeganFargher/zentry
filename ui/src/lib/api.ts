@@ -10,6 +10,7 @@ import type {
   ApiIssueStats,
   ApiKey,
   ApiMe,
+  ApiOrganizationLimits,
   ApiProject,
   ApiTag,
   IssueStatus,
@@ -68,6 +69,11 @@ export const eventJsonUrl = (org: string, issueId: string, eventId: string): str
 
 export const api = {
   me: (): Promise<ApiMe> => get("/me/"),
+
+  limits: (org: string): Promise<ApiOrganizationLimits> => get(`/organizations/${org}/limits/`),
+
+  updateLimits: async (org: string, maxEventsPerMonth: number): Promise<ApiOrganizationLimits> =>
+    read(await sendJson("PUT", `/organizations/${org}/limits/`, { maxEventsPerMonth })),
 
   projects: (org: string): Promise<ApiProject[]> => get(`/organizations/${org}/projects/`),
 

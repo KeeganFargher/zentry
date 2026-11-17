@@ -129,12 +129,23 @@ export type ApiProject = {
   /** Null while not limited. */
   rateLimit: { until: number; reason: RateLimitReason } | null;
   spikeProtection: boolean;
-  /** The current hourly spike threshold; null until the hourly cron has computed one. */
-  spikeLimitPerHour: number | null;
+  /** The current hourly spike threshold, recomputed every hour; enforced only while protected. */
+  spikeLimitPerHour: number;
   firstEventAt: number | null;
   createdAt: number;
   events24h: number;
   stats: StatPoint[];
+};
+
+/** An organization's monthly cap and what its projects have used of it. */
+export type ApiOrganizationLimits = {
+  maxEventsPerMonth: number;
+  /** Events accepted this UTC month, all of the organization's projects together. */
+  monthReceived: number;
+  /** Start of the current UTC month, ms. */
+  month: number;
+  /** Only owners may change the cap. */
+  canEdit: boolean;
 };
 
 export type ApiKey = {

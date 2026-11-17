@@ -7,6 +7,7 @@ import { handleApi, Sessions } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
+import { OrganizationStore } from "@/db/organizations";
 import { ProjectStore } from "@/db/projects";
 import { TenancyStore } from "@/db/tenancy";
 import type { Json } from "@/shared/contract";
@@ -90,6 +91,7 @@ export function apiDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
   return {
     access: verifier(),
     tenancy: new TenancyStore(env.DB),
+    organizations: new OrganizationStore(env.DB),
     projects: new ProjectStore(env.DB),
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),

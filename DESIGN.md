@@ -172,8 +172,7 @@ The allowed imports between these folders are fixed and lint-enforced; see §16.
     "ACCESS_TEAM_DOMAIN": "<team>.cloudflareaccess.com",
     "ACCESS_AUD": "<application audience tag>",
     "RETENTION_DAYS": "90",
-    "MAX_STORED_PER_GROUP_HOUR": "100",
-    "MAX_EVENTS_PER_MONTH": "1000000"
+    "MAX_STORED_PER_GROUP_HOUR": "100"
   }
 }
 ```
@@ -345,7 +344,7 @@ protection (described in `docs/pricing/quotas/spike-protection.mdx` of
 
 | # | Layer | Scope | Reason code | Set by | Bounds |
 |---|---|---|---|---|---|
-| 1 | Monthly cap | installation | `org_quota` | `MAX_EVENTS_PER_MONTH` | everything downstream, for the month |
+| 1 | Monthly cap | organization | `org_quota` | organization settings page | everything downstream, for the month |
 | 2 | Spike protection | project | `spike_protection` | hourly cron | one project's sudden surge |
 | 3 | Hourly quota | project | `project_quota` | project settings | one project's sustained volume |
 | 4 | Burst limit | key, per location | `key_quota` | Rate Limiting binding | a runaway loop, within the minute |
@@ -358,18 +357,23 @@ which means all categories, so the SDK also pauses sessions and transactions;
 Zentry drops those, but each still costs a Worker request. Layers 1 to 3 apply
 to every envelope; layer 4 only to envelopes that carry an event.
 
-1. **Monthly cap.** The consumer adds each batch's new events to
-   `usage_months` (one row per UTC month) in the same transaction as the rest.
-   Ingest reads that row through a per-isolate cache refreshed every minute and
-   refuses everything once it reaches `MAX_EVENTS_PER_MONTH`, until the month
-   ends. The variable is required: a missing or non-positive value makes the
-   Worker throw rather than run without a ceiling. Overshoot is what arrives
-   within a minute plus queue delay, which layer 4 bounds.
+1. **Monthly cap.** `organizations.max_events_per_month` (default 1,000,000,
+   always set, CHECK > 0), changed by owners on the organization's
+   "Spend limits" page (`GET, PUT /api/0/organizations/{org}/limits/`). The
+   consumer adds each batch's new events to `usage_months` (one row per
+   organization per UTC month) in the same transaction as the rest. Ingest
+   reads the cap with the DSN key and the count through a per-isolate cache,
+   both refreshed every minute, and refuses the organization's events once the
+   count reaches the cap, until the month ends. Overshoot is what arrives
+   within a minute plus queue delay, which layer 4 bounds. Owners only, as in
+   Sentry, where quotas belong to the owner and billing roles: raising the
+   cap is a decision about the bill.
 2. **Spike protection.** On by default per project, off for projects that are
    bursty by design. A cron at minute 3 of every hour sets
    `projects.spike_limit_per_hour` for each protected project
    (`core/spike.ts`):
-   - floor = max(500, ⌈3 × `MAX_EVENTS_PER_MONTH` / (720 × min(projects, 5))⌉),
+   - floor = max(500, ⌈3 × monthly cap / (720 × min(projects, 5))⌉), counting
+     the organization's projects,
      Sentry's floor: the hourly rate that would use three months of quota in
      one; 500 is a tenth of Sentry's smallest error plan;
    - projection = the higher of the mean of the last 168 complete hours and
@@ -382,8 +386,18 @@ to every envelope; layer 4 only to envelopes that carry an event.
    The consumer treats the threshold like an hourly quota. Only accepted
    events count toward the history, since refused ones never reach the
    consumer; Sentry gives dropped events a decaying weight instead, so here a
-   long spike raises the threshold more slowly. A new project has no threshold
-   until the next hourly run; layers 1 and 3 hold meanwhile.
+   long spike raises the threshold more slowly.
+
+   Every project has a threshold from the moment it exists: creating a project
+   sets it to the floor, which is what the cron computes for a project with no
+   history. A new project's first surge is therefore caught at once, and its
+   normal traffic is not mistaken for one, since the floor is set from the
+   monthly cap rather than from history (4,167 an hour for one project at the
+   default cap). The migration gives existing projects an upper bound of what
+   the cron can compute (the floor or 6 × their busiest hour of the last week),
+   so the first deploy refuses nothing new; the first hourly run tightens it.
+   A change to the monthly cap or the number of projects moves floors at the
+   next hourly run.
 3. **Hourly project quota.** The consumer keeps `project_stats.received` per
    hour. When a project passes `projects.max_events_per_hour` (default 10,000;
    NULL means unlimited) or its spike threshold, the consumer sets
@@ -1247,7 +1261,7 @@ fixed:
 | `blobs/` | Every R2 read and write, and all key construction | `shared` |
 | `ingest/` | HTTP ingest | `shared`, `core`, `db` |
 | `consumer/` | Queue handler | `shared`, `core`, `db`, `blobs` |
-| `api/` | Read API | `shared`, `db`, `blobs` |
+| `api/` | Read API | `shared`, `core`, `db`, `blobs` |
 | `cron/` | Retention, spike thresholds | `shared`, `core`, `db`, `blobs` |
 | `worker.ts` | Wires handlers to bindings | everything |
 | `ui/` | SPA | `src/shared/contract.ts` only, as type imports |
@@ -1360,7 +1374,7 @@ export default defineConfig({
     { files: ["src/blobs/**"],    rules: { "no-restricted-imports": except("shared") } },
     { files: ["src/ingest/**"],   rules: { "no-restricted-imports": except("shared", "core", "db") } },
     { files: ["src/consumer/**"], rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
-    { files: ["src/api/**"],      rules: { "no-restricted-imports": except("shared", "db", "blobs") } },
+    { files: ["src/api/**"],      rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
     { files: ["src/cron/**"],     rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") } },
     { files: ["ui/**"],           rules: { "no-restricted-imports": except() } },
 
@@ -1608,7 +1622,10 @@ What changed when the design met running code. The code is the reference.
   review against Sentry's quota code. The migration clears any rate limit set
   before it, since those carry no reason; the next batch over quota sets them
   again.
-- `cron/` may import `core/` (§16.3) for the spike arithmetic.
+- `cron/` may import `core/` (§16.3) for the spike arithmetic, and `api/` for
+  the floor a new project starts with.
+- The monthly cap is a column on `organizations`, not a variable, so owners
+  can change it in the UI without a deploy.
 
 **Decisions the design left open**
 

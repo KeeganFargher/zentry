@@ -24,9 +24,7 @@ function spikeHint(current: ApiProject): string {
     return "Off: bursts are accepted up to the hourly maximum.";
   }
 
-  return current.spikeLimitPerHour === null
-    ? "Threshold is computed within the hour."
-    : `Current threshold: ${current.spikeLimitPerHour.toLocaleString()} events per hour.`;
+  return `Current threshold: ${current.spikeLimitPerHour.toLocaleString()} events per hour, recomputed hourly.`;
 }
 
 function General({ org, project, current, onSaved }: GeneralProps): JSX.Element {

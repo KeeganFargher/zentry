@@ -22,8 +22,6 @@ import type { UsageCache } from "./limits";
 export type IngestDeps = {
   keys: KeyCache;
   usage: UsageCache;
-  /** Events accepted per UTC month, all projects together, before ingest refuses all. */
-  maxEventsPerMonth: number;
   /** Burst limiter; resolves to false when the key is over its limit. */
   allow: (publicKey: string) => Promise<boolean>;
   /** Stores an oversize payload and returns its key. */
@@ -179,7 +177,7 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
 async function limitedFor(info: KeyInfo, deps: IngestDeps): Promise<Response | null> {
   const now = deps.now();
 
-  if ((await deps.usage.received(now)) >= deps.maxEventsPerMonth) {
+  if ((await deps.usage.received(info.organizationId, now)) >= info.maxEventsPerMonth) {
     return rateLimited((nextMonthBucket(now) - now) / SECOND, {
       scope: "organization",
       reason: "org_quota",

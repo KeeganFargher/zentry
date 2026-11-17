@@ -27,6 +27,7 @@ type GroupRow = {
 
 type QuotaRow = {
   id: number;
+  organization_id: number;
   max_events_per_hour: number | null;
   spike_limit: number | null;
   received: number;
@@ -53,7 +54,7 @@ const SELECT_KNOWN_GROUPS = `
   JOIN groups g ON g.id = gh.group_id`;
 
 const SELECT_QUOTAS = `
-  SELECT p.id, p.max_events_per_hour,
+  SELECT p.id, p.organization_id, p.max_events_per_hour,
          CASE WHEN p.spike_protection = 1 THEN p.spike_limit_per_hour END AS spike_limit,
          COALESCE(ps.received, 0) AS received
   FROM json_each(?1) j
@@ -162,13 +163,13 @@ const UPSERT_PROJECT_STATS = `
 const SET_RATE_LIMIT = `
   UPDATE projects SET rate_limited_until = ?2, rate_limit_reason = ?3 WHERE id = ?1`;
 
-// E9. Counted from project_stats rows, so an event for a deleted project, which
-// E7 skips, still counts here: it was accepted at ingest all the same.
+// E9. The organization's monthly count, for the monthly cap. EXISTS skips an
+// organization deleted while its events were queued, as E7 does for projects.
 const UPSERT_USAGE = `
-  INSERT INTO usage_months (month, received)
-  SELECT value->>'m', value->>'n' FROM json_each(?1)
-  WHERE true
-  ON CONFLICT(month) DO UPDATE SET received = received + excluded.received`;
+  INSERT INTO usage_months (organization_id, month, received)
+  SELECT value->>'o', value->>'m', value->>'n' FROM json_each(?1)
+  WHERE EXISTS (SELECT 1 FROM organizations WHERE id = value->>'o')
+  ON CONFLICT(organization_id, month) DO UPDATE SET received = received + excluded.received`;
 
 export class BatchStore {
   readonly #db: D1Database;
@@ -199,6 +200,7 @@ export class BatchStore {
       storedThisHour: [],
       quotas: quotas.results.map((row): ProjectQuota => ({
         projectId: row.id,
+        organizationId: row.organization_id,
         maxEventsPerHour: row.max_events_per_hour,
         spikeLimitPerHour: row.spike_limit,
         received: row.received,

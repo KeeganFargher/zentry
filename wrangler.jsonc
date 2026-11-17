@@ -62,10 +62,6 @@
     "ACCESS_AUD": "replace-with-the-access-application-audience-tag",
     "RETENTION_DAYS": "90",
     "MAX_STORED_PER_GROUP_HOUR": "100",
-    // The hard ceiling on the bill: once this many events have been accepted
-    // in a UTC month, across all projects, ingest refuses every event until the
-    // month ends. Also sets the spike-protection floor (DESIGN.md §6).
-    "MAX_EVENTS_PER_MONTH": "1000000",
     // Local development only: honoured when the request host is localhost.
     "DEV_USER_EMAIL": "",
   },
