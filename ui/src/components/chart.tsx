@@ -45,8 +45,8 @@ function barHeight(count: number, max: number): string {
 }
 
 /** The bucket holding `at`, if the chart covers it. */
-function markedIndex(points: StatPoint[], step: number, at: number | null): number {
-  return at === null ? -1 : points.findIndex(([bucket]) => at >= bucket && at < bucket + step);
+function markedIndex(points: StatPoint[], step: number, at: number): number {
+  return points.findIndex(([bucket]) => at >= bucket && at < bucket + step);
 }
 
 export function BarChart({ points, height, marker = null }: ChartProps): JSX.Element {
@@ -54,7 +54,7 @@ export function BarChart({ points, height, marker = null }: ChartProps): JSX.Ele
   const max = Math.max(1, ...points.map(([, count]) => count));
   const step = (points[1]?.[0] ?? 0) - (points[0]?.[0] ?? 0);
   const active = hovered === null ? undefined : points[hovered];
-  const marked = markedIndex(points, step, marker);
+  const marked = marker === null ? -1 : markedIndex(points, step, marker);
 
   return (
     <div className="bars" style={{ height }} onMouseLeave={() => setHovered(null)}>

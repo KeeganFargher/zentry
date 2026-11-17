@@ -63,12 +63,21 @@ const WHICH = [
   ["latest", "Latest"],
 ] as const;
 
+/** Links to the events either side of this one; null at either end. */
+function stepLinks(base: string, detail: ApiEventDetail): [string | null, string | null] {
+  const { previousEventId, nextEventId } = detail;
+
+  return [
+    previousEventId === null ? null : `${base}/${previousEventId}/`,
+    nextEventId === null ? null : `${base}/${nextEventId}/`,
+  ];
+}
+
 /** Event count, First / Latest, previous / next, and the way to all events. */
 export function EventNav({ org, issue, which, detail }: NavProps): JSX.Element {
   const base = `/${org}/issues/${issue.id}/events`;
 
-  const link = (id: string | null | undefined): string | null =>
-    id === null || id === undefined ? null : `${base}/${id}/`;
+  const [previous, next] = detail === null ? [null, null] : stepLinks(base, detail);
 
   const active = which === "oldest" ? "oldest" : which === "latest" ? "latest" : "other";
 
@@ -85,8 +94,8 @@ export function EventNav({ org, issue, which, detail }: NavProps): JSX.Element {
         value={active === "other" ? null : active}
         onChange={(value) => navigate(`${base}/${value}/`)}
       />
-      <Step to={link(detail?.previousEventId)} label="Previous Event" icon="previous" />
-      <Step to={link(detail?.nextEventId)} label="Next Event" icon="next" />
+      <Step to={previous} label="Previous Event" icon="previous" />
+      <Step to={next} label="Next Event" icon="next" />
       <button type="button" className="small" onClick={() => navigate(`${base}/`)}>
         View More Events
       </button>

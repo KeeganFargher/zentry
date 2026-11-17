@@ -4,7 +4,7 @@
 import { useState } from "react";
 import type { JSX, ReactNode, SyntheticEvent } from "react";
 
-import { readSetting, writeSetting } from "~/lib/storage";
+import { readSetting, clearSetting, writeSetting } from "~/lib/storage";
 
 type SectionProps = {
   id: string;
@@ -41,7 +41,13 @@ export function Section({
 
     if (next !== open) {
       setOpen(next);
-      writeSetting(settingOf(id), next === !folded ? null : next ? "open" : "closed");
+
+      // Back to the section's default: forget the choice rather than store it.
+      if (next === !folded) {
+        clearSetting(settingOf(id));
+      } else {
+        writeSetting(settingOf(id), next ? "open" : "closed");
+      }
     }
   };
 

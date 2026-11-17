@@ -23,12 +23,16 @@ const except = (...allowed: string[]): ["error", { patterns: Pattern[] }] =>
 
 export default defineConfig({
   plugins: ["typescript", "import", "unicorn", "oxc", "promise", "vitest", "react"],
-  jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
+  jsPlugins: [
+    { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
+    { name: "zentry", specifier: "./tools/oxlint/zentry/index.ts" },
+  ],
   options: { typeAware: true },
   categories: { correctness: "error", suspicious: "error", perf: "error" },
   ignorePatterns: [
     "ui/dist/**",
     "tools/oxlint/anti-slop/**",
+    "tools/oxlint/zentry/**",
     ".wrangler/**",
     ".claude/**",
     "worker-configuration.d.ts",
@@ -85,6 +89,11 @@ export default defineConfig({
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-readable-spacing": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
+
+    // ── zentry: validate once at the edge (DESIGN.md §16.6) ────
+    "zentry/no-json-parse": "error",
+    "zentry/no-nullable-parameters": "error",
+    "zentry/zod-only-at-boundaries": "error",
   },
   overrides: [
     { files: ["src/shared/**"], rules: { "no-restricted-imports": except() } },
@@ -112,6 +121,27 @@ export default defineConfig({
         "anti-slop/no-runtime-typeof": "off",
         "typescript/no-unsafe-type-assertion": "off",
       },
+    },
+    {
+      // `jsonText` is the one place JSON text is parsed, straight into a schema.
+      files: ["src/shared/json.ts"],
+      rules: { "zentry/no-json-parse": "off" },
+    },
+    {
+      // Where outside data enters, and so where its schemas live: the event and
+      // envelope from SDKs, the queue payload, API requests, the Access JWT, and
+      // JSON columns read back from D1. A new entry point is added here, by name.
+      files: [
+        "src/shared/json.ts",
+        "src/shared/schema.ts",
+        "src/core/wire.ts",
+        "src/core/envelope.ts",
+        "src/ingest/handler.ts",
+        "src/consumer/handler.ts",
+        "src/api/**",
+        "src/db/**",
+      ],
+      rules: { "zentry/zod-only-at-boundaries": "off" },
     },
     {
       // The UI's JSON viewer has to tell strings, numbers, lists and objects apart.

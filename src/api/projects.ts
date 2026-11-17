@@ -4,10 +4,10 @@ import { z } from "zod";
 
 import type { KeyRecord, ProjectHour, ProjectRecord } from "@/db/projects";
 import type { ApiKey, ApiProject } from "@/shared/contract";
-import { newPublicKey, parseId } from "@/shared/ids";
+import { newPublicKey } from "@/shared/ids";
 
 import type { ApiContext, Handler } from "./context";
-import { badRequest, isLocal, noContent, notFound, readBody } from "./http";
+import { badRequest, IdParam, isLocal, noContent, notFound, readBody, readParams } from "./http";
 import { fillSeries, LAST_24_HOURS, windowStart } from "./series";
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,49}$/;
@@ -66,11 +66,14 @@ function toApiKey(context: ApiContext, projectId: number, key: KeyRecord): ApiKe
   return { ...key, dsn: dsn(context, projectId, key.publicKey) };
 }
 
-async function projectOf(
-  context: ApiContext,
-  slug: string | undefined,
-): Promise<ProjectRecord | null> {
-  return context.deps.projects.findBySlug(context.organizationId, slug ?? "");
+// Every project route starts with the slug; the key routes add a key id.
+const ProjectParams = z.tuple([z.string()], z.string());
+
+/** The project named by the route's first parameter. */
+async function projectOf(context: ApiContext, args: string[]): Promise<ProjectRecord | null> {
+  const [slug] = readParams(args, ProjectParams);
+
+  return context.deps.projects.findBySlug(context.organizationId, slug);
 }
 
 async function recentCounts(context: ApiContext): Promise<ProjectHour[]> {
@@ -111,16 +114,16 @@ export const createProject: Handler = async (context) => {
     : Response.json(toApiProject(created, [], context.now), { status: 201 });
 };
 
-export const getProject: Handler = async (context, [slug]) => {
-  const project = await projectOf(context, slug);
+export const getProject: Handler = async (context, args) => {
+  const project = await projectOf(context, args);
 
   return project === null
     ? notFound()
     : Response.json(toApiProject(project, await recentCounts(context), context.now));
 };
 
-export const updateProject: Handler = async (context, [slug]) => {
-  const project = await projectOf(context, slug);
+export const updateProject: Handler = async (context, args) => {
+  const project = await projectOf(context, args);
 
   if (project === null) {
     return notFound();
@@ -139,8 +142,8 @@ export const updateProject: Handler = async (context, [slug]) => {
   );
 };
 
-export const deleteProject: Handler = async (context, [slug]) => {
-  const project = await projectOf(context, slug);
+export const deleteProject: Handler = async (context, args) => {
+  const project = await projectOf(context, args);
 
   if (project === null) {
     return notFound();
@@ -151,8 +154,8 @@ export const deleteProject: Handler = async (context, [slug]) => {
   return noContent();
 };
 
-export const listKeys: Handler = async (context, [slug]) => {
-  const project = await projectOf(context, slug);
+export const listKeys: Handler = async (context, args) => {
+  const project = await projectOf(context, args);
 
   if (project === null) {
     return notFound();
@@ -163,8 +166,8 @@ export const listKeys: Handler = async (context, [slug]) => {
   return Response.json(keys.map((key) => toApiKey(context, project.id, key)));
 };
 
-export const createKey: Handler = async (context, [slug]) => {
-  const project = await projectOf(context, slug);
+export const createKey: Handler = async (context, args) => {
+  const project = await projectOf(context, args);
 
   if (project === null) {
     return notFound();
@@ -187,9 +190,9 @@ export const createKey: Handler = async (context, [slug]) => {
   );
 };
 
-export const updateKey: Handler = async (context, [slug, keyIdText]) => {
-  const project = await projectOf(context, slug);
-  const keyId = parseId(keyIdText ?? "");
+export const updateKey: Handler = async (context, args) => {
+  const [, keyId] = readParams(args, z.tuple([z.string(), IdParam]));
+  const project = await projectOf(context, args);
   const keys = project === null ? [] : await context.deps.projects.listKeys(project.id);
   const key = keys.find((candidate) => candidate.id === keyId);
 

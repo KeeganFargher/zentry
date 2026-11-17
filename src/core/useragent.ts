@@ -33,6 +33,9 @@ function firstMatch(userAgent: string, candidates: [string, RegExp][]): AgentPar
   return null;
 }
 
+/** What an absent User-Agent tells us. */
+export const NO_AGENT: Agent = { browser: null, os: null };
+
 export function parseUserAgent(userAgent: string): Agent {
   return { browser: firstMatch(userAgent, BROWSERS), os: firstMatch(userAgent, SYSTEMS) };
 }

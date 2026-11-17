@@ -6,8 +6,7 @@ import type { JsonObject, Pair, StoredRequest } from "@/shared/contract";
 import { scrubBody, scrubObject, scrubPairs, scrubQueryString } from "./scrub";
 import type { ContextFacts, UserFacts } from "./tags";
 import { cut, MAX_STRING, trimJson, trimObject } from "./trim";
-import { parseUserAgent } from "./useragent";
-import type { AgentPart } from "./useragent";
+import type { Agent, AgentPart } from "./useragent";
 import type { WireContexts, WireRequest, WireUser } from "./wire";
 
 /** Where the event came from, as seen by the ingest Worker. */
@@ -53,15 +52,19 @@ function toStoredHeaders(sent: Pair[], origin: Origin): Pair[] {
   return scrubPairs(headers);
 }
 
-export function toStoredRequest(raw: WireRequest | null, origin: Origin): StoredRequest | null {
-  if (raw === null) {
-    const headers = toStoredHeaders([], origin);
+/**
+ * The request of an event that sent none. A browser event still gets one, so
+ * the User-Agent the browser sent is kept for the browser and OS tags.
+ */
+export function browserRequest(origin: Origin): StoredRequest | null {
+  const headers = toStoredHeaders([], origin);
 
-    return headers.length === 0
-      ? null
-      : { url: null, method: null, queryString: null, headers, data: null };
-  }
+  return headers.length === 0
+    ? null
+    : { url: null, method: null, queryString: null, headers, data: null };
+}
 
+export function toStoredRequest(raw: WireRequest, origin: Origin): StoredRequest {
   const [path = "", urlQuery = null] = raw.url === null ? [] : raw.url.split("?", 2);
   const query = raw.query_string ?? urlQuery;
 
@@ -74,21 +77,26 @@ export function toStoredRequest(raw: WireRequest | null, origin: Origin): Stored
   };
 }
 
-function resolveIp(claimed: string | null, origin: Origin): string | null {
-  const wantsAuto = claimed === AUTO_IP || (claimed === null && isBrowser(origin));
-
-  if (!wantsAuto) {
-    return claimed;
-  }
-
+/** The client's address, unless the SDK said not to collect it. */
+function autoIp(origin: Origin): string | null {
   return origin.inferIp ? origin.clientIp : null;
+}
+
+/** An address the SDK sent is kept, except `{{auto}}`, which asks for the client's. */
+function sentIp(claimed: string, origin: Origin): string | null {
+  return claimed === AUTO_IP ? autoIp(origin) : claimed;
+}
+
+/** A browser SDK never knows its own address, so sending none means "use the client's". */
+function unsentIp(origin: Origin): string | null {
+  return isBrowser(origin) ? autoIp(origin) : null;
 }
 
 export type StoredUser = { user: JsonObject | null; facts: UserFacts };
 
 export function toStoredUser(raw: WireUser, origin: Origin): StoredUser {
   const user = trimObject(raw.fields, USER_LIMITS);
-  const resolved = resolveIp(raw.ip_address, origin);
+  const resolved = raw.ip_address === null ? unsentIp(origin) : sentIp(raw.ip_address, origin);
   const ip = resolved === null ? null : cut(resolved, USER_LIMITS.maxString);
 
   // The SDK's value was only a request; the resolved one replaces it.
@@ -118,9 +126,8 @@ function agentFacts(part: AgentPart): ContextFacts {
 }
 
 /** Fills `browser` and `os` from the User-Agent when the SDK sent neither. */
-export function toStoredContexts(raw: WireContexts, userAgent: string | null): StoredContexts {
+export function toStoredContexts(raw: WireContexts, agent: Agent): StoredContexts {
   const contexts = scrubObject(trimObject(raw.all, DATA_LIMITS));
-  const agent = parseUserAgent(userAgent ?? "");
   const { browser, os, runtime, device } = raw;
 
   if (browser === null && agent.browser !== null) {
@@ -142,6 +149,6 @@ export function toStoredContexts(raw: WireContexts, userAgent: string | null): S
   };
 }
 
-export function requestUserAgent(request: StoredRequest | null): string | null {
-  return request === null ? null : findHeader(request.headers, "user-agent");
+export function requestUserAgent(request: StoredRequest): string | null {
+  return findHeader(request.headers, "user-agent");
 }

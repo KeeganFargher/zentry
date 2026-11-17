@@ -32,14 +32,19 @@ async function failure(response: Response): Promise<ApiFailure> {
   return new ApiFailure(response.status, detail ?? `Request failed (${response.status})`);
 }
 
-async function send(method: string, path: string, body?: Json): Promise<Response> {
-  const init: RequestInit = { method };
+async function send(method: string, path: string): Promise<Response> {
+  return request(path, { method });
+}
 
-  if (body !== undefined) {
-    init.body = JSON.stringify(body);
-    init.headers = { "content-type": "application/json" };
-  }
+async function sendJson(method: string, path: string, body: Json): Promise<Response> {
+  return request(path, {
+    method,
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
+}
 
+async function request(path: string, init: RequestInit): Promise<Response> {
   const response = await fetch(`/api/0${path}`, init);
 
   if (!response.ok) {
@@ -69,10 +74,10 @@ export const api = {
   project: (org: string, slug: string): Promise<ApiProject> => get(`/projects/${org}/${slug}/`),
 
   createProject: async (org: string, name: string, platform: string): Promise<ApiProject> =>
-    read(await send("POST", `/organizations/${org}/projects/`, { name, platform })),
+    read(await sendJson("POST", `/organizations/${org}/projects/`, { name, platform })),
 
   updateProject: async (org: string, slug: string, changes: Json): Promise<ApiProject> =>
-    read(await send("PUT", `/projects/${org}/${slug}/`, changes)),
+    read(await sendJson("PUT", `/projects/${org}/${slug}/`, changes)),
 
   deleteProject: async (org: string, slug: string): Promise<void> => {
     await send("DELETE", `/projects/${org}/${slug}/`);
@@ -81,10 +86,10 @@ export const api = {
   keys: (org: string, slug: string): Promise<ApiKey[]> => get(`/projects/${org}/${slug}/keys/`),
 
   createKey: async (org: string, slug: string, label: string): Promise<ApiKey[]> =>
-    read(await send("POST", `/projects/${org}/${slug}/keys/`, { label })),
+    read(await sendJson("POST", `/projects/${org}/${slug}/keys/`, { label })),
 
   revokeKey: async (org: string, slug: string, keyId: number): Promise<ApiKey> =>
-    read(await send("PUT", `/projects/${org}/${slug}/keys/${keyId}/`, { status: "revoked" })),
+    read(await sendJson("PUT", `/projects/${org}/${slug}/keys/${keyId}/`, { status: "revoked" })),
 
   issues: (org: string, query: URLSearchParams): Promise<ApiIssueList> =>
     get(`/organizations/${org}/issues/?${query.toString()}`),
@@ -95,11 +100,11 @@ export const api = {
   setStatus: async (org: string, issueIds: number[], status: IssueStatus): Promise<void> => {
     const ids = issueIds.map((id) => `id=${id}`).join("&");
 
-    await send("PUT", `/organizations/${org}/issues/?${ids}`, { status });
+    await sendJson("PUT", `/organizations/${org}/issues/?${ids}`, { status });
   },
 
   markSeen: async (org: string, issueId: string): Promise<void> => {
-    await send("PUT", `/organizations/${org}/issues/${issueId}/`, { hasSeen: true });
+    await sendJson("PUT", `/organizations/${org}/issues/${issueId}/`, { hasSeen: true });
   },
 
   deleteIssue: async (org: string, issueId: string): Promise<void> => {
@@ -115,10 +120,11 @@ export const api = {
   activity: (org: string, issueId: string): Promise<ApiActivity[]> =>
     get(`/organizations/${org}/issues/${issueId}/activity/`),
 
-  events: (org: string, issueId: string, cursor: string | null): Promise<ApiEventList> =>
-    get(
-      `/organizations/${org}/issues/${issueId}/events/${cursor === null ? "" : `?cursor=${cursor}`}`,
-    ),
+  events: (org: string, issueId: string): Promise<ApiEventList> =>
+    get(`/organizations/${org}/issues/${issueId}/events/`),
+
+  eventsAfter: (org: string, issueId: string, cursor: string): Promise<ApiEventList> =>
+    get(`/organizations/${org}/issues/${issueId}/events/?cursor=${cursor}`),
 
   event: (org: string, issueId: string, which: string): Promise<ApiEventDetail> =>
     get(`/organizations/${org}/issues/${issueId}/events/${which}/`),

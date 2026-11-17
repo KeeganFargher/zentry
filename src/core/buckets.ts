@@ -41,7 +41,7 @@ export function prepareEvent(normalized: Normalized): Prepared {
     hash: computeHash(event),
     tags: indexedTags(event, facts),
     userLabel: userLabel(facts.user),
-    metadata: deriveMetadata(event.exceptions, event.logger ?? null),
+    metadata: deriveMetadata(event),
   };
 }
 

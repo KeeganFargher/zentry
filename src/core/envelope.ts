@@ -66,11 +66,8 @@ function readHeader<T extends z.ZodType>(cursor: Cursor, schema: T): z.output<T>
   return parsed.success ? parsed.data : null;
 }
 
-function readPayload(cursor: Cursor, length: number | null): Uint8Array | null {
-  if (length === null) {
-    return readLine(cursor);
-  }
-
+/** A payload of `length` bytes; null when that runs past the end of the envelope. */
+function readSized(cursor: Cursor, length: number): Uint8Array | null {
   const end = cursor.position + length;
 
   if (length < 0 || end > cursor.bytes.length) {
@@ -103,9 +100,16 @@ export function parseEnvelope(bytes: Uint8Array): Envelope | null {
 
   while (cursor.position < bytes.length && !atBlankTail(cursor)) {
     const itemHeader = readHeader(cursor, ItemHeader);
-    const payload = itemHeader === null ? null : readPayload(cursor, itemHeader.length);
 
-    if (itemHeader === null || payload === null) {
+    if (itemHeader === null) {
+      return null;
+    }
+
+    // Without a length, the payload runs to the end of the line.
+    const { length } = itemHeader;
+    const payload = length === null ? readLine(cursor) : readSized(cursor, length);
+
+    if (payload === null) {
       return null;
     }
 

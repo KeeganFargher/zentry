@@ -22,6 +22,7 @@ import {
   noContent,
   notFound,
   readBody,
+  readParams,
   readQuery,
 } from "./http";
 import { fillSeries, LAST_14_DAYS, LAST_24_HOURS, LAST_30_DAYS, windowStart } from "./series";
@@ -117,13 +118,11 @@ async function withStats(context: ApiContext, issues: IssueRecord[]): Promise<Ap
   }));
 }
 
-async function issueOf(
-  context: ApiContext,
-  idText: string | undefined,
-): Promise<IssueRecord | null> {
-  const id = parseId(idText ?? "");
+/** The issue named by the route's first parameter. */
+async function issueOf(context: ApiContext, args: string[]): Promise<IssueRecord | null> {
+  const [id] = readParams(args, z.tuple([IdParam]));
 
-  return id === null ? null : context.deps.issues.find(context.organizationId, id);
+  return context.deps.issues.find(context.organizationId, id);
 }
 
 export const listIssues: Handler = async (context) => {
@@ -162,15 +161,15 @@ export const updateIssues: Handler = async (context) => {
   return noContent();
 };
 
-export const getIssue: Handler = async (context, [idText]) => {
-  const issue = await issueOf(context, idText);
+export const getIssue: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
   return issue === null ? notFound() : Response.json((await withStats(context, [issue]))[0]);
 };
 
 /** Accepts `status`, `hasSeen: true` (the user opened the issue), or both. */
-export const updateIssue: Handler = async (context, [idText]) => {
-  const issue = await issueOf(context, idText);
+export const updateIssue: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
   if (issue === null) {
     return notFound();
@@ -192,8 +191,8 @@ export const updateIssue: Handler = async (context, [idText]) => {
 };
 
 /** Removes the issue's R2 objects first, then the issue and everything it owns. */
-export const deleteIssue: Handler = async (context, [idText]) => {
-  const issue = await issueOf(context, idText);
+export const deleteIssue: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
   if (issue === null) {
     return notFound();
@@ -205,8 +204,8 @@ export const deleteIssue: Handler = async (context, [idText]) => {
   return noContent();
 };
 
-export const getIssueTags: Handler = async (context, [idText]) => {
-  const issue = await issueOf(context, idText);
+export const getIssueTags: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
   if (issue === null) {
     return notFound();
@@ -230,8 +229,8 @@ function sum(hours: IssueHour[], pick: (hour: IssueHour) => number): number {
   return hours.reduce((total, hour) => total + pick(hour), 0);
 }
 
-export const getIssueStats: Handler = async (context, [idText]) => {
-  const issue = await issueOf(context, idText);
+export const getIssueStats: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
   if (issue === null) {
     return notFound();
@@ -248,14 +247,15 @@ export const getIssueStats: Handler = async (context, [idText]) => {
   } satisfies ApiIssueStats);
 };
 
-export const getIssueActivity: Handler = async (context, [idText]) => {
-  const issue = await issueOf(context, idText);
+export const getIssueActivity: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
   return issue === null ? notFound() : Response.json(await context.deps.issues.activity(issue.id));
 };
 
 /** Resolves a short id such as `API-42`. The slug may itself contain dashes. */
-export const getShortId: Handler = async (context, [shortId = ""]) => {
+export const getShortId: Handler = async (context, args) => {
+  const [shortId] = readParams(args, z.tuple([z.string()]));
   const separator = shortId.lastIndexOf("-");
   const number = parseId(shortId.slice(separator + 1));
   const slug = shortId.slice(0, Math.max(separator, 0));

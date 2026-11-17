@@ -36,7 +36,7 @@ export function noContent(): Response {
 /** Thrown when request input fails its schema; the router answers it with a 400. */
 export class InvalidRequest extends Error {}
 
-type RequestInput = string | Record<string, string | string[]>;
+type RequestInput = string | string[] | Record<string, string | string[]>;
 
 function parsed<T extends z.ZodType>(schema: T, input: RequestInput): z.output<T> {
   const result = schema.safeParse(input);
@@ -73,6 +73,15 @@ export function readQuery<T extends z.ZodType>(url: URL, schema: T): z.output<T>
   }
 
   return parsed(schema, query);
+}
+
+/**
+ * The route's path parameters (after the organization), validated by a tuple
+ * schema. The route patterns already capture every group, so a failure here
+ * means a handler was wired to the wrong route.
+ */
+export function readParams<T extends z.ZodType>(args: string[], schema: T): z.output<T> {
+  return parsed(schema, args);
 }
 
 /** A decimal id such as a project id: a positive integer. */

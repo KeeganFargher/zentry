@@ -17,7 +17,7 @@ import type {
   ApiTag,
 } from "@/shared/contract";
 
-import { api, apiDeps, claims, signToken } from "./api-helpers";
+import { api, apiDeps, claims, signToken, USER } from "./api-helpers";
 import { consumerDeps, errorEvent, eventId, message, NOW } from "./helpers";
 
 async function newProject(name: string): Promise<ApiProject> {
@@ -326,8 +326,8 @@ describe("issues", () => {
     const [issue] = (await issuesOf(project.id)).issues;
     const path = `/organizations/default/issues/${issue?.id}/`;
 
-    const seenBy = async (email?: string): Promise<boolean | undefined> =>
-      (await (await api(path, email === undefined ? {} : { email })).json<ApiIssue>()).hasSeen;
+    const seenBy = async (email: string): Promise<boolean | undefined> =>
+      (await (await api(path, { email })).json<ApiIssue>()).hasSeen;
 
     expect(issue?.hasSeen).toBe(false);
 
@@ -342,7 +342,7 @@ describe("issues", () => {
     await api(path, { method: "PUT", body: { status: "resolved" } });
     await ingest(project.id, [{ index: 2, name: "checkout", at: NOW + 1000 }]);
 
-    expect(await seenBy()).toBe(false);
+    expect(await seenBy(USER)).toBe(false);
   });
 
   it("refuses an update that changes nothing", async () => {

@@ -1367,6 +1367,15 @@ Three of them shape the design rather than just the style:
   a schema works on its typed output and never re-checks a type. The one
   `typeof` left is `jsonKind` in `src/shared/json.ts`, which tells the members
   of the `Json` union apart for the code that trims and scrubs free-form data.
+- **Zentry's own rules (`tools/oxlint/zentry/`) hold that line.**
+  `no-nullable-parameters` rejects any parameter typed `T | null`, `T |
+  undefined` or `x?: T`: absence is checked once, where the value is
+  produced, and helpers take present values. Inline callbacks (typed by the
+  API they are passed to) and React hooks (which cannot be skipped while
+  their input loads) are exempt. `no-json-parse` sends all JSON text through
+  `jsonText(schema)`. `zod-only-at-boundaries` allows schemas only in the
+  files listed in `oxlint.config.ts` as entry points, so nothing past them
+  re-validates.
 - **`no-module-mocking`.** Tests may not mock modules. This fits the test plan
   in §14: `core/` is pure and needs no mocks, and everything else runs against
   Miniflare's real D1, R2 and Queues.

@@ -18,9 +18,14 @@ function headerKey(request: Request): string | null {
   return /sentry_key=([0-9a-fA-F]+)/.exec(header)?.[1] ?? null;
 }
 
-export function requestPublicKey(request: Request, envelopeKey: string | null): string | null {
-  const queryKey = new URL(request.url).searchParams.get("sentry_key");
-  const key = (headerKey(request) ?? queryKey ?? envelopeKey ?? "").toLowerCase();
+/** The key the request itself carries: the X-Sentry-Auth header, then `sentry_key`. */
+export function requestKey(request: Request): string | null {
+  return headerKey(request) ?? new URL(request.url).searchParams.get("sentry_key");
+}
+
+/** A claimed key, lower-cased; null when it is not a public key's shape. */
+export function publicKeyOf(claimed: string): string | null {
+  const key = claimed.toLowerCase();
 
   return isPublicKey(key) ? key : null;
 }

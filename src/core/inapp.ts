@@ -84,8 +84,8 @@ const MODULE_NAMES = new Set([
 
 const FUNCTION_PATTERN = /^(?:runtime\.[a-z]|net\/http\.|testing\.|std::|core::|tokio::)/;
 
-function listed(value: string | null, prefixes: string[]): boolean {
-  return value !== null && prefixes.some((prefix) => value.startsWith(prefix));
+function listed(value: string, prefixes: string[]): boolean {
+  return prefixes.some((prefix) => value.startsWith(prefix));
 }
 
 /** True for platform and framework code. SDK flags are applied before this. */
@@ -96,7 +96,7 @@ export function looksLikeLibrary(
 
   return (
     PATH_MARKERS.some((marker) => path.includes(marker)) ||
-    listed(frame.module, MODULE_PREFIXES) ||
+    (frame.module !== null && listed(frame.module, MODULE_PREFIXES)) ||
     (frame.module !== null && MODULE_NAMES.has(frame.module)) ||
     (frame.function !== null && FUNCTION_PATTERN.test(frame.function))
   );

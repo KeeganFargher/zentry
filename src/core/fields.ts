@@ -17,13 +17,9 @@ const BREADCRUMB_LIMITS = { depth: 3, maxKeys: 50, maxString: 1024 };
 
 export type Clock = { receivedAt: number; sentAt: string | null };
 
-/** Corrects client clock drift, then clamps to a sane window. */
-export function resolveTimestamp(claimed: number | null, clock: Clock): number {
+/** The time the SDK claimed, corrected for client clock drift, then clamped to a sane window. */
+export function resolveTimestamp(claimed: number, clock: Clock): number {
   const sentAt = clock.sentAt === null ? null : parseIsoMs(clock.sentAt);
-
-  if (claimed === null) {
-    return clock.receivedAt;
-  }
 
   const drift = sentAt === null ? 0 : clock.receivedAt - sentAt;
   const corrected = Math.abs(drift) > DRIFT_THRESHOLD ? claimed + drift : claimed;

@@ -38,16 +38,16 @@ export type TagFacts = {
 
 type Candidate = [key: string, value: string | null];
 
-function nameAndVersion(context: ContextFacts | null): string | null {
-  if (context === null || context.name === null) {
+function nameAndVersion(context: ContextFacts): string | null {
+  if (context.name === null) {
     return null;
   }
 
   return context.version === null ? context.name : `${context.name} ${context.version}`;
 }
 
-function browserTag(browser: ContextFacts | null): string | null {
-  if (browser === null || browser.name === null) {
+function browserTag(browser: ContextFacts): string | null {
+  if (browser.name === null) {
     return null;
   }
 
@@ -94,16 +94,29 @@ function eventTags(event: StoredEvent): Candidate[] {
   ];
 }
 
+function browserTags(browser: ContextFacts): Candidate[] {
+  return [
+    ["browser", browserTag(browser)],
+    ["browser.name", browser.name],
+  ];
+}
+
+function osTags(os: ContextFacts): Candidate[] {
+  return [
+    ["os", nameAndVersion(os)],
+    ["os.name", os.name],
+  ];
+}
+
+// A context the event lacks adds no candidates; its tags are simply absent.
 function factTags(facts: TagFacts): Candidate[] {
   const { browser, os, runtime, device } = facts;
 
   return [
-    ["browser", browserTag(browser)],
-    ["browser.name", browser?.name ?? null],
-    ["os", nameAndVersion(os)],
-    ["os.name", os?.name ?? null],
-    ["runtime", nameAndVersion(runtime)],
-    ["device", device?.model ?? device?.family ?? null],
+    ...(browser === null ? [] : browserTags(browser)),
+    ...(os === null ? [] : osTags(os)),
+    ...(runtime === null ? [] : [["runtime", nameAndVersion(runtime)] satisfies Candidate]),
+    ...(device === null ? [] : [["device", device.model ?? device.family] satisfies Candidate]),
   ];
 }
 

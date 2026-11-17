@@ -13,10 +13,10 @@ import { SECOND } from "@/shared/time";
 import { INLINE_PAYLOAD_MAX_BYTES, MAX_ENVELOPE_BYTES, MAX_EVENT_BYTES } from "@/shared/types";
 import type { QueueMessage } from "@/shared/types";
 
-import { requestPublicKey } from "./auth";
+import { publicKeyOf, requestKey } from "./auth";
 import type { KeyCache } from "./auth";
 import { readBody } from "./body";
-import { accepted, preflight, rateLimited, rejected, unavailable } from "./http";
+import { accepted, acceptedNothing, preflight, rateLimited, rejected, unavailable } from "./http";
 
 export type IngestDeps = {
   keys: KeyCache;
@@ -98,7 +98,8 @@ async function authenticate(
   parsed: Parsed,
   deps: IngestDeps,
 ): Promise<{ publicKey: string; info: KeyInfo } | null> {
-  const publicKey = requestPublicKey(request, parsed.envelopeKey);
+  const claimed = requestKey(request) ?? parsed.envelopeKey;
+  const publicKey = claimed === null ? null : publicKeyOf(claimed);
   const info = publicKey === null ? null : await deps.keys.find(publicKey, deps.now());
 
   return publicKey === null || info === null ? null : { publicKey, info };
@@ -130,7 +131,7 @@ async function enqueue(input: Accepted, deps: IngestDeps): Promise<Response> {
   const head = parsedHead.data;
 
   if (head.type === "transaction") {
-    return accepted(null);
+    return acceptedNothing();
   }
 
   // Only events count against the burst limit. Transactions, sessions and
@@ -195,7 +196,7 @@ async function accept(request: Request, route: Route, deps: IngestDeps): Promise
   }
 
   return parsed.payload === null
-    ? accepted(null)
+    ? acceptedNothing()
     : enqueue({ request, parsed, ...auth, payload: parsed.payload }, deps);
 }
 

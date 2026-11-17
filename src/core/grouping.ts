@@ -40,8 +40,8 @@ function hashParts(parts: string[]): string {
   return md5Hex(parts.join("\u0000"));
 }
 
-function isUrl(path: string | null): boolean {
-  return path !== null && /^https?:\/\//.test(path);
+function isUrl(path: string): boolean {
+  return /^https?:\/\//.test(path);
 }
 
 function basename(path: string): string {
@@ -58,13 +58,14 @@ function isSkipped(frame: StoredFrame, platform: string): boolean {
     return false;
   }
 
-  const unmapped = platform === "javascript" && isUrl(frame.absPath ?? frame.filename);
+  const location = frame.absPath ?? frame.filename;
+  const unmapped = platform === "javascript" && location !== null && isUrl(location);
 
   return unmapped || frame.function === "eval" || IGNORED_PATHS.has(frame.absPath ?? "");
 }
 
-function functionPart(name: string | null, platform: string): string | null {
-  if (name === null || IGNORED_FUNCTIONS.has(name) || name.endsWith("/<")) {
+function functionPart(name: string, platform: string): string | null {
+  if (IGNORED_FUNCTIONS.has(name) || name.endsWith("/<")) {
     return null;
   }
 
@@ -84,10 +85,13 @@ function filePart(frame: StoredFrame): string | null {
     return stripProxy(frame.module);
   }
 
-  const usable =
-    frame.filename !== null && !isUrl(frame.absPath) && !IGNORED_FILENAMES.has(frame.filename);
+  const { absPath, filename } = frame;
 
-  return usable && frame.filename !== null ? basename(frame.filename) : null;
+  if (filename === null || IGNORED_FILENAMES.has(filename)) {
+    return null;
+  }
+
+  return absPath !== null && isUrl(absPath) ? null : basename(filename);
 }
 
 function contextPart(frame: StoredFrame, platform: string): string | null {
@@ -102,16 +106,15 @@ function contextPart(frame: StoredFrame, platform: string): string | null {
 function frameParts(frame: StoredFrame, platform: string): string[] {
   const parts = [
     filePart(frame),
-    functionPart(frame.function, platform),
+    frame.function === null ? null : functionPart(frame.function, platform),
     contextPart(frame, platform),
   ];
 
   return parts.filter((part) => part !== null);
 }
 
-function repeatsPrevious(frame: StoredFrame, previous: StoredFrame | undefined): boolean {
+function repeats(frame: StoredFrame, previous: StoredFrame): boolean {
   return (
-    previous !== undefined &&
     frame.module === previous.module &&
     frame.filename === previous.filename &&
     frame.function === previous.function &&
@@ -125,7 +128,10 @@ function stackParts(frames: StoredFrame[], platform: string): string[] {
   const parts: string[] = [];
 
   for (const [index, frame] of chosen.entries()) {
-    if (!repeatsPrevious(frame, chosen[index - 1]) && !isSkipped(frame, platform)) {
+    const previous = chosen[index - 1];
+    const repeated = previous !== undefined && repeats(frame, previous);
+
+    if (!repeated && !isSkipped(frame, platform)) {
       parts.push(...frameParts(frame, platform));
     }
   }

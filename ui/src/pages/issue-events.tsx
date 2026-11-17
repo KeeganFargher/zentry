@@ -43,12 +43,16 @@ type Pages = {
 };
 
 function useEventPages(org: string, issueId: string): Pages {
-  const first = useResource(`events:${org}:${issueId}`, () => api.events(org, issueId, null));
+  const first = useResource(`events:${org}:${issueId}`, () => api.events(org, issueId));
   const [later, setLater] = useState<ApiEventList | null>(null);
   const nextCursor = (later ?? first.data)?.nextCursor ?? null;
 
   const loadMore = async (): Promise<void> => {
-    const page = await api.events(org, issueId, nextCursor);
+    if (nextCursor === null) {
+      return;
+    }
+
+    const page = await api.eventsAfter(org, issueId, nextCursor);
 
     setLater({ events: [...(later?.events ?? []), ...page.events], nextCursor: page.nextCursor });
   };

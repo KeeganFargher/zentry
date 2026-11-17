@@ -16,10 +16,8 @@ export type Selection = {
   clear: () => void;
 };
 
-function rangeOf(anchor: number | null, index: number, range: boolean): [number, number] {
-  return range && anchor !== null
-    ? [Math.min(anchor, index), Math.max(anchor, index)]
-    : [index, index];
+function rangeOf(anchor: number, index: number): [number, number] {
+  return [Math.min(anchor, index), Math.max(anchor, index)];
 }
 
 export function useSelection(issues: ApiIssue[]): Selection {
@@ -35,7 +33,7 @@ export function useSelection(issues: ApiIssue[]): Selection {
 
     // The whole range takes the state the clicked row is switching to.
     const select = !ids.has(target.id);
-    const [from, to] = rangeOf(anchor, index, range);
+    const [from, to] = range && anchor !== null ? rangeOf(anchor, index) : [index, index];
     const next = new Set(ids);
 
     for (const issue of issues.slice(from, to + 1)) {

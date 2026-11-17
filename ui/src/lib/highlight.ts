@@ -87,8 +87,8 @@ const STRINGS = String.raw`"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|\`(?:[^\`\\]|\\
 const NUMBERS = String.raw`\b\d+(?:\.\d+)?\b`;
 const WORDS = String.raw`\b(?:${KEYWORDS.join("|")})\b`;
 
-function patternFor(filename: string | null): RegExp {
-  const extension = filename?.split(".").at(-1)?.toLowerCase() ?? "";
+function patternFor(filename: string): RegExp {
+  const extension = filename.split(".").at(-1)?.toLowerCase() ?? "";
   const comment = HASH_COMMENTS.has(extension) ? "#.*$" : String.raw`//.*$|/\*.*?(?:\*/|$)`;
 
   return new RegExp(`(${comment})|(${STRINGS})|(${NUMBERS})|(${WORDS})`, "g");
@@ -106,8 +106,8 @@ function kindOf(match: RegExpExecArray): TokenKind {
   return match[3] === undefined ? "keyword" : "number";
 }
 
-/** Splits one line into coloured runs. */
-export function highlight(line: string, filename: string | null): Token[] {
+/** Splits one line into coloured runs; the filename picks the comment syntax. */
+export function highlight(line: string, filename: string): Token[] {
   const tokens: Token[] = [];
   let last = 0;
 
