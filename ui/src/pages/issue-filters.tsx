@@ -10,8 +10,23 @@ import { readSetting, writeSetting } from "~/lib/storage";
 type FiltersProps = {
   query: URLSearchParams;
   projects: ApiProject[];
-  onChange: (key: string, value: string | null) => void;
+  onSet: (key: string, value: string) => void;
+  /** Removes the filter from the URL, so it takes its default. */
+  onClear: (key: string) => void;
 };
+
+type Choose = (key: string, value: string, fallback: string) => void;
+
+/** Sets `key`, or clears it when `value` is the filter's default. */
+function chooser(props: FiltersProps): Choose {
+  return (key, value, fallback) => {
+    if (value === fallback) {
+      props.onClear(key);
+    } else {
+      props.onSet(key, value);
+    }
+  };
+}
 
 const STATUSES = [
   ["unresolved", "Unresolved"],
@@ -31,13 +46,15 @@ export const SORT_SETTING = "issue-sort";
 
 const LEVELS = ["fatal", "error", "warning", "info", "debug"];
 
-function PageFilters({ query, projects, onChange }: FiltersProps): JSX.Element {
+function PageFilters(props: FiltersProps): JSX.Element {
+  const { query, projects } = props;
+
   return (
     <div className="joined">
       <select
         aria-label="Project"
         value={query.get("project") ?? ""}
-        onChange={(event) => onChange("project", event.target.value || null)}
+        onChange={(event) => chooser(props)("project", event.target.value, "")}
       >
         <option value="">All Projects</option>
         {projects.map((project) => (
@@ -49,7 +66,7 @@ function PageFilters({ query, projects, onChange }: FiltersProps): JSX.Element {
       <select
         aria-label="Level"
         value={query.get("level") ?? ""}
-        onChange={(event) => onChange("level", event.target.value || null)}
+        onChange={(event) => chooser(props)("level", event.target.value, "")}
       >
         <option value="">All Levels</option>
         {LEVELS.map((level) => (
@@ -59,9 +76,7 @@ function PageFilters({ query, projects, onChange }: FiltersProps): JSX.Element {
       <select
         aria-label="Status"
         value={query.get("status") ?? "unresolved"}
-        onChange={(event) =>
-          onChange("status", event.target.value === "unresolved" ? null : event.target.value)
-        }
+        onChange={(event) => chooser(props)("status", event.target.value, "unresolved")}
       >
         {STATUSES.map(([value, label]) => (
           <option key={value} value={value}>
@@ -92,23 +107,24 @@ function Token({ name, value, onRemove }: TokenProps): JSX.Element {
 }
 
 /** The search box: the active status and tag as removable tokens, then free text. */
-function Search({ query, onChange }: FiltersProps): JSX.Element {
+function Search(props: FiltersProps): JSX.Element {
+  const { query, onSet, onClear } = props;
   const [text, setText] = useState(query.get("query") ?? "");
   const status = query.get("status") ?? "unresolved";
   const tag = query.get("tag");
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    onChange("query", text.trim() === "" ? null : text.trim());
+    chooser(props)("query", text.trim(), "");
   };
 
   return (
     <div className="searchbox">
       <Icon name="search" />
       {status !== "all" && (
-        <Token name="is" value={status} onRemove={() => onChange("status", "all")} />
+        <Token name="is" value={status} onRemove={() => onSet("status", "all")} />
       )}
-      {tag !== null && <Token name="tag" value={tag} onRemove={() => onChange("tag", null)} />}
+      {tag !== null && <Token name="tag" value={tag} onRemove={() => onClear("tag")} />}
       <form onSubmit={submit}>
         <input
           type="search"
@@ -123,7 +139,7 @@ function Search({ query, onChange }: FiltersProps): JSX.Element {
 }
 
 export function IssueFilters(props: FiltersProps): JSX.Element {
-  const { query, onChange } = props;
+  const { query } = props;
 
   return (
     <div className="filters">
@@ -136,7 +152,7 @@ export function IssueFilters(props: FiltersProps): JSX.Element {
           value={query.get("sort") ?? readSetting(SORT_SETTING) ?? "date"}
           onChange={(event) => {
             writeSetting(SORT_SETTING, event.target.value);
-            onChange("sort", event.target.value === "date" ? null : event.target.value);
+            chooser(props)("sort", event.target.value, "date");
           }}
         >
           {SORTS.map(([value, label]) => (

@@ -33,10 +33,13 @@ function firstMatch(userAgent: string, candidates: [string, RegExp][]): AgentPar
   return null;
 }
 
+/** What an absent User-Agent tells us. */
+export const NO_AGENT: Agent = { browser: null, os: null };
+
 export function parseUserAgent(userAgent: string): Agent {
   return { browser: firstMatch(userAgent, BROWSERS), os: firstMatch(userAgent, SYSTEMS) };
 }
 
-export function majorVersion(version: string | null): string | null {
-  return version === null ? null : (version.split(".", 1)[0] ?? null);
+export function majorVersion(version: string): string {
+  return version.replace(/\..*$/s, "");
 }

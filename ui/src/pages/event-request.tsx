@@ -12,18 +12,6 @@ import { jsonText } from "~/lib/json";
 
 import { RowsTable } from "./event-contexts";
 
-function parsedUrl(url: string | null): URL | null {
-  if (url === null) {
-    return null;
-  }
-
-  try {
-    return new URL(url);
-  } catch {
-    return null;
-  }
-}
-
 function fullUrl(request: StoredRequest): string {
   const base = request.url ?? "";
   const query = request.queryString ?? "";
@@ -90,7 +78,7 @@ const VIEWS = [
 
 export function RequestSection({ request }: { request: StoredRequest }): JSX.Element {
   const [view, setView] = useState<"formatted" | "curl">("formatted");
-  const url = parsedUrl(request.url);
+  const url = request.url === null ? null : URL.parse(request.url);
   const command = curl(request);
 
   const actions = (

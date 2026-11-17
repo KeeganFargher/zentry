@@ -2,13 +2,16 @@
 // store blobs and commit once for the whole batch. Messages are acked only
 // after the commit.
 
+import { z } from "zod";
+
 import type { EventBlob } from "@/blobs/events";
 import { groupHourKeys, prepareEvent } from "@/core/buckets";
 import type { Prepared } from "@/core/buckets";
 import { normalizeEvent } from "@/core/normalize";
 import { planBatch } from "@/core/plan";
+import { WireEvent } from "@/core/wire";
 import type { BatchKeys } from "@/db/batch";
-import { asObject, parseJson } from "@/shared/json";
+import { jsonText } from "@/shared/json";
 import { errorText, logError } from "@/shared/log";
 import type { BatchState, BatchWrites, GroupHourKey, GroupHourStored } from "@/shared/plan";
 import { hourBucket } from "@/shared/time";
@@ -32,12 +35,42 @@ async function loadPayload(message: QueueMessage, deps: ConsumerDeps): Promise<s
   return message.spill_key === null ? message.payload : deps.loadSpill(message.spill_key);
 }
 
-/** Null when the payload is missing or is not a JSON object; retrying would not help. */
-async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepared | null> {
-  const raw = asObject(parseJson((await loadPayload(message, deps)) ?? ""));
+// The event is validated here, once, as it comes off the queue. Everything
+// after this works on the typed result.
+const EventPayload = jsonText(WireEvent);
 
-  if (raw === null) {
+/** Null when the payload is not a JSON object; retrying would not help. */
+function normalizeMessage(message: QueueMessage, payload: string): Prepared | null {
+  const parsed = EventPayload.safeParse(payload);
+
+  if (!parsed.success) {
     logError("dropping unparseable event", {
+      project_id: message.project_id,
+      event_id: message.event_id,
+      error: z.prettifyError(parsed.error),
+    });
+
+    return null;
+  }
+
+  return prepareEvent(
+    normalizeEvent(parsed.data, {
+      projectId: message.project_id,
+      eventId: message.event_id,
+      receivedAt: message.received_at,
+      clientIp: message.client_ip,
+      userAgent: message.user_agent,
+      sentAt: message.sent_at,
+    }),
+  );
+}
+
+/** Null when the event cannot be stored; retrying would not help. */
+async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepared | null> {
+  const payload = await loadPayload(message, deps);
+
+  if (payload === null) {
+    logError("dropping event whose spilled payload is gone", {
       project_id: message.project_id,
       event_id: message.event_id,
     });
@@ -45,19 +78,12 @@ async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepa
     return null;
   }
 
+  // Parsing is inside the try as well as normalizing: anything either throws
+  // depends only on the payload, so it would throw the same way on every retry,
+  // and a throw here would otherwise send the whole batch back to the queue.
   try {
-    return prepareEvent(
-      normalizeEvent(raw, {
-        projectId: message.project_id,
-        eventId: message.event_id,
-        receivedAt: message.received_at,
-        clientIp: message.client_ip,
-        userAgent: message.user_agent,
-        sentAt: message.sent_at,
-      }),
-    );
+    return normalizeMessage(message, payload);
   } catch (cause) {
-    // The same input would fail the same way on every retry.
     logError("dropping event that could not be normalized", {
       project_id: message.project_id,
       event_id: message.event_id,

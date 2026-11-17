@@ -1,12 +1,13 @@
-// Normalization of the request, user and contexts interfaces.
+// Normalization of the request, user and contexts interfaces, plus the typed
+// facts that tags are built from.
 
 import type { JsonObject, Pair, StoredRequest } from "@/shared/contract";
-import { getNonEmpty, getObject, getString } from "@/shared/json";
 
-import { parsePairs } from "./fields";
 import { scrubBody, scrubObject, scrubPairs, scrubQueryString } from "./scrub";
-import { cut, cutOrNull, MAX_STRING, trimJson, trimObject } from "./trim";
-import { parseUserAgent } from "./useragent";
+import type { ContextFacts, UserFacts } from "./tags";
+import { cut, MAX_STRING, trimJson, trimObject } from "./trim";
+import type { Agent, AgentPart } from "./useragent";
+import type { WireContexts, WireRequest, WireUser } from "./wire";
 
 /** Where the event came from, as seen by the ingest Worker. */
 export type Origin = {
@@ -15,6 +16,13 @@ export type Origin = {
   platform: string;
   /** False when the SDK set `sdk.settings.infer_ip` to "never". */
   inferIp: boolean;
+};
+
+type ContextName = "browser" | "os" | "runtime" | "device";
+
+export type StoredContexts = {
+  contexts: JsonObject;
+  facts: Record<ContextName, ContextFacts | null>;
 };
 
 const AUTO_IP = "{{auto}}";
@@ -29,8 +37,9 @@ function findHeader(headers: Pair[], name: string): string | null {
   return headers.find(([key]) => key.toLowerCase() === name)?.[1] ?? null;
 }
 
-function parseHeaders(raw: JsonObject, origin: Origin): Pair[] {
-  const headers = parsePairs(raw["headers"]).map(([key, value]): Pair => [key, cut(value, 2048)]);
+/** Browser SDKs leave the User-Agent to the browser, so it is taken from the request. */
+function toStoredHeaders(sent: Pair[], origin: Origin): Pair[] {
+  const headers = sent.map(([key, value]): Pair => [key, cut(value, 2048)]);
 
   if (
     isBrowser(origin) &&
@@ -43,81 +52,103 @@ function parseHeaders(raw: JsonObject, origin: Origin): Pair[] {
   return scrubPairs(headers);
 }
 
-function parseQuery(raw: JsonObject, urlQuery: string | null): string | null {
-  const text = getNonEmpty(raw, "query_string");
-  const pairs = parsePairs(raw["query_string"]);
-  const joined = pairs.map(([key, value]) => `${key}=${value}`).join("&");
-  const query = text ?? (joined === "" ? urlQuery : joined);
+/**
+ * The request of an event that sent none. A browser event still gets one, so
+ * the User-Agent the browser sent is kept for the browser and OS tags.
+ */
+export function browserRequest(origin: Origin): StoredRequest | null {
+  const headers = toStoredHeaders([], origin);
 
-  return query === null ? null : scrubQueryString(cut(query, MAX_STRING));
+  return headers.length === 0
+    ? null
+    : { url: null, method: null, queryString: null, headers, data: null };
 }
 
-export function parseRequest(raw: JsonObject | null, origin: Origin): StoredRequest | null {
-  const source = raw ?? {};
-  const headers = parseHeaders(source, origin);
-  const [path, urlQuery = null] = (getNonEmpty(source, "url") ?? "").split("?", 2);
-
-  if (raw === null && headers.length === 0) {
-    return null;
-  }
+export function toStoredRequest(raw: WireRequest, origin: Origin): StoredRequest {
+  const [path = "", urlQuery = null] = raw.url === null ? [] : raw.url.split("?", 2);
+  const query = raw.query_string ?? urlQuery;
 
   return {
-    url: path === undefined || path === "" ? null : cut(path, MAX_STRING),
-    method: cutOrNull(getNonEmpty(source, "method"), 20),
-    queryString: parseQuery(source, urlQuery),
-    headers,
-    data: scrubBody(trimJson(source["data"] ?? null, DATA_LIMITS)),
+    url: path === "" ? null : cut(path, MAX_STRING),
+    method: raw.method,
+    queryString: query === null ? null : scrubQueryString(cut(query, MAX_STRING)),
+    headers: toStoredHeaders(raw.headers, origin),
+    data: scrubBody(trimJson(raw.data, DATA_LIMITS)),
   };
 }
 
-function resolveIp(claimed: string | null, origin: Origin): string | null {
-  const wantsAuto = claimed === AUTO_IP || (claimed === null && isBrowser(origin));
-
-  if (!wantsAuto) {
-    return claimed;
-  }
-
+/** The client's address, unless the SDK said not to collect it. */
+function autoIp(origin: Origin): string | null {
   return origin.inferIp ? origin.clientIp : null;
 }
 
-export function parseUser(raw: JsonObject | null, origin: Origin): JsonObject | null {
-  const user = raw === null ? {} : trimObject(raw, USER_LIMITS);
-  const ip = resolveIp(getString(user, "ip_address"), origin);
+/** An address the SDK sent is kept, except `{{auto}}`, which asks for the client's. */
+function sentIp(claimed: string, origin: Origin): string | null {
+  return claimed === AUTO_IP ? autoIp(origin) : claimed;
+}
 
-  if (ip === null) {
-    delete user["ip_address"];
-  } else {
+/** A browser SDK never knows its own address, so sending none means "use the client's". */
+function unsentIp(origin: Origin): string | null {
+  return isBrowser(origin) ? autoIp(origin) : null;
+}
+
+export type StoredUser = { user: JsonObject | null; facts: UserFacts };
+
+export function toStoredUser(raw: WireUser, origin: Origin): StoredUser {
+  const user = trimObject(raw.fields, USER_LIMITS);
+  const resolved = raw.ip_address === null ? unsentIp(origin) : sentIp(raw.ip_address, origin);
+  const ip = resolved === null ? null : cut(resolved, USER_LIMITS.maxString);
+
+  // The SDK's value was only a request; the resolved one replaces it.
+  delete user["ip_address"];
+
+  if (ip !== null) {
     user["ip_address"] = ip;
   }
 
-  return Object.keys(user).length === 0 ? null : scrubObject(user);
+  return {
+    user: Object.keys(user).length === 0 ? null : scrubObject(user),
+    facts: {
+      id: raw.id,
+      email: raw.email,
+      username: raw.username,
+      ipAddress: ip === "" ? null : ip,
+    },
+  };
 }
 
-function describe(name: string, version: string | null): JsonObject {
-  const described: JsonObject = {};
+function describe(part: AgentPart): JsonObject {
+  return { name: part.name, version: part.version };
+}
 
-  described["name"] = name;
-  described["version"] = version;
-
-  return described;
+function agentFacts(part: AgentPart): ContextFacts {
+  return { name: part.name, version: part.version, model: null, family: null };
 }
 
 /** Fills `browser` and `os` from the User-Agent when the SDK sent neither. */
-export function parseContexts(raw: JsonObject | null, userAgent: string | null): JsonObject {
-  const contexts = raw === null ? {} : scrubObject(trimObject(raw, DATA_LIMITS));
-  const agent = parseUserAgent(userAgent ?? "");
+export function toStoredContexts(raw: WireContexts, agent: Agent): StoredContexts {
+  const contexts = scrubObject(trimObject(raw.all, DATA_LIMITS));
+  const { browser, os, runtime, device } = raw;
 
-  if (getObject(contexts, "browser") === null && agent.browser !== null) {
-    contexts["browser"] = describe(agent.browser.name, agent.browser.version);
+  if (browser === null && agent.browser !== null) {
+    contexts["browser"] = describe(agent.browser);
   }
 
-  if (getObject(contexts, "os") === null && agent.os !== null) {
-    contexts["os"] = describe(agent.os.name, agent.os.version);
+  if (os === null && agent.os !== null) {
+    contexts["os"] = describe(agent.os);
   }
 
-  return contexts;
+  return {
+    contexts,
+    facts: {
+      browser: browser ?? (agent.browser === null ? null : agentFacts(agent.browser)),
+      os: os ?? (agent.os === null ? null : agentFacts(agent.os)),
+      runtime,
+      device,
+    },
+  };
 }
 
-export function requestUserAgent(request: StoredRequest | null): string | null {
-  return request === null ? null : findHeader(request.headers, "user-agent");
+export function requestUserAgent(request: StoredRequest): string | null {
+  return findHeader(request.headers, "user-agent");
 }

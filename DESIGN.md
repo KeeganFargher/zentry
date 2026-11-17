@@ -112,7 +112,7 @@ zentry/
 ├─ migrations/0001_init.sql            # §8
 ├─ src/
 │  ├─ worker.ts                        # composition root: exports { fetch, queue, scheduled }
-│  ├─ shared/   types.ts  ids.ts  time.ts  json.ts  contract.ts      # no internal imports
+│  ├─ shared/   types.ts  ids.ts  time.ts  json.ts  schema.ts  contract.ts  # no internal imports
 │  ├─ core/     envelope.ts  normalize.ts  scrub.ts  grouping.ts  parameterize.ts  plan.ts
 │  │                                   # pure functions: no bindings, no I/O, no clock
 │  ├─ db/       keys.ts  groups.ts  events.ts  stats.ts  tenancy.ts  # the only place SQL lives
@@ -379,7 +379,11 @@ or re-sent sampled event is counted twice. That is accepted.
 
 ### 7.2 Step A: normalize and scrub (CPU only, per message)
 
-Load the payload (inline or from `spill_key`), `JSON.parse`, then:
+Load the payload (inline or from `spill_key`) and parse it with the
+`WireEvent` schema (`core/wire.ts`). That one parse is where every field's
+wire shape is checked: a field of the wrong type is dropped and the rest of
+the event kept, as Relay does, and only a payload that is not a JSON object is
+refused. Normalization then works on the typed result and applies:
 
 | Field | Rule |
 |---|---|
@@ -1304,7 +1308,7 @@ export default defineConfig({
 
     // Named exemptions. Each is one file or one folder, with the reason.
     {
-      // The single place untrusted JSON is narrowed into typed values.
+      // `jsonKind` tells the members of the Json union apart for trim and scrub.
       files: ["src/shared/json.ts"],
       rules: { "anti-slop/no-runtime-typeof": "off", "anti-slop/no-unknown-parameters": "off" },
     },
@@ -1356,10 +1360,22 @@ Three of them shape the design rather than just the style:
 
 - **`no-runtime-typeof`, `no-unknown-parameters`, `no-unknown-returns`.** The
   ingest and consumer handle arbitrary JSON from SDKs. Under these rules that
-  JSON is narrowed exactly once, in `src/shared/json.ts`, into typed values
-  (`RawEvent`, `RawFrame`, and so on). Everything in `core/` then works on
-  those types and never sees `unknown`. Rows coming back from D1 are typed the
-  same way inside `db/`.
+  JSON is validated exactly once, where it enters, by a zod schema: the event
+  by `WireEvent` (`core/wire.ts`), envelope headers in `core/envelope.ts`,
+  API bodies and query strings at the top of each handler, the Access JWT in
+  `api/access.ts`, and JSON columns read from D1 inside `db/`. Everything past
+  a schema works on its typed output and never re-checks a type. The one
+  `typeof` left is `jsonKind` in `src/shared/json.ts`, which tells the members
+  of the `Json` union apart for the code that trims and scrubs free-form data.
+- **Zentry's own rules (`tools/oxlint/zentry/`) hold that line.**
+  `no-nullable-parameters` rejects any parameter typed `T | null`, `T |
+  undefined` or `x?: T`: absence is checked once, where the value is
+  produced, and helpers take present values. Inline callbacks (typed by the
+  API they are passed to) and React hooks (which cannot be skipped while
+  their input loads) are exempt. `no-json-parse` sends all JSON text through
+  `jsonText(schema)`. `zod-only-at-boundaries` allows schemas only in the
+  files listed in `oxlint.config.ts` as entry points, so nothing past them
+  re-validates.
 - **`no-module-mocking`.** Tests may not mock modules. This fits the test plan
   in §14: `core/` is pure and needs no mocks, and everything else runs against
   Miniflare's real D1, R2 and Queues.
@@ -1552,13 +1568,14 @@ What changed when the design met running code. The code is the reference.
 
 **Repository layout as built**
 
-- `src/core/` is split further than §3 shows: `md5`, `envelope`,
-  `parameterize`, `trim`, `scrub`, `frames`, `exceptions`, `fields`,
+- `src/core/` is split further than §3 shows: `wire` (the event schema),
+  `md5`, `envelope`, `parameterize`, `trim`, `scrub`, `frames`, `exceptions`, `fields`,
   `context`, `useragent`, `derive`, `normalize`, `tags`, `grouping`,
   `buckets`, `plan`.
 - `src/db/`: `keys`, `batch`, `projects`, `issues`, `events`, `tenancy`,
   `retention`. `src/api/` adds `http`, `context`, `series`, `router`.
-- `src/shared/` adds `plan.ts` (batch row types) and `log.ts`.
+- `src/shared/` adds `plan.ts` (batch row types), `log.ts`, and `schema.ts`
+  (the lenient building blocks the SDK-facing schemas share).
 
 **Tooling as built (§16)**
 

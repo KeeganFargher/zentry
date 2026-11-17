@@ -1,5 +1,6 @@
 import { normalizeEvent } from "@/core/normalize";
-import type { EventMeta } from "@/core/normalize";
+import type { EventMeta, Normalized } from "@/core/normalize";
+import { WireEvent } from "@/core/wire";
 import type { JsonObject, StoredEvent } from "@/shared/contract";
 
 export const RECEIVED_AT = Date.UTC(2026, 10, 17, 10, 30, 0);
@@ -16,8 +17,13 @@ export function meta(overrides: Partial<EventMeta> = {}): EventMeta {
   };
 }
 
+/** Validates `raw` as the consumer does, then normalizes it. */
+export function normalized(raw: JsonObject, overrides: Partial<EventMeta> = {}): Normalized {
+  return normalizeEvent(WireEvent.parse(raw), meta(overrides));
+}
+
 export function normalize(raw: JsonObject, overrides: Partial<EventMeta> = {}): StoredEvent {
-  return normalizeEvent(raw, meta(overrides));
+  return normalized(raw, overrides).event;
 }
 
 type FrameInput = { filename: string; function: string; lineno: number; context_line?: string };

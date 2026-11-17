@@ -17,7 +17,7 @@ import type {
   ApiTag,
 } from "@/shared/contract";
 
-import { api, apiDeps, claims, signToken } from "./api-helpers";
+import { api, apiDeps, claims, signToken, USER } from "./api-helpers";
 import { consumerDeps, errorEvent, eventId, message, NOW } from "./helpers";
 
 async function newProject(name: string): Promise<ApiProject> {
@@ -134,6 +134,26 @@ describe("projects and keys", () => {
     expect(project.slug).toBe("billing-api");
     expect(keys).toHaveLength(1);
     expect(keys[0]?.dsn).toBe(`https://${keys[0]?.publicKey}@ingest.zentry.test/${project.id}`);
+  });
+
+  it("refuses a body that is not JSON, or has a field of the wrong type", async () => {
+    const path = "/organizations/default/projects/";
+
+    const notJson = await handleApi(
+      new Request(`https://zentry.test/api/0${path}`, {
+        method: "POST",
+        headers: { "cf-access-jwt-assertion": await signToken(claims()) },
+        body: "name=oops",
+      }),
+      apiDeps(),
+      new Sessions(),
+    );
+
+    const wrongType = await api(path, { method: "POST", body: { name: 42 } });
+
+    expect(notJson.status).toBe(400);
+    expect(wrongType.status).toBe(400);
+    expect((await wrongType.json<{ detail: string }>()).detail).toContain("name");
   });
 
   it("refuses a duplicate slug and a missing name", async () => {
@@ -270,6 +290,33 @@ describe("issues", () => {
     expect(resolved.issues).toEqual([]);
   });
 
+  it("refuses query parameters that do not match, saying which one", async () => {
+    const project = await newProject("Strict");
+
+    for (const query of [
+      "&limit=many",
+      "&limit=0",
+      "&status=nonsense",
+      "&tag=nocolon",
+      "&cursor=%%",
+    ]) {
+      const response = await api(`/organizations/default/issues/?project=${project.id}${query}`);
+
+      expect({ query, status: response.status }).toEqual({ query, status: 400 });
+    }
+
+    const response = await api(`/organizations/default/issues/?project=${project.id}&sort=wrong`);
+
+    expect((await response.json<{ detail: string }>()).detail).toContain("sort");
+  });
+
+  it("treats an empty query parameter as absent", async () => {
+    const project = await newProject("Empty Params");
+    const response = await api(`/organizations/default/issues/?project=${project.id}&cursor=&tag=`);
+
+    expect(response.status).toBe(200);
+  });
+
   it("marks an issue as seen per user, and unseen again when it regresses", async () => {
     const project = await newProject("Seen");
     const earlier = NOW - 60_000;
@@ -279,8 +326,8 @@ describe("issues", () => {
     const [issue] = (await issuesOf(project.id)).issues;
     const path = `/organizations/default/issues/${issue?.id}/`;
 
-    const seenBy = async (email?: string): Promise<boolean | undefined> =>
-      (await (await api(path, email === undefined ? {} : { email })).json<ApiIssue>()).hasSeen;
+    const seenBy = async (email: string): Promise<boolean | undefined> =>
+      (await (await api(path, { email })).json<ApiIssue>()).hasSeen;
 
     expect(issue?.hasSeen).toBe(false);
 
@@ -295,7 +342,7 @@ describe("issues", () => {
     await api(path, { method: "PUT", body: { status: "resolved" } });
     await ingest(project.id, [{ index: 2, name: "checkout", at: NOW + 1000 }]);
 
-    expect(await seenBy()).toBe(false);
+    expect(await seenBy(USER)).toBe(false);
   });
 
   it("refuses an update that changes nothing", async () => {

@@ -114,7 +114,7 @@ function Keys({ org, project, keys, onChanged }: KeysProps): JSX.Element {
   );
 }
 
-function snippet(platform: string | null, dsn: string): string {
+function snippet(platform: string, dsn: string): string {
   if (platform === "python") {
     return `import sentry_sdk\n\nsentry_sdk.init(dsn="${dsn}")`;
   }
@@ -166,7 +166,9 @@ export function ProjectSettings({ org, project }: Props): JSX.Element {
         {active !== undefined && (
           <div className="panel padded">
             <h2>Send your first event</h2>
-            <pre className="snippet">{snippet(current.data.platform, active.dsn)}</pre>
+            <pre className="snippet">
+              {snippet(current.data.platform ?? "javascript", active.dsn)}
+            </pre>
           </div>
         )}
         <Danger org={org} project={project} />

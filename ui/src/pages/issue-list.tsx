@@ -1,7 +1,7 @@
 // The issue list: filters, bulk status changes, paging and real-time updates.
 
-import type { ApiIssue, IssueStatus } from "@contract";
-import type { JSX } from "react";
+import type { ApiIssue, ApiProject, IssueStatus } from "@contract";
+import type { ComponentProps, JSX } from "react";
 
 import { Notice } from "~/components/basics";
 import { useConfirm } from "~/components/overlays";
@@ -79,16 +79,39 @@ function bulkApply(
   }
 }
 
-function withFilter(url: URLSearchParams, name: string, value: string | null): URLSearchParams {
+function withFilter(url: URLSearchParams, name: string, value: string): URLSearchParams {
+  const next = new URLSearchParams(url);
+
+  next.set(name, value);
+
+  return next;
+}
+
+function withoutFilter(url: URLSearchParams, name: string): URLSearchParams {
   const next = new URLSearchParams(url);
 
   next.delete(name);
 
-  if (value !== null) {
-    next.set(name, value);
-  }
-
   return next;
+}
+
+/** A filter change rewrites the URL and drops the selection, whose issues may no longer show. */
+function filterProps(
+  url: URLSearchParams,
+  projects: ApiProject[],
+  selection: Selection,
+): ComponentProps<typeof IssueFilters> {
+  const filterBy = (next: URLSearchParams): void => {
+    selection.clear();
+    replaceQuery(next);
+  };
+
+  return {
+    query: url,
+    projects,
+    onSet: (name, value) => filterBy(withFilter(url, name, value)),
+    onClear: (name) => filterBy(withoutFilter(url, name)),
+  };
 }
 
 export function IssueList({ org }: { org: string }): JSX.Element {
@@ -105,11 +128,6 @@ export function IssueList({ org }: { org: string }): JSX.Element {
   useDocumentTitle(title);
   useLive(live, first.reload);
 
-  const setFilter = (name: string, value: string | null): void => {
-    selection.clear();
-    replaceQuery(withFilter(url, name, value));
-  };
-
   const refresh = (): void => {
     pages.reset();
     first.reload();
@@ -125,7 +143,7 @@ export function IssueList({ org }: { org: string }): JSX.Element {
         <LiveButton on={live} onChange={setLive} />
       </header>
       <div className="content">
-        <IssueFilters query={url} projects={projects.data ?? []} onChange={setFilter} />
+        <IssueFilters {...filterProps(url, projects.data ?? [], selection)} />
         <div className="panel issue-table">
           <IssueTable
             org={org}

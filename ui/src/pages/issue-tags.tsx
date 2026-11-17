@@ -27,21 +27,21 @@ const FALLBACK = [
 const MOBILE_PLATFORMS = new Set(["cocoa", "android", "react-native", "flutter", "dart", "apple"]);
 
 /** Sentry picks the preview tags by the kind of platform. */
-function preferred(platform: string | null): string[] {
+function preferred(platform: string): string[] {
   if (platform === "javascript") {
     return FRONTEND;
   }
 
-  if (MOBILE_PLATFORMS.has(platform ?? "")) {
-    return MOBILE;
-  }
-
-  return platform === null ? FALLBACK : BACKEND;
+  return MOBILE_PLATFORMS.has(platform) ? MOBILE : BACKEND;
 }
 
-function previewTags(tags: ApiTag[], platform: string | null): ApiTag[] {
-  const order = [...preferred(platform), ...FALLBACK];
+/** The tag keys to preview first; an issue with no platform gets the generic ones. */
+function tagOrder(issue: ApiIssue): string[] {
+  return [...(issue.platform === null ? FALLBACK : preferred(issue.platform)), ...FALLBACK];
+}
 
+/** `order` is the tag keys to show first; the rest follow in the API's order. */
+function previewTags(tags: ApiTag[], order: string[]): ApiTag[] {
   const rank = (tag: ApiTag): number => {
     const position = order.indexOf(tag.key);
 
@@ -172,7 +172,7 @@ export function TagPanel({ org, issue, tags }: AllProps): JSX.Element {
       {all ? (
         <AllTags org={org} issue={issue} tags={tags} />
       ) : (
-        previewTags(tags, issue.platform).map((tag) => (
+        previewTags(tags, tagOrder(issue)).map((tag) => (
           <PreviewRow key={tag.key} tag={tag} onOpen={() => setAll(true)} />
         ))
       )}

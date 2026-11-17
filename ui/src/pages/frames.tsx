@@ -83,7 +83,7 @@ function Source({ frame }: { frame: StoredFrame }): JSX.Element | null {
         >
           <span className="lineno">{frame.lineno === null ? "" : first + position}</span>
           <code>
-            {numbered(highlight(line, frame.filename)).map(([index, [kind, text]]) => (
+            {numbered(highlight(line, frame.filename ?? "")).map(([index, [kind, text]]) => (
               <span key={index} className={`tok-${kind}`}>
                 {text}
               </span>

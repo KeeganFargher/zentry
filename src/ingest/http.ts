@@ -14,8 +14,14 @@ export function preflight(): Response {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
 }
 
-export function accepted(eventId: string | null): Response {
-  return Response.json(eventId === null ? {} : { id: eventId }, { headers: CORS_HEADERS });
+/** The event was queued under `eventId`. */
+export function accepted(eventId: string): Response {
+  return Response.json({ id: eventId }, { headers: CORS_HEADERS });
+}
+
+/** The request was fine but held nothing we keep (a transaction, a session). */
+export function acceptedNothing(): Response {
+  return Response.json({}, { headers: CORS_HEADERS });
 }
 
 export function rejected(status: number, detail: string): Response {

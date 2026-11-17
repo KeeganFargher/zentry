@@ -19,6 +19,9 @@ const SELECT_REF = `SELECT project_id AS projectId, event_id AS eventId, ts AS t
 const OLDER = `(ts < ?2 OR (ts = ?2 AND event_id > ?3))`;
 const NEWER = `(ts > ?2 OR (ts = ?2 AND event_id < ?3))`;
 
+/** A cursor before every event, so a list from it starts at the newest. */
+export const NEWEST: EventCursor = { timestamp: Number.MAX_SAFE_INTEGER, eventId: "" };
+
 export class EventStore {
   readonly #db: D1Database;
 
@@ -26,9 +29,8 @@ export class EventStore {
     this.#db = db;
   }
 
-  async list(issueId: number, cursor: EventCursor | null, limit: number): Promise<ApiEventRow[]> {
-    const after = cursor ?? { timestamp: Number.MAX_SAFE_INTEGER, eventId: "" };
-
+  /** Events after `after`, newest first. Pass `NEWEST` for the first page. */
+  async list(issueId: number, after: EventCursor, limit: number): Promise<ApiEventRow[]> {
     const { results } = await this.#db
       .prepare(
         `SELECT event_id AS eventId, ts AS timestamp, level, release, environment,

@@ -1,38 +1,56 @@
 // Event endpoints: an issue's event list, and one full event from R2.
 
+import { z } from "zod";
+
+import { NEWEST } from "@/db/events";
 import type { EventCursor, EventRef, IssueRef } from "@/db/events";
 import type { ApiEventList } from "@/shared/contract";
-import { normalizeEventId, parseId } from "@/shared/ids";
+import { normalizeEventId } from "@/shared/ids";
 
 import type { ApiContext, Handler } from "./context";
-import { decodeCursor, encodeCursor, intParam, notFound } from "./http";
+import {
+  CursorParam,
+  encodeCursor,
+  IdParam,
+  IntParam,
+  notFound,
+  readParams,
+  readQuery,
+} from "./http";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
-async function issueOf(context: ApiContext, idText: string | undefined): Promise<IssueRef | null> {
-  const id = parseId(idText ?? "");
+// Every events route is `issues/{id}/events/...`; the event route adds which event.
+const IssueParams = z.tuple([IdParam], z.string());
 
-  return id === null ? null : context.deps.issues.find(context.organizationId, id);
+/** The issue named by the route's first parameter. */
+async function issueOf(context: ApiContext, args: string[]): Promise<IssueRef | null> {
+  const [id] = readParams(args, IssueParams);
+
+  return context.deps.issues.find(context.organizationId, id);
 }
 
-function parseCursor(url: URL): EventCursor | null {
-  const [timestamp = "", eventId = ""] = decodeCursor(url) ?? [];
+const EventListQuery = z.object({
+  cursor: CursorParam.pipe(
+    z
+      .tuple([IntParam, z.string().min(1)])
+      .transform(([timestamp, eventId]): EventCursor => ({ timestamp, eventId })),
+  )
+    // An absent cursor is the first page.
+    .default(NEWEST),
+  limit: IntParam.pipe(z.number().min(1).max(MAX_LIMIT)).default(DEFAULT_LIMIT),
+});
 
-  return /^\d+$/.test(timestamp) && eventId !== ""
-    ? { timestamp: Number(timestamp), eventId }
-    : null;
-}
+export const listEvents: Handler = async (context, args) => {
+  const issue = await issueOf(context, args);
 
-export const listEvents: Handler = async (context, [idText]) => {
-  const issueId = (await issueOf(context, idText))?.id ?? null;
-  const limit = Math.min(Math.max(intParam(context.url, "limit", DEFAULT_LIMIT), 1), MAX_LIMIT);
-
-  if (issueId === null) {
+  if (issue === null) {
     return notFound();
   }
 
-  const rows = await context.deps.events.list(issueId, parseCursor(context.url), limit + 1);
+  const { cursor, limit } = readQuery(context.url, EventListQuery);
+  const rows = await context.deps.events.list(issue.id, cursor, limit + 1);
   const events = rows.slice(0, limit);
   const last = events.at(-1);
   const hasMore = rows.length > limit && last !== undefined;
@@ -68,8 +86,9 @@ async function findEvent(
  * Returns `ApiEventDetail`. The stored event is spliced into the response as
  * text, so the Worker never parses or re-serializes it.
  */
-export const getEvent: Handler = async (context, [idText, which = "latest"]) => {
-  const issue = await issueOf(context, idText);
+export const getEvent: Handler = async (context, args) => {
+  const [, which] = readParams(args, z.tuple([z.string(), z.string()]));
+  const issue = await issueOf(context, args);
   const ref = issue === null ? null : await findEvent(context, issue, which);
 
   if (issue === null || ref === null) {

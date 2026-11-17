@@ -1,16 +1,11 @@
 // Cloudflare Access: verifies the JWT that Access attaches to every request
 // for the UI hostname. DESIGN.md §10.
 
-import type { JsonObject } from "@/shared/contract";
-import {
-  asArray,
-  asObject,
-  asString,
-  getNumber,
-  getString,
-  objectsIn,
-  parseJson,
-} from "@/shared/json";
+import { z } from "zod";
+
+import { jsonText } from "@/shared/json";
+import { logError } from "@/shared/log";
+import { listOf } from "@/shared/schema";
 import { HOUR, MINUTE, SECOND } from "@/shared/time";
 
 import { isLocal } from "./http";
@@ -24,61 +19,84 @@ export type AccessConfig = {
   devEmail: string;
 };
 
-/** Fetches the team's signing keys (the `keys` array of the JWKS document). */
-export type KeyLoader = (teamDomain: string) => Promise<JsonObject[]>;
+/** An RSA public key from the team's JWKS document. */
+const SigningKey = z.object({ kid: z.string(), n: z.string(), e: z.string() });
 
-type Token = { header: JsonObject; payload: JsonObject; signed: Uint8Array; signature: Uint8Array };
+export type SigningKey = z.output<typeof SigningKey>;
+
+// A key we cannot use (another key type) is skipped rather than failing the
+// whole set, so one unexpected key cannot lock everyone out.
+const KeySet = jsonText(z.object({ keys: listOf(SigningKey) }));
+
+/** Fetches the team's signing keys (the `keys` array of the JWKS document). */
+export type KeyLoader = (teamDomain: string) => Promise<SigningKey[]>;
+
+const TokenHeader = z.object({ alg: z.literal("RS256"), kid: z.string() });
+
+// `email` is required: a token without one cannot sign anyone in.
+const Claims = z.object({
+  aud: z.union([z.string().transform((audience) => [audience]), z.array(z.string())]),
+  iss: z.string(),
+  exp: z.number(),
+  email: z.string(),
+});
+
+type Claims = z.output<typeof Claims>;
 
 const ALGORITHM = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
 
-function decodeBase64Url(text: string): Uint8Array | null {
+const Base64Url = z.string().transform((text, context): Uint8Array => {
   try {
     const binary = atob(text.replaceAll("-", "+").replaceAll("_", "/"));
 
     return Uint8Array.from(binary, (character) => character.charCodeAt(0));
   } catch {
-    return null;
+    context.addIssue({ code: "custom", message: "not valid base64url" });
+
+    return z.NEVER;
   }
+});
+
+/** A JWT segment: base64url of JSON matching `schema`. */
+function segment<T extends z.ZodType>(schema: T): z.ZodType<z.output<T>, string> {
+  return Base64Url.transform((bytes) => new TextDecoder().decode(bytes)).pipe(jsonText(schema));
 }
 
-function decodeSegment(segment: string): JsonObject | null {
-  const bytes = decodeBase64Url(segment);
+/** `header.claims.signature`, each part decoded and validated. */
+const Jwt = z
+  .string()
+  .transform((jwt) => jwt.split("."))
+  .pipe(z.tuple([segment(TokenHeader), segment(Claims), Base64Url]))
+  .transform(([header, claims, signature]) => ({ header, claims, signature }));
 
-  return bytes === null ? null : asObject(parseJson(new TextDecoder().decode(bytes)));
-}
+type Token = z.output<typeof Jwt>;
 
-function parseToken(jwt: string): Token | null {
-  const [head = "", body = "", tail = ""] = jwt.split(".");
-  const header = decodeSegment(head);
-  const payload = decodeSegment(body);
-  const signature = decodeBase64Url(tail);
-
-  if (header === null || payload === null || signature === null) {
-    return null;
-  }
-
-  return { header, payload, signature, signed: new TextEncoder().encode(`${head}.${body}`) };
-}
-
-function audiences(payload: JsonObject): string[] {
-  const single = asString(payload["aud"]);
-
-  return single === null
-    ? (asArray(payload["aud"]) ?? []).flatMap((value) => asString(value) ?? [])
-    : [single];
-}
-
-export async function fetchAccessKeys(teamDomain: string): Promise<JsonObject[]> {
+export async function fetchAccessKeys(teamDomain: string): Promise<SigningKey[]> {
   const response = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`);
-  const document = response.ok ? asObject(parseJson(await response.text())) : null;
 
-  return document === null ? [] : objectsIn(asArray(document["keys"]));
+  if (!response.ok) {
+    logError("could not fetch Access signing keys", { status: response.status });
+
+    return [];
+  }
+
+  const parsed = KeySet.safeParse(await response.text());
+
+  if (!parsed.success) {
+    logError("Access signing keys did not match the JWKS shape", {
+      error: z.prettifyError(parsed.error),
+    });
+
+    return [];
+  }
+
+  return parsed.data.keys;
 }
 
 export class AccessVerifier {
   readonly #config: AccessConfig;
   readonly #loadKeys: KeyLoader;
-  #keys: JsonObject[] = [];
+  #keys: SigningKey[] = [];
   #keysExpireAt = 0;
   #nextFetchAt = 0;
 
@@ -95,30 +113,33 @@ export class AccessVerifier {
       return devEmail;
     }
 
-    const token = parseToken(request.headers.get("cf-access-jwt-assertion") ?? "");
+    const assertion = request.headers.get("cf-access-jwt-assertion") ?? "";
+    const parsed = Jwt.safeParse(assertion);
 
-    if (token === null || !this.#claimsHold(token.payload, now)) {
+    if (!parsed.success || !this.#claimsHold(parsed.data.claims, now)) {
       return null;
     }
 
-    return (await this.#signatureHolds(token, now)) ? getString(token.payload, "email") : null;
+    // The signature covers the first two segments exactly as they were sent.
+    const signed = new TextEncoder().encode(assertion.slice(0, assertion.lastIndexOf(".")));
+    const token = parsed.data;
+
+    return (await this.#signatureHolds(token, signed, now)) ? token.claims.email : null;
   }
 
-  #claimsHold(payload: JsonObject, now: number): boolean {
+  #claimsHold(claims: Claims, now: number): boolean {
     const { audience, teamDomain } = this.#config;
-    const expiresAt = (getNumber(payload, "exp") ?? 0) * SECOND;
 
     return (
       audience !== "" &&
-      audiences(payload).includes(audience) &&
-      getString(payload, "iss") === `https://${teamDomain}` &&
-      expiresAt > now
+      claims.aud.includes(audience) &&
+      claims.iss === `https://${teamDomain}` &&
+      claims.exp * SECOND > now
     );
   }
 
-  async #signingKey(keyId: string, now: number): Promise<JsonObject | null> {
-    const known = (): JsonObject | null =>
-      this.#keys.find((key) => getString(key, "kid") === keyId) ?? null;
+  async #signingKey(keyId: string, now: number): Promise<SigningKey | null> {
+    const known = (): SigningKey | null => this.#keys.find((key) => key.kid === keyId) ?? null;
 
     // Refetch hourly, and also for a key id not seen before (a rotation), but
     // never more than once a minute.
@@ -139,23 +160,21 @@ export class AccessVerifier {
     return known();
   }
 
-  async #signatureHolds(token: Token, now: number): Promise<boolean> {
-    const key = await this.#signingKey(getString(token.header, "kid") ?? "", now);
-    const modulus = key === null ? null : getString(key, "n");
-    const exponent = key === null ? null : getString(key, "e");
+  async #signatureHolds(token: Token, signed: Uint8Array, now: number): Promise<boolean> {
+    const key = await this.#signingKey(token.header.kid, now);
 
-    if (getString(token.header, "alg") !== "RS256" || modulus === null || exponent === null) {
+    if (key === null) {
       return false;
     }
 
     const publicKey = await crypto.subtle.importKey(
       "jwk",
-      { kty: "RSA", n: modulus, e: exponent, alg: "RS256", ext: true },
+      { kty: "RSA", n: key.n, e: key.e, alg: "RS256", ext: true },
       ALGORITHM,
       false,
       ["verify"],
     );
 
-    return crypto.subtle.verify(ALGORITHM, publicKey, token.signature, token.signed);
+    return crypto.subtle.verify(ALGORITHM, publicKey, token.signature, signed);
   }
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { AccessVerifier } from "@/api/access";
+import type { SigningKey } from "@/api/access";
 import { handleApi, Sessions } from "@/api/router";
-import type { JsonObject } from "@/shared/contract";
 import { HOUR, MINUTE, SECOND } from "@/shared/time";
 
 import {
@@ -17,8 +17,15 @@ import {
 } from "./api-helpers";
 import { NOW } from "./helpers";
 
-function request(token: string | null, url = "https://zentry.test/api/0/me/"): Request {
-  return new Request(url, { headers: token === null ? {} : { "cf-access-jwt-assertion": token } });
+const ME = "https://zentry.test/api/0/me/";
+
+function request(token: string, url = ME): Request {
+  return new Request(url, { headers: { "cf-access-jwt-assertion": token } });
+}
+
+/** A request with no Access token at all. */
+function anonymous(url = ME): Request {
+  return new Request(url);
 }
 
 describe("Access verification", () => {
@@ -29,7 +36,7 @@ describe("Access verification", () => {
   });
 
   it("refuses a missing or malformed token", async () => {
-    expect(await verifier().email(request(null), NOW)).toBeNull();
+    expect(await verifier().email(anonymous(), NOW)).toBeNull();
     expect(await verifier().email(request("a.b.c"), NOW)).toBeNull();
   });
 
@@ -57,14 +64,14 @@ describe("Access verification", () => {
   it("honours the development user on localhost only", async () => {
     const dev = verifier("local@example.com");
 
-    expect(await dev.email(request(null, "http://localhost:8787/api/0/me/"), NOW)).toBe(
+    expect(await dev.email(anonymous("http://localhost:8787/api/0/me/"), NOW)).toBe(
       "local@example.com",
     );
-    expect(await dev.email(request(null), NOW)).toBeNull();
+    expect(await dev.email(anonymous(), NOW)).toBeNull();
   });
 
   it("answers 401 from the API without a token", async () => {
-    const response = await handleApi(request(null), apiDeps(), new Sessions());
+    const response = await handleApi(anonymous(), apiDeps(), new Sessions());
 
     expect(response.status).toBe(401);
   });
@@ -91,7 +98,7 @@ describe("Access verification", () => {
 
   it("fetches keys again for an unknown key id, at most once a minute", async () => {
     const [key] = await signingKeys();
-    let published: JsonObject[] = [];
+    let published: SigningKey[] = [];
     let fetches = 0;
 
     const access = new AccessVerifier(

@@ -7,7 +7,7 @@ import { MINUTE } from "@/shared/time";
 
 import type { ApiDeps, Handler } from "./context";
 import { getEvent, listEvents } from "./events";
-import { notFound, unauthorized } from "./http";
+import { badRequest, InvalidRequest, notFound, unauthorized } from "./http";
 import {
   deleteIssue,
   getIssue,
@@ -141,8 +141,24 @@ export async function handleApi(
     return notFound();
   }
 
-  return matched.handler(
-    { request, url, deps, user: session.user, organizationId: membership.id, now: deps.now() },
-    matched.args,
-  );
+  const context = {
+    request,
+    url,
+    deps,
+    user: session.user,
+    organizationId: membership.id,
+    now: deps.now(),
+  };
+
+  try {
+    return await matched.handler(context, matched.args);
+  } catch (cause) {
+    // Only input that failed its schema is the client's fault; anything else
+    // is ours and must surface as a 500.
+    if (cause instanceof InvalidRequest) {
+      return badRequest(cause.message);
+    }
+
+    throw cause;
+  }
 }

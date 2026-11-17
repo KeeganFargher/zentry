@@ -16,7 +16,7 @@ const lastException = (event: StoredEvent): StoredEvent["exceptions"][number] | 
   event.exceptions.at(-1);
 
 const crashFrame = (event: StoredEvent): ReturnType<typeof culpritFrame> =>
-  culpritFrame(lastException(event));
+  culpritFrame(event.exceptions);
 
 const RESOLVERS = new Map<string, (event: StoredEvent) => Value>([
   ["transaction", (event) => event.transaction],

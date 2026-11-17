@@ -14,15 +14,20 @@ export function readSetting(key: string): string | null {
   }
 }
 
-export function writeSetting(key: string, value: string | null): void {
+export function writeSetting(key: string, value: string): void {
   try {
-    if (value === null) {
-      window.localStorage.removeItem(PREFIX + key);
-    } else {
-      window.localStorage.setItem(PREFIX + key, value);
-    }
+    window.localStorage.setItem(PREFIX + key, value);
   } catch {
     // The setting then lasts until the page is reloaded.
+  }
+}
+
+/** Forgets the setting, so its default applies again. */
+export function clearSetting(key: string): void {
+  try {
+    window.localStorage.removeItem(PREFIX + key);
+  } catch {
+    // Nothing was stored, or storage is unavailable; either way it is gone.
   }
 }
 
