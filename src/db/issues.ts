@@ -50,12 +50,21 @@ const SORT_COLUMNS = {
   freq: "g.times_seen",
 } satisfies { [sort in IssueSort]: string };
 
-const SELECT_ISSUES = `
+const ISSUE_COLUMNS = `
   SELECT g.id, g.short_id AS shortNumber, g.project_id AS projectId, p.slug AS projectSlug,
          g.title, g.culprit, g.level, g.platform, g.metadata, g.status, g.substatus,
          g.times_seen AS timesSeen, g.first_seen AS firstSeen, g.last_seen AS lastSeen,
-         g.resolved_at AS resolvedAt, g.last_event_id AS lastEventId, g.first_release AS firstRelease
-  FROM groups g JOIN projects p ON p.id = g.project_id`;
+         g.resolved_at AS resolvedAt, g.last_event_id AS lastEventId, g.first_release AS firstRelease`;
+
+const SELECT_ISSUES = `${ISSUE_COLUMNS} FROM groups g JOIN projects p ON p.id = g.project_id`;
+
+// With a tag filter the list starts from the tag index, so a rare value reads
+// only its few issues; the price is sorting those in memory. CROSS JOIN makes
+// SQLite keep this order instead of walking every issue by date and probing the
+// index for each one. The two binds are the tag's key and value.
+const SELECT_TAGGED_ISSUES = `${ISSUE_COLUMNS} FROM projects p
+  CROSS JOIN group_tag_values t ON t.project_id = p.id AND t.key = ? AND t.value = ?
+  CROSS JOIN groups g ON g.id = t.group_id`;
 
 const IN_ORGANIZATION = `project_id IN (SELECT id FROM projects WHERE organization_id = ?2)`;
 
@@ -112,14 +121,6 @@ function listConditions(filter: IssueFilter): Conditions {
     add(`(g.title LIKE ? ESCAPE '\\' OR g.culprit LIKE ? ESCAPE '\\')`, pattern, pattern);
   }
 
-  if (filter.tag !== null) {
-    add(
-      `g.id IN (SELECT t.group_id FROM group_tag_values t
-                WHERE t.project_id = g.project_id AND t.key = ? AND t.value = ?)`,
-      ...filter.tag,
-    );
-  }
-
   if (filter.cursor !== null) {
     add(`(${SORT_COLUMNS[filter.sort]}, g.id) < (?, ?)`, filter.cursor.value, filter.cursor.id);
   }
@@ -137,13 +138,15 @@ export class IssueStore {
   async list(filter: IssueFilter): Promise<IssueRecord[]> {
     const { clauses, binds } = listConditions(filter);
     const column = SORT_COLUMNS[filter.sort];
+    const from = filter.tag === null ? SELECT_ISSUES : SELECT_TAGGED_ISSUES;
+    const tagBinds = filter.tag ?? [];
 
     const { results } = await this.#db
       .prepare(
-        `${SELECT_ISSUES} WHERE ${clauses.join(" AND ")}
+        `${from} WHERE ${clauses.join(" AND ")}
          ORDER BY ${column} DESC, g.id DESC LIMIT ?`,
       )
-      .bind(...binds, filter.limit)
+      .bind(...tagBinds, ...binds, filter.limit)
       .all<IssueRow>();
 
     return results.map(toRecord);
@@ -192,7 +195,9 @@ export class IssueStore {
         .prepare(
           `UPDATE groups SET
              status = ?3,
-             substatus = NULL,
+             -- Only resolving ends a regression; ignoring a regressed issue
+             -- keeps the mark, so it still reads as regressed if reopened.
+             substatus = CASE WHEN ?3 = 'resolved' THEN NULL ELSE substatus END,
              resolved_at = CASE WHEN ?3 = 'resolved' THEN ?5 ELSE NULL END,
              resolved_by = CASE WHEN ?3 = 'resolved' THEN ?4 ELSE NULL END
            WHERE ${changed}`,

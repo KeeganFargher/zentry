@@ -3,8 +3,7 @@
 
 const EVENT_CHUNK = 5000;
 const TAG_CHUNK = 5000;
-
-export type StatsCutoffs = { groupStatsBefore: number; projectStatsBefore: number };
+const STATS_CHUNK = 5000;
 
 export class RetentionStore {
   readonly #db: D1Database;
@@ -32,18 +31,25 @@ export class RetentionStore {
     );
   }
 
-  async deleteStatsBefore(cutoffs: StatsCutoffs): Promise<number> {
-    const groups = await this.#changes(
-      `DELETE FROM group_stats WHERE bucket < ?1`,
-      cutoffs.groupStatsBefore,
+  // Both stats tables are keyed by owner first, so finding expired buckets
+  // scans the table. An index on `bucket` would avoid that, but it would cost a
+  // write on every event to save a once-a-day scan of a small table.
+  async deleteGroupStatsBefore(cutoff: number): Promise<number> {
+    return this.#changes(
+      `DELETE FROM group_stats WHERE (group_id, bucket) IN (
+         SELECT group_id, bucket FROM group_stats WHERE bucket < ?1 LIMIT ?2)`,
+      cutoff,
+      STATS_CHUNK,
     );
+  }
 
-    const projects = await this.#changes(
-      `DELETE FROM project_stats WHERE bucket < ?1`,
-      cutoffs.projectStatsBefore,
+  async deleteProjectStatsBefore(cutoff: number): Promise<number> {
+    return this.#changes(
+      `DELETE FROM project_stats WHERE (project_id, bucket) IN (
+         SELECT project_id, bucket FROM project_stats WHERE bucket < ?1 LIMIT ?2)`,
+      cutoff,
+      STATS_CHUNK,
     );
-
-    return groups + projects;
   }
 
   /** Keeps the `keep` most-seen values of each tag key per issue. */

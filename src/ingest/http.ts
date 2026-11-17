@@ -58,7 +58,7 @@ export function rateLimited(seconds: number, cause: LimitCause): Response {
 
 export function unavailable(): Response {
   return Response.json(
-    { detail: "queue unavailable" },
+    { detail: "ingest unavailable" },
     { status: 503, headers: { ...CORS_HEADERS, "Retry-After": "30" } },
   );
 }

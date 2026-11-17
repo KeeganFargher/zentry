@@ -2,8 +2,9 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { EventBlobs } from "@/blobs/events";
-import { processMessages } from "@/consumer/handler";
+import { handleBatch, processMessages } from "@/consumer/handler";
 import { HOUR, monthBucket } from "@/shared/time";
+import type { QueueMessage } from "@/shared/types";
 
 import {
   consumerDeps,
@@ -33,7 +34,55 @@ async function monthCount(): Promise<number> {
   return row?.received ?? 0;
 }
 
+type Settled = { acked: boolean; retried: boolean };
+
+/** A one-message batch that records whether it was acked or sent back. */
+function batchOf(body: QueueMessage, settled: Settled): MessageBatch<QueueMessage> {
+  const queued: Message<QueueMessage> = {
+    id: body.event_id,
+    timestamp: new Date(NOW),
+    body,
+    attempts: 1,
+    ack: () => {
+      settled.acked = true;
+    },
+    retry: () => {
+      settled.retried = true;
+    },
+  };
+
+  return {
+    messages: [queued],
+    queue: "zentry-events",
+    metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+    ackAll: () => {
+      settled.acked = true;
+    },
+    retryAll: () => {
+      settled.retried = true;
+    },
+  };
+}
+
 describe("consumer", () => {
+  it("acks a committed batch even when deleting its spilled payloads fails", async () => {
+    const project = await createProject();
+    const settled = { acked: false, retried: false };
+
+    const deps = consumerDeps({
+      deleteSpill: async () => {
+        throw new Error("R2 unavailable");
+      },
+    });
+
+    const body = message({ projectId: project.id, index: 1, event: errorEvent("checkout") });
+
+    await expect(handleBatch(batchOf(body, settled), deps)).rejects.toThrow(/R2 unavailable/);
+
+    expect(settled).toEqual({ acked: true, retried: false });
+    expect((await groupsOf(project.id))[0]).toMatchObject({ times_seen: 1 });
+  });
+
   it("turns 100 copies of one error into one issue seen 100 times", async () => {
     const project = await createProject();
 

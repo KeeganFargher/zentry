@@ -409,6 +409,26 @@ describe("ingest limits and CORS", () => {
     expect(response.headers.get("retry-after")).toBe("30");
   });
 
+  it("returns 503 with CORS headers when spilling a large event to R2 fails", async () => {
+    const project = await projectWithKey();
+
+    const { deps } = harness({
+      spill: async () => {
+        throw new Error("R2 down");
+      },
+    });
+
+    const response = await post(
+      `https://i.test/api/${project.id}/store/?sentry_key=${project.key}`,
+      { body: JSON.stringify({ message: "x".repeat(200_000) }) },
+      deps,
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
   it("refuses methods other than POST and OPTIONS", async () => {
     const response = await post(
       "https://i.test/api/1/envelope/",

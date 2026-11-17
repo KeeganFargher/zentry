@@ -98,6 +98,7 @@ export const noNullableParametersRule = defineRule({
       for (const parameter of node.params) {
         const annotation = annotationOf(parameter);
         const optional = isOptional(parameter);
+
         const nullable =
           annotation !== null && annotation !== undefined && isAbsent(annotation.typeAnnotation);
 

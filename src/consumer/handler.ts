@@ -130,7 +130,14 @@ export async function processMessages(messages: QueueMessage[], deps: ConsumerDe
 
     await deps.commit(plan.writes, now);
   }
+}
 
+/**
+ * Runs only after the messages are acked. A failure here throws, so it is seen,
+ * but cannot send committed events back to the queue: an acked message stays
+ * acked. The bucket's 7-day lifecycle rule on `spill/` removes what is left.
+ */
+async function deleteSpilled(messages: QueueMessage[], deps: ConsumerDeps): Promise<void> {
   await deps.deleteSpill(messages.flatMap((message) => message.spill_key ?? []));
 }
 
@@ -138,15 +145,20 @@ async function processOneByOne(
   batch: MessageBatch<QueueMessage>,
   deps: ConsumerDeps,
 ): Promise<void> {
+  const acked: QueueMessage[] = [];
+
   for (const message of batch.messages) {
     try {
       await processMessages([message.body], deps);
       message.ack();
+      acked.push(message.body);
     } catch (cause) {
       logError("message failed", { event_id: message.body.event_id, error: errorText(cause) });
       message.retry();
     }
   }
+
+  await deleteSpilled(acked, deps);
 }
 
 export async function handleBatch(
@@ -161,15 +173,17 @@ export async function handleBatch(
     return;
   }
 
-  try {
-    await processMessages(
-      batch.messages.map((message) => message.body),
-      deps,
-    );
+  const messages = batch.messages.map((message) => message.body);
 
-    batch.ackAll();
+  try {
+    await processMessages(messages, deps);
   } catch (cause) {
-    logError("batch failed", { size: batch.messages.length, error: errorText(cause) });
+    logError("batch failed", { size: messages.length, error: errorText(cause) });
     batch.retryAll();
+
+    return;
   }
+
+  batch.ackAll();
+  await deleteSpilled(messages, deps);
 }

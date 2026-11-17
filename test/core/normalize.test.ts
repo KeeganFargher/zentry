@@ -209,6 +209,21 @@ describe("scrubbing", () => {
     expect(event.breadcrumbs[0]?.data).toEqual({ password: "[Filtered]", user: "bob" });
     expect(event.exceptions[0]?.frames[0]?.vars).toEqual({ token: "[Filtered]", count: 3 });
   });
+
+  it("scrubs the message template as well as the formatted text", () => {
+    const event = normalize({ logentry: { message: "auth Bearer abc123.def456 rejected" } });
+
+    expect(event.message).toEqual({
+      message: "auth Bearer [Filtered] rejected",
+      formatted: "auth Bearer [Filtered] rejected",
+    });
+  });
+
+  it("scrubs credentials in the request URL", () => {
+    const event = normalize({ request: { url: "https://ada:hunter2@shop.example.com/cart?x=1" } });
+
+    expect(event.request?.url).toBe("https://[Filtered]:[Filtered]@shop.example.com/cart");
+  });
 });
 
 describe("indexedTags", () => {

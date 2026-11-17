@@ -44,7 +44,14 @@ function formattedOf(entry: WireLogEntry): string | null {
 function messageFrom(entry: WireLogEntry): StoredMessage | null {
   const formatted = formattedOf(entry);
 
-  return formatted === null ? null : { message: entry.message, formatted: scrubText(formatted) };
+  // The template is stored too, and with no params it is the same text as
+  // `formatted`, so it needs the same scrub or the secret survives beside it.
+  return formatted === null
+    ? null
+    : {
+        message: entry.message === null ? null : scrubText(entry.message),
+        formatted: scrubText(formatted),
+      };
 }
 
 /** Accepts `logentry`, a `message` object, or a plain `message` string. */
