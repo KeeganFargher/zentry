@@ -1,2 +1,7 @@
 # Copy to .dev.vars for local development. Honoured only on localhost.
 DEV_USER_EMAIL=you@example.com
+# Where the mobile app reaches `pnpm dev`: 10.0.2.2 is the host machine from
+# the Android emulator. A phone on your Wi-Fi would need the machine's LAN
+# address and `pnpm dev --ip 0.0.0.0`; avoid that on a shared network, since
+# DEV_USER_EMAIL signs in any request whose Host header says localhost.
+MOBILE_API_URL=http://10.0.2.2:8787

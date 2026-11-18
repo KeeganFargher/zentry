@@ -75,7 +75,7 @@ async function setting(
     value: "always" | "never";
   },
 ): Promise<void> {
-  await new NotificationSettingsStore(env.DB).set({ userId, ...change }, NOW);
+  await new NotificationSettingsStore(env.DB).set({ provider: "email", userId, ...change }, NOW);
 }
 
 async function setup(): Promise<{
@@ -137,12 +137,14 @@ describe("issue alerts", () => {
       to === bob.email ? errorWithCode("E_RATE_LIMIT_EXCEEDED") : null,
     );
 
-    await expect(drainOutbox(flaky.deps)).rejects.toThrow(/E_RATE_LIMIT_EXCEEDED/);
+    await expect(drainOutbox(flaky.deps)).rejects.toThrow(/1 of 1 notifications deferred/);
     expect(flaky.sent.map((email) => email.to)).toEqual([alice.email]);
     expect(await outboxKinds()).toEqual(["new_issue"]);
 
     const healthy = notifyHarness();
 
+    // The deferred row steps aside for five minutes.
+    healthy.advance(5 * MINUTE);
     await drainAll(healthy);
 
     expect(healthy.sent.map((email) => email.to)).toEqual([bob.email]);
@@ -155,8 +157,11 @@ describe("issue alerts", () => {
 
     const limited = notifyHarness(() => errorWithCode("E_RATE_LIMIT_EXCEEDED"));
 
+    // Each retry is a new queue batch, once the row is due again.
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      await expect(drainOutbox(limited.deps)).rejects.toThrow(/E_RATE_LIMIT_EXCEEDED/);
+      limited.deps.paused.clear();
+      await expect(drainOutbox(limited.deps)).rejects.toThrow(/deferred/);
+      limited.advance(5 * MINUTE);
     }
 
     const row = await env.DB.prepare(`SELECT attempts FROM notify_outbox`).first<{
@@ -167,6 +172,7 @@ describe("issue alerts", () => {
 
     const healthy = notifyHarness();
 
+    healthy.advance(30 * MINUTE);
     await drainAll(healthy);
     expect(healthy.sent).toHaveLength(2);
   });
@@ -463,7 +469,14 @@ describe("unsubscribe links", () => {
     expect(done.status).toBe(200);
     expect(await done.text()).toContain("You will no longer get issue alerts for");
     expect(await settings.forUser(alice.id, organizationId)).toEqual([
-      { userId: alice.id, type: "alerts", scope: "project", scopeId: projectId, value: "never" },
+      {
+        provider: "email",
+        userId: alice.id,
+        type: "alerts",
+        scope: "project",
+        scopeId: projectId,
+        value: "never",
+      },
     ]);
   });
 
@@ -516,7 +529,9 @@ describe("notification settings API", () => {
     expect(initial.defaults.workflow).toBe("subscribe_only");
     expect(initial.emailEnabled).toBe(true);
 
-    const change = { type: "reports", scope: "organization", scopeId: 1 };
+    expect(initial.pushDevices).toBe(0);
+
+    const change = { provider: "email", type: "reports", scope: "organization", scopeId: 1 };
 
     const saved = await read(
       await api("/organizations/default/notifications/", {
@@ -539,12 +554,18 @@ describe("notification settings API", () => {
 
   it("refuses values, scopes and ids that do not fit", async () => {
     const put = async (body: {
+      provider?: string;
       type: string;
       scope: string;
       scopeId: number;
       value: string;
     }): Promise<number> =>
-      (await api("/organizations/default/notifications/", { method: "PUT", body })).status;
+      (
+        await api("/organizations/default/notifications/", {
+          method: "PUT",
+          body: { provider: "email", ...body },
+        })
+      ).status;
 
     expect(
       await put({ type: "alerts", scope: "organization", scopeId: 1, value: "subscribe_only" }),
@@ -559,6 +580,44 @@ describe("notification settings API", () => {
     expect(await put({ type: "alerts", scope: "user", scopeId: 999_999, value: "never" })).toBe(
       400,
     );
+    // The weekly report is email only.
+    expect(
+      await put({
+        provider: "push",
+        type: "reports",
+        scope: "organization",
+        scopeId: 1,
+        value: "never",
+      }),
+    ).toBe(400);
+    expect(
+      await put({
+        provider: "sms",
+        type: "alerts",
+        scope: "organization",
+        scopeId: 1,
+        value: "never",
+      }),
+    ).toBe(400);
+  });
+
+  it("keeps push and email choices apart", async () => {
+    const change = { type: "alerts", scope: "organization", scopeId: 1 };
+
+    const saved = await read(
+      await api("/organizations/default/notifications/", {
+        method: "PUT",
+        body: { provider: "push", ...change, value: "never" },
+      }),
+    );
+
+    expect(saved.settings).toContainEqual({ provider: "push", ...change, value: "never" });
+    expect(saved.settings).not.toContainEqual({ provider: "email", ...change, value: "never" });
+
+    await api("/organizations/default/notifications/", {
+      method: "PUT",
+      body: { provider: "push", ...change, value: null },
+    });
   });
 
   it("follows and unfollows an issue", async () => {

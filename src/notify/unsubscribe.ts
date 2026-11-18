@@ -36,7 +36,7 @@ function page(status: number, title: string, body: string): Response {
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
     `<title>${escapeHtml(title)}</title></head>` +
     `<body style="font-family:system-ui,sans-serif;max-width:480px;margin:48px auto;padding:0 16px;` +
-    `line-height:1.5;color:#2b2233"><h1 style="font-size:20px">${escapeHtml(title)}</h1>${body}</body></html>`;
+    `line-height:1.5;color:#302e36"><h1 style="font-size:20px">${escapeHtml(title)}</h1>${body}</body></html>`;
 
   return new Response(html, {
     status,
@@ -89,7 +89,11 @@ async function apply(target: UnsubscribeTarget, deps: UnsubscribeDeps): Promise<
     return;
   }
 
-  await deps.settings.set({ ...target, scope: target.scope, value: "never" }, now);
+  // An unsubscribe link is in an email, so it turns off email alone.
+  await deps.settings.set(
+    { ...target, provider: "email", scope: target.scope, value: "never" },
+    now,
+  );
 }
 
 async function targetOf(url: URL, deps: UnsubscribeDeps): Promise<UnsubscribeTarget | null> {

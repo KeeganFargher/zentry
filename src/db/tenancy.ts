@@ -51,6 +51,14 @@ export class TenancyStore {
       .first<UserRecord>();
   }
 
+  /** The user a device token belongs to. Never creates one: a device is only ever made for a user. */
+  async user(userId: number): Promise<UserRecord | null> {
+    return this.#db
+      .prepare(`SELECT id, email FROM users WHERE id = ?1`)
+      .bind(userId)
+      .first<UserRecord>();
+  }
+
   async memberships(userId: number): Promise<Membership[]> {
     const { results } = await this.#db
       .prepare(

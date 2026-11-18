@@ -227,7 +227,11 @@ export type NotificationValue = "always" | "never" | "subscribe_only";
 /** The most specific scope wins: project, then organization, then user. */
 export type NotificationScope = "user" | "organization" | "project";
 
+/** Where a notification goes. Push reaches the phones signed in to the mobile app. */
+export type NotificationProvider = "email" | "push";
+
 export type ApiNotificationSetting = {
+  provider: NotificationProvider;
   type: NotificationType;
   scope: NotificationScope;
   scopeId: number;
@@ -242,6 +246,49 @@ export type ApiNotificationSettings = {
   userId: number;
   /** False while the deployment has no sender address, so nothing is emailed. */
   emailEnabled: boolean;
+  /** How many of the caller's phones can receive pushes. */
+  pushDevices: number;
 };
 
 export type ApiIssueSubscription = { subscribed: boolean };
+
+// ── Mobile app (DESIGN.md §19) ───────────────────────────────────────────
+
+/** A code the web UI shows as a QR code; the app trades it for a device token. */
+export type ApiPairing = {
+  /** What the QR code holds: `zentry://pair?url=…&code=…`. */
+  link: string;
+  expiresAt: number;
+};
+
+/** A phone signed in to the mobile app. */
+export type ApiDevice = {
+  id: number;
+  name: string;
+  /** True once the app has registered for push notifications. */
+  push: boolean;
+  createdAt: number;
+  lastSeenAt: number;
+  /** True for the device making the request. */
+  current: boolean;
+};
+
+export type ApiDeviceList = { devices: ApiDevice[] };
+
+/** The app's reply from the pairing exchange. The token is shown only once. */
+export type ApiPaired = { token: string; device: ApiDevice; email: string };
+
+/**
+ * The Android notification channel a push arrives on: one per type, so each
+ * can be muted in the phone's settings. The weekly report is email only.
+ */
+export type PushChannel = Exclude<NotificationType, "reports">;
+
+/**
+ * What a push notification carries for the app to open on a tap. Expo
+ * delivers it as the notification's `data`.
+ */
+export type PushData =
+  | { kind: "issue"; organization: string; issueId: number }
+  | { kind: "issues"; organization: string; projectId: number }
+  | { kind: "settings"; organization: string };

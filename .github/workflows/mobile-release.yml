@@ -1,0 +1,144 @@
+# Builds the Android app and publishes the APK as a GitHub release, whenever
+# main gets a change under mobile/. Download it from the repository's
+# Releases page and install it on the phone; each build installs over the last.
+#
+# Needs four repository secrets (mobile/README.md, Release builds):
+#   GOOGLE_SERVICES_JSON       mobile/google-services.json, for push (FCM)
+#   ANDROID_KEYSTORE_BASE64    the release keystore, base64; one key for every
+#                              build, or Android refuses to install over the last
+#   ANDROID_KEYSTORE_PASSWORD  its password
+#   ANDROID_KEY_PASSWORD       the key's password
+name: mobile-release
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-release.yml"
+  workflow_dispatch:
+
+# One release build at a time, so two never race for the next version code.
+# A push that arrives meanwhile queues; GitHub keeps only the newest queued run.
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # "Run workflow" can pick any branch; only main is signed and published.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Unlike the default, `shell: bash` runs with pipefail, so a failing
+        # command inside a pipe fails the step instead of yielding "".
+        shell: bash
+        working-directory: mobile
+    env:
+      # The run number is the versionCode (app.config.ts): it only grows, so
+      # every build is an update to the one before. Set for the whole job, so
+      # the prebuild and the config embedded during the Gradle build agree.
+      ZENTRY_VERSION_CODE: ${{ github.run_number }}
+      # Not a secret: as one, GitHub would mask "zentry" all over the logs.
+      KEY_ALIAS: zentry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Re-running an older run after a newer one published would release a
+      # lower versionCode, which no phone with the newer build can install.
+      - name: Check this build is newer than the last release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh release list --limit 100 --json tagName --jq '[.[].tagName | select(startswith("mobile-build-")) | ltrimstr("mobile-build-") | tonumber] | max // 0')
+          if [ "$ZENTRY_VERSION_CODE" -le "$latest" ]; then
+            echo "::error::Build $ZENTRY_VERSION_CODE is not newer than the released build $latest"
+            exit 1
+          fi
+
+      # mobile/ is its own pnpm root (mobile/pnpm-workspace.yaml).
+      - run: pnpm install --frozen-lockfile
+
+      # A missing secret fails here, by name, rather than as a build that
+      # silently has no push or an APK that will not install over the last.
+      - name: Write google-services.json and the keystore
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for name in GOOGLE_SERVICES_JSON ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set (mobile/README.md, Release builds)"
+              exit 1
+            fi
+          done
+          printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+
+      - name: Generate the Android project
+        run: pnpm exec expo prebuild --platform android --no-install
+
+      # Gradle's injected signing properties sign the release with the
+      # project's key without editing the generated android/ project, whose
+      # release build would otherwise use a throwaway debug key.
+      - name: Build the release APK
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: >
+          ./gradlew assembleRelease
+          -PreactNativeArchitectures=arm64-v8a,x86_64
+          -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.keystore"
+          -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD"
+          -Pandroid.injected.signing.key.alias="$KEY_ALIAS"
+          -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
+
+      # Fails the run if the APK came out signed with anything but the
+      # project's key, before it is published.
+      - name: Check the signature
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
+          signed=$("$apksigner" verify --print-certs "$apk" | awk '/certificate SHA-256 digest/ {print $NF; exit}')
+          expected=$(keytool -list -v -keystore "$RUNNER_TEMP/release.keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$KEY_ALIAS" \
+            | awk '/SHA256:/ {print $2; exit}' | tr -d ':' | tr 'A-F' 'a-f')
+          if [ -z "$signed" ] || [ -z "$expected" ]; then
+            echo "::error::Could not read a certificate digest (APK: '$signed', keystore: '$expected')"
+            exit 1
+          fi
+          echo "APK signed by $signed"
+          if [ "$signed" != "$expected" ]; then
+            echo "::error::The APK is not signed with the release key (expected $expected)"
+            exit 1
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./app.json').expo.version")
+          apk="zentry-$version-build$ZENTRY_VERSION_CODE.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          gh release create "mobile-build-$ZENTRY_VERSION_CODE" "$apk" \
+            --target "$GITHUB_SHA" \
+            --title "Zentry Android $version (build $ZENTRY_VERSION_CODE)" \
+            --notes "Built from $GITHUB_SHA. Download the APK on the phone and open it to install; it updates the previous build in place."

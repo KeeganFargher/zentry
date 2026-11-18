@@ -78,6 +78,16 @@ export class RetentionStore {
     );
   }
 
+  /** As email_sends: they stop a redelivery pushing twice, and old ones serve nothing. */
+  async deletePushSendsBefore(cutoff: number): Promise<number> {
+    return this.#changes(
+      `DELETE FROM push_sends WHERE key IN (
+         SELECT key FROM push_sends WHERE created_at < ?1 ORDER BY created_at LIMIT ?2)`,
+      cutoff,
+      STATS_CHUNK,
+    );
+  }
+
   async clearExpiredLimits(now: number): Promise<number> {
     return this.#changes(
       `UPDATE projects SET rate_limited_until = NULL, rate_limit_reason = NULL

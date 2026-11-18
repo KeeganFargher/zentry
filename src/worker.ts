@@ -10,11 +10,14 @@ import { handleBatch } from "@/consumer/handler";
 import type { ConsumerDeps } from "@/consumer/handler";
 import { runWeeklyReports, sweepOutbox } from "@/cron/notify";
 import type { NotifyCronDeps } from "@/cron/notify";
+import { checkPushReceipts } from "@/cron/push-receipts";
+import type { PushReceiptDeps } from "@/cron/push-receipts";
 import { runRetention } from "@/cron/retention";
 import type { RetentionDeps } from "@/cron/retention";
 import { runSpikeProtection } from "@/cron/spike";
 import type { SpikeDeps } from "@/cron/spike";
 import { BatchStore } from "@/db/batch";
+import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
@@ -23,6 +26,7 @@ import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
 import { OrganizationStore } from "@/db/organizations";
 import { ProjectStore } from "@/db/projects";
+import { PushSendStore } from "@/db/pushes";
 import { ReportStore } from "@/db/reports";
 import { RetentionStore } from "@/db/retention";
 import { SpikeStore } from "@/db/spike";
@@ -36,6 +40,7 @@ import { UsageCache } from "@/ingest/limits";
 import type { MailConfig, NotifyDeps } from "@/notify/deps";
 import { handleNotifyBatch } from "@/notify/handler";
 import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "@/notify/unsubscribe";
+import { ExpoPush } from "@/push/expo";
 import { errorText, logError } from "@/shared/log";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
 
@@ -44,6 +49,9 @@ let keyCache: KeyCache | undefined;
 let usageCache: UsageCache | undefined;
 let accessVerifier: AccessVerifier | undefined;
 const sessions = new Sessions();
+
+// Wrapped, because the Workers runtime refuses a `fetch` called detached from the global.
+const expo = new ExpoPush((input, init) => fetch(input, init));
 
 function ingestDeps(env: Env): IngestDeps {
   const keyStore = new KeyStore(env.DB);
@@ -124,6 +132,10 @@ function notifyDeps(env: Env): NotifyDeps {
     mail: new MailStore(env.DB),
     reports: new ReportStore(env.DB),
     send: (message) => env.EMAIL.send(message),
+    devices: new DeviceStore(env.DB),
+    pushes: new PushSendStore(env.DB),
+    sendPush: (messages) => expo.send(messages),
+    paused: new Set(),
     latestEvent: async (issue) =>
       issue.lastEventId === null
         ? null
@@ -181,9 +193,11 @@ function apiDeps(env: Env): ApiDeps {
     events: new EventStore(env.DB),
     blobs: new EventBlobs(env.BLOBS),
     notificationSettings: new NotificationSettingsStore(env.DB),
+    devices: new DeviceStore(env.DB),
     notify: () => wakeNotify(env),
     emailEnabled: mailConfig(env) !== null,
     ingestHost: env.INGEST_HOST,
+    mobileApiUrl: env.MOBILE_API_URL.replace(/\/+$/, ""),
     now: () => Date.now(),
   };
 }
@@ -198,7 +212,22 @@ function retentionDeps(env: Env): RetentionDeps {
     pruneTags: (keep) => store.pruneTags(keep),
     clearExpiredLimits: (now) => store.clearExpiredLimits(now),
     deleteEmailSendsBefore: (cutoff) => store.deleteEmailSendsBefore(cutoff),
+    deletePushSendsBefore: (cutoff) => store.deletePushSendsBefore(cutoff),
     retentionDays: Number(env.RETENTION_DAYS),
+    now: () => Date.now(),
+  };
+}
+
+function pushReceiptDeps(env: Env): PushReceiptDeps {
+  const pushes = new PushSendStore(env.DB);
+  const devices = new DeviceStore(env.DB);
+
+  return {
+    awaiting: (window, cursor, limit) => pushes.awaitingReceipts(window, cursor, limit),
+    receipts: (ids) => expo.receipts(ids),
+    settle: (key, outcome) => pushes.settle(key, outcome),
+    expire: (before) => pushes.expireReceipts(before),
+    forgetPushToken: (pushToken) => devices.forgetPushToken(pushToken),
     now: () => Date.now(),
   };
 }
@@ -225,8 +254,19 @@ async function runCron(cron: string, env: Env): Promise<void> {
   }
 
   if (cron === SPIKE_CRON) {
-    await runSpikeProtection(spikeDeps(env));
-    await sweepOutbox(notifyCronDeps(env));
+    // Independent jobs: one failing must not skip the others. Each still
+    // throws, so a failure shows in the logs.
+    const jobs = await Promise.allSettled([
+      runSpikeProtection(spikeDeps(env)),
+      sweepOutbox(notifyCronDeps(env)),
+      checkPushReceipts(pushReceiptDeps(env)),
+    ]);
+
+    const failed = jobs.flatMap((job) => (job.status === "rejected" ? [job.reason] : []));
+
+    if (failed.length > 0) {
+      throw new AggregateError(failed, `${failed.length} hourly jobs failed`);
+    }
 
     return;
   }
@@ -262,6 +302,25 @@ async function serveApi(request: Request, env: Env): Promise<Response> {
   }
 }
 
+/**
+ * The API on the public ingest host, limited per client address: Access does
+ * not guard it, and every request costs a D1 read (DESIGN.md §19.1).
+ */
+async function serveAppApi(request: Request, env: Env): Promise<Response> {
+  const client = request.headers.get("cf-connecting-ip");
+
+  // Cloudflare sets the header on every request it routes to the Worker.
+  if (client === null) {
+    throw new Error("request without cf-connecting-ip on the ingest host");
+  }
+
+  const { success } = await env.APP_API_RL.limit({ key: client });
+
+  return success
+    ? serveApi(request, env)
+    : Response.json({ detail: "too many requests" }, { status: 429 });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -283,9 +342,14 @@ export default {
       return handleIngest(request, ingestRoute, ingestDeps(env));
     }
 
-    // The ingest hostname is public, so it serves nothing but the ingest routes.
+    // The ingest hostname is public, so besides ingest it serves only the API
+    // for the mobile app, where the router accepts device tokens alone
+    // (DESIGN.md §19). Access guards the UI hostname at the edge, so a phone
+    // could not reach the API there.
     if (url.hostname === env.INGEST_HOST) {
-      return rejected(404, "not found");
+      return url.pathname.startsWith("/api/0/")
+        ? serveAppApi(request, env)
+        : rejected(404, "not found");
     }
 
     return url.pathname.startsWith("/api/") ? serveApi(request, env) : env.ASSETS.fetch(request);

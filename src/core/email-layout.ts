@@ -25,14 +25,19 @@ export type EmailFooter = {
 
 export type EmailContent = { subject: string; text: string; html: string };
 
+// Mail clients fall back to Arial or Helvetica, where 500 renders as 400, so
+// emails keep bold (600/700) for emphasis where the UI uses Sentry's 500.
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-const INK = "#2b2233";
-const MUTED = "#80708f";
-const ACCENT = "#6c5fc7";
-const LINK = "#2562d4";
-const LINE = "#e7e1ec";
-const SHADE = "#f5f3f7";
+
+// Sentry's light tokens, as the web UI and app use (ui/src/styles.css).
+const INK = "#302e36";
+const MUTED = "#6a6772";
+const ACCENT = "#7553ff";
+const ACCENT_EDGE = "#5827d6";
+const LINK = "#653de9";
+const LINE = "#e6e6e9";
+const SHADE = "#f8f8f9";
 
 export function escapeHtml(text: string): string {
   return text
@@ -81,7 +86,7 @@ function linksHtml(items: { label: string; url: string; detail: string }[]): str
 function buttonHtml(label: string, url: string): string {
   return (
     `<a href="${escapeHtml(url)}" style="background:${ACCENT};color:#fff;padding:8px 16px;` +
-    `border-radius:4px;text-decoration:none;display:inline-block;font-weight:600">` +
+    `border-radius:8px;border-bottom:2px solid ${ACCENT_EDGE};text-decoration:none;display:inline-block;font-weight:600">` +
     `${escapeHtml(label)}</a>`
   );
 }
@@ -275,7 +280,7 @@ export function renderEmail(draft: EmailDraft): EmailContent {
 
   const html =
     `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `</head><body style="margin:0;padding:24px 8px;background:#faf9fb">` +
+    `</head><body style="margin:0;padding:24px 8px;background:${SHADE}">` +
     `<div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid ${LINE};` +
     `border-radius:6px;font-family:${FONT};font-size:14px;line-height:1.5;color:${INK}">` +
     `${headerHtml(draft)}<div style="padding:28px 32px">${body}${footerHtml(draft.footer)}</div>` +

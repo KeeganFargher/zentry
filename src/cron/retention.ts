@@ -13,6 +13,7 @@ export type RetentionDeps = {
   pruneTags: (keep: number) => Promise<number>;
   clearExpiredLimits: (now: number) => Promise<number>;
   deleteEmailSendsBefore: (cutoff: number) => Promise<number>;
+  deletePushSendsBefore: (cutoff: number) => Promise<number>;
   retentionDays: number;
   now: () => number;
 };
@@ -63,6 +64,7 @@ export async function runRetention(deps: RetentionDeps): Promise<void> {
   const tags = await run(() => deps.pruneTags(MAX_TAG_VALUES));
   const limits = await run(() => deps.clearExpiredLimits(started));
   const emailSends = await run(() => deps.deleteEmailSendsBefore(started - EMAIL_SENDS_DAYS * DAY));
+  const pushSends = await run(() => deps.deletePushSendsBefore(started - EMAIL_SENDS_DAYS * DAY));
 
   logInfo("retention finished", {
     events,
@@ -71,6 +73,7 @@ export async function runRetention(deps: RetentionDeps): Promise<void> {
     tags,
     limits,
     emailSends,
+    pushSends,
     ms: deps.now() - started,
   });
 }

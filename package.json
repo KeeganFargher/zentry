@@ -18,18 +18,20 @@
     "migrate:local": "wrangler d1 migrations apply zentry --local",
     "migrate:remote": "wrangler d1 migrations apply zentry --remote -c wrangler.production.jsonc",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p ui && tsc --noEmit -p e2e",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ui && tsc --noEmit -p e2e && pnpm --dir mobile typecheck",
     "types": "wrangler types --strict-vars=false"
   },
   "dependencies": {
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "uqr": "0.1.3",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",
     "@cloudflare/workers-types": "5.20261116.1",
     "@fontsource-variable/rubik": "5.2.8",
+    "@fontsource/roboto-mono": "5.3.0",
     "@oxlint/plugins": "1.93.0",
     "@playwright/test": "1.65.1",
     "@sentry/browser": "11.12.0",

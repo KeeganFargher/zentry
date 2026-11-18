@@ -1,13 +1,23 @@
-// The read API: /api/0/*. Authenticates with Cloudflare Access, resolves the
-// organization in the path, checks membership, then dispatches.
+// The read API: /api/0/*. Works out who is calling (Cloudflare Access, or a
+// mobile app's device token), resolves the organization in the path, checks
+// membership, then dispatches.
 
+import type { DeviceRecord } from "@/db/devices";
 import type { Membership, UserRecord } from "@/db/tenancy";
 import type { ApiMe } from "@/shared/contract";
-import { MINUTE } from "@/shared/time";
+import { sha256Hex } from "@/shared/ids";
+import { DAY, MINUTE } from "@/shared/time";
 
-import type { ApiDeps, Handler } from "./context";
+import type { ApiDeps, Handler, UserContext, UserHandler } from "./context";
+import {
+  createPairing,
+  listDevices,
+  redeemPairing,
+  removeDevice,
+  updatePushToken,
+} from "./devices";
 import { getEvent, listEvents } from "./events";
-import { badRequest, InvalidRequest, notFound, unauthorized } from "./http";
+import { badRequest, forbidden, InvalidRequest, notFound, unauthorized } from "./http";
 import {
   deleteIssue,
   getIssue,
@@ -37,21 +47,36 @@ import {
   updateProject,
 } from "./projects";
 
-type Route = [method: string, pattern: RegExp, handler: Handler];
+/**
+ * Who may call a route. A device token is a long-lived secret on a phone, on
+ * a host Access does not guard, so it reaches only what the app needs:
+ * reading and triaging issues, following them, notification settings, and
+ * its own sign-out. Everything else stays behind Access, and a new route is
+ * web-only until it is marked app() (DESIGN.md §19.1).
+ */
+type Reach = "web" | "any";
+
+type Route<H> = { method: string; pattern: RegExp; handler: H; reach: Reach };
 
 const ORG = String.raw`([\w-]+)`;
 const ID = String.raw`(\d+)`;
 const SLUG = String.raw`([\w-]+)`;
 
-function route(method: string, path: string, handler: Handler): Route {
-  return [method, new RegExp(`^/api/0${path}/?$`), handler];
+/** A route for the web UI only. Closed to device tokens unless marked with app(). */
+function route<H>(method: string, path: string, handler: H): Route<H> {
+  return { method, pattern: new RegExp(`^/api/0${path}/?$`), handler, reach: "web" };
+}
+
+/** Opens a route to the mobile app's device tokens too: a decision made route by route. */
+function app<H>(closed: Route<H>): Route<H> {
+  return { ...closed, reach: "any" };
 }
 
 // The first capture of every pattern is the organization slug.
-const ROUTES: Route[] = [
-  route("GET", `/organizations/${ORG}/projects`, listProjects),
+const ROUTES: Route<Handler>[] = [
+  app(route("GET", `/organizations/${ORG}/projects`, listProjects)),
   route("POST", `/organizations/${ORG}/projects`, createProject),
-  route("GET", `/projects/${ORG}/${SLUG}`, getProject),
+  app(route("GET", `/projects/${ORG}/${SLUG}`, getProject)),
   route("PUT", `/projects/${ORG}/${SLUG}`, updateProject),
   route("DELETE", `/projects/${ORG}/${SLUG}`, deleteProject),
   route("GET", `/projects/${ORG}/${SLUG}/keys`, listKeys),
@@ -59,21 +84,30 @@ const ROUTES: Route[] = [
   route("PUT", `/projects/${ORG}/${SLUG}/keys/${ID}`, updateKey),
   route("GET", `/organizations/${ORG}/limits`, getLimits),
   route("PUT", `/organizations/${ORG}/limits`, updateLimits),
-  route("GET", `/organizations/${ORG}/notifications`, getNotificationSettings),
-  route("PUT", `/organizations/${ORG}/notifications`, updateNotificationSetting),
-  route("GET", `/organizations/${ORG}/issues`, listIssues),
-  route("PUT", `/organizations/${ORG}/issues`, updateIssues),
-  route("GET", `/organizations/${ORG}/issues/${ID}`, getIssue),
-  route("PUT", `/organizations/${ORG}/issues/${ID}`, updateIssue),
+  app(route("GET", `/organizations/${ORG}/notifications`, getNotificationSettings)),
+  app(route("PUT", `/organizations/${ORG}/notifications`, updateNotificationSetting)),
+  app(route("GET", `/organizations/${ORG}/issues`, listIssues)),
+  app(route("PUT", `/organizations/${ORG}/issues`, updateIssues)),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}`, getIssue)),
+  app(route("PUT", `/organizations/${ORG}/issues/${ID}`, updateIssue)),
   route("DELETE", `/organizations/${ORG}/issues/${ID}`, deleteIssue),
-  route("GET", `/organizations/${ORG}/issues/${ID}/events`, listEvents),
-  route("GET", `/organizations/${ORG}/issues/${ID}/events/([\\w-]+)`, getEvent),
-  route("GET", `/organizations/${ORG}/issues/${ID}/tags`, getIssueTags),
-  route("GET", `/organizations/${ORG}/issues/${ID}/stats`, getIssueStats),
-  route("GET", `/organizations/${ORG}/issues/${ID}/activity`, getIssueActivity),
-  route("GET", `/organizations/${ORG}/issues/${ID}/subscription`, getIssueSubscription),
-  route("PUT", `/organizations/${ORG}/issues/${ID}/subscription`, updateIssueSubscription),
-  route("GET", `/organizations/${ORG}/shortids/([\\w-]+)`, getShortId),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}/events`, listEvents)),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}/events/([\\w-]+)`, getEvent)),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}/tags`, getIssueTags)),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}/stats`, getIssueStats)),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}/activity`, getIssueActivity)),
+  app(route("GET", `/organizations/${ORG}/issues/${ID}/subscription`, getIssueSubscription)),
+  app(route("PUT", `/organizations/${ORG}/issues/${ID}/subscription`, updateIssueSubscription)),
+  app(route("GET", `/organizations/${ORG}/shortids/([\\w-]+)`, getShortId)),
+];
+
+/** Routes about the caller, outside any organization. */
+const USER_ROUTES: Route<UserHandler>[] = [
+  app(route("GET", "/me", me)),
+  route("POST", "/me/pairings", createPairing),
+  app(route("GET", "/me/devices", listDevices)),
+  app(route("DELETE", `/me/devices/${ID}`, removeDevice)),
+  app(route("PUT", "/me/device", updatePushToken)),
 ];
 
 type Session = { user: UserRecord; memberships: Membership[]; expiresAt: number };
@@ -107,65 +141,143 @@ export class Sessions {
   }
 }
 
-function me(session: Session): Response {
+type Caller = { user: UserRecord; memberships: Membership[]; device: DeviceRecord | null };
+
+async function me(context: UserContext): Promise<Response> {
+  const memberships = await context.deps.tenancy.memberships(context.user.id);
+
   return Response.json({
-    id: session.user.id,
-    email: session.user.email,
-    organizations: session.memberships.map(({ id, slug, name }) => ({ id, slug, name })),
+    id: context.user.id,
+    email: context.user.email,
+    organizations: memberships.map(({ id, slug, name }) => ({ id, slug, name })),
   } satisfies ApiMe);
 }
 
-type Matched = { handler: Handler; organization: string; args: string[] };
+const BEARER = /^Bearer (\S+)$/;
 
-function match(method: string, pathname: string): Matched | null {
-  for (const [routeMethod, pattern, handler] of ROUTES) {
-    const [, organization, ...args] =
-      (routeMethod === method ? pattern.exec(pathname) : null) ?? [];
+/**
+ * A token unused this long stops working, and its device is signed out. A
+ * phone in use renews it every hour it is used; one lost, or kept by someone
+ * who has since lost their Access, does not keep its way in for ever.
+ */
+const DEVICE_IDLE_LIMIT = 30 * DAY;
 
-    if (organization !== undefined) {
-      return { handler, organization, args };
+/**
+ * A device token is looked up on every request, never cached, so signing a
+ * phone out takes effect at once. The user is read, never created: a device
+ * exists only for a user who signed in through Access.
+ */
+async function deviceCaller(token: string, deps: ApiDeps): Promise<Caller | null> {
+  const now = deps.now();
+  const device = await deps.devices.byToken(await sha256Hex(token));
+  const user = device === null ? null : await deps.tenancy.user(device.userId);
+
+  if (device === null || user === null) {
+    return null;
+  }
+
+  if (now - device.lastSeenAt > DEVICE_IDLE_LIMIT) {
+    await deps.devices.remove(device.userId, device.id);
+
+    return null;
+  }
+
+  await deps.devices.touch(device, now);
+
+  return { user, memberships: await deps.tenancy.memberships(user.id), device };
+}
+
+/**
+ * An Authorization header always means a device token, even on localhost,
+ * where the development email would otherwise sign in anything: a bad token
+ * must fail there as it would in production. On the ingest host, which
+ * Access does not guard, a device token is the only way in.
+ */
+async function identify(
+  request: Request,
+  deps: ApiDeps,
+  sessions: Sessions,
+): Promise<Caller | null> {
+  const authorization = request.headers.get("authorization");
+
+  if (authorization !== null) {
+    const [, token] = BEARER.exec(authorization) ?? [];
+
+    return token === undefined ? null : deviceCaller(token, deps);
+  }
+
+  if (new URL(request.url).hostname === deps.ingestHost) {
+    return null;
+  }
+
+  const email = await deps.access.email(request, deps.now());
+  const session = email === null ? null : await sessions.resolve(email, deps);
+
+  return session === null ? null : { ...session, device: null };
+}
+
+type Matched<H> = { route: Route<H>; captures: string[] };
+
+function match<H>(routes: Route<H>[], method: string, pathname: string): Matched<H> | null {
+  for (const candidate of routes) {
+    const captures = candidate.method === method ? candidate.pattern.exec(pathname) : null;
+
+    if (captures !== null) {
+      return { route: candidate, captures: captures.slice(1) };
     }
   }
 
   return null;
 }
 
-export async function handleApi(
-  request: Request,
-  deps: ApiDeps,
-  sessions: Sessions,
-): Promise<Response> {
+/** A device token on a web-only route is refused outright, not hidden as a 404. */
+function reachable(reach: Reach, caller: Caller): boolean {
+  return reach === "any" || caller.device === null;
+}
+
+async function dispatch(request: Request, deps: ApiDeps, caller: Caller): Promise<Response> {
   const url = new URL(request.url);
-  const email = await deps.access.email(request, deps.now());
-  const session = email === null ? null : await sessions.resolve(email, deps);
+  const base = { request, url, deps, user: caller.user, device: caller.device, now: deps.now() };
+  const own = match(USER_ROUTES, request.method, url.pathname);
 
-  if (session === null) {
-    return unauthorized();
+  if (own !== null) {
+    return reachable(own.route.reach, caller)
+      ? own.route.handler(base, own.captures)
+      : forbidden("the mobile app cannot do this; use the web UI");
   }
 
-  if (request.method === "GET" && /^\/api\/0\/me\/?$/.test(url.pathname)) {
-    return me(session);
-  }
-
-  const matched = match(request.method, url.pathname);
-  const membership = session.memberships.find((entry) => entry.slug === matched?.organization);
+  const matched = match(ROUTES, request.method, url.pathname);
+  const [organization, ...args] = matched?.captures ?? [];
+  const membership = caller.memberships.find((entry) => entry.slug === organization);
 
   if (matched === null || membership === undefined) {
     return notFound();
   }
 
-  const context = {
-    request,
-    url,
-    deps,
-    user: session.user,
-    organizationId: membership.id,
-    role: membership.role,
-    now: deps.now(),
-  };
+  if (!reachable(matched.route.reach, caller)) {
+    return forbidden("the mobile app cannot do this; use the web UI");
+  }
 
+  const context = { ...base, organizationId: membership.id, role: membership.role };
+
+  return matched.route.handler(context, args);
+}
+
+const PAIR_PATH = /^\/api\/0\/pair\/?$/;
+
+export async function handleApi(
+  request: Request,
+  deps: ApiDeps,
+  sessions: Sessions,
+): Promise<Response> {
   try {
-    return await matched.handler(context, matched.args);
+    if (request.method === "POST" && PAIR_PATH.test(new URL(request.url).pathname)) {
+      return await redeemPairing(request, deps);
+    }
+
+    const caller = await identify(request, deps, sessions);
+
+    return caller === null ? unauthorized() : await dispatch(request, deps, caller);
   } catch (cause) {
     // Only input that failed its schema is the client's fault; anything else
     // is ours and must surface as a 500.

@@ -3,10 +3,16 @@
 
 import { z } from "zod";
 
-import { allowedScopes, allowedValues, NOTIFICATION_DEFAULTS } from "@/core/notify-settings";
+import {
+  allowedProviders,
+  allowedScopes,
+  allowedValues,
+  NOTIFICATION_DEFAULTS,
+} from "@/core/notify-settings";
 import type {
   ApiIssueSubscription,
   ApiNotificationSettings,
+  NotificationProvider,
   NotificationScope,
   NotificationType,
   NotificationValue,
@@ -24,6 +30,7 @@ const NotificationTypeParam = z.enum([
 ]) satisfies z.ZodType<NotificationType>;
 
 const UpdateSettingBody = z.object({
+  provider: z.enum(["email", "push"]) satisfies z.ZodType<NotificationProvider>,
   type: NotificationTypeParam,
   scope: z.enum(["user", "organization", "project"]) satisfies z.ZodType<NotificationScope>,
   scopeId: z.int().positive(),
@@ -39,13 +46,24 @@ const SubscriptionBody = z.object({ subscribed: z.boolean() });
 
 async function settingsOf(context: ApiContext): Promise<ApiNotificationSettings> {
   const { notificationSettings } = context.deps;
-  const rows = await notificationSettings.forUser(context.user.id, context.organizationId);
+
+  const [rows, pushDevices] = await Promise.all([
+    notificationSettings.forUser(context.user.id, context.organizationId),
+    context.deps.devices.pushCount(context.user.id),
+  ]);
 
   return {
     defaults: NOTIFICATION_DEFAULTS,
-    settings: rows.map(({ type, scope, scopeId, value }) => ({ type, scope, scopeId, value })),
+    settings: rows.map(({ provider, type, scope, scopeId, value }) => ({
+      provider,
+      type,
+      scope,
+      scopeId,
+      value,
+    })),
     userId: context.user.id,
     emailEnabled: context.deps.emailEnabled,
+    pushDevices,
   };
 }
 
@@ -54,6 +72,10 @@ export const getNotificationSettings: Handler = async (context) =>
 
 /** Why the change is refused, or null when the caller may make it. */
 async function problemWith(context: ApiContext, body: UpdateSetting): Promise<string | null> {
+  if (!allowedProviders(body.type).includes(body.provider)) {
+    return `${body.type} cannot be sent by ${body.provider}`;
+  }
+
   if (body.value !== null && !allowedValues(body.type).includes(body.value)) {
     return `${body.type} cannot be ${body.value}`;
   }
@@ -84,6 +106,7 @@ export const updateNotificationSetting: Handler = async (context) => {
   }
 
   const key = {
+    provider: body.provider,
     userId: context.user.id,
     type: body.type,
     scope: body.scope,

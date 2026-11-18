@@ -3,18 +3,22 @@
 // setting then decides.
 
 import { resolveSetting, wantsWorkflow } from "@/core/notify-settings";
-import type { NotificationType } from "@/shared/contract";
+import type { NotificationProvider, NotificationType } from "@/shared/contract";
 import type { IssueNotice, Recipient } from "@/shared/notify";
 
 import type { NotifyDeps } from "./deps";
 
 export type Audience = { type: NotificationType; organizationId: number; projectId: number | null };
 
-/** Members whose setting for the type is `always` where the email comes from. */
-export async function recipients(deps: NotifyDeps, audience: Audience): Promise<Recipient[]> {
+/** Members whose setting for the type and provider is `always` where the notification comes from. */
+export async function recipients(
+  deps: NotifyDeps,
+  audience: Audience,
+  provider: NotificationProvider,
+): Promise<Recipient[]> {
   const [members, rows] = await Promise.all([
     deps.settings.members(audience.organizationId),
-    deps.settings.ofMembers(audience.organizationId, audience.type),
+    deps.settings.ofMembers(audience.organizationId, audience.type, provider),
   ]);
 
   return members.filter(
@@ -29,13 +33,14 @@ export async function recipients(deps: NotifyDeps, audience: Audience): Promise<
 export async function workflowRecipients(
   deps: NotifyDeps,
   change: { issue: IssueNotice; actorId: number | null },
+  provider: NotificationProvider,
 ): Promise<Recipient[]> {
   const { issue, actorId } = change;
   const organizationId = issue.project.organization.id;
 
   const [members, rows, subscribers] = await Promise.all([
     deps.settings.members(organizationId),
-    deps.settings.ofMembers(organizationId, "workflow"),
+    deps.settings.ofMembers(organizationId, "workflow", provider),
     deps.settings.subscribers(issue.id),
   ]);
 

@@ -64,6 +64,11 @@
   },
   "ratelimits": [
     { "name": "INGEST_RL", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } },
+    // The mobile app's API on the public ingest host, per client address: the
+    // pairing exchange and every device-token lookup cost a D1 read, and no
+    // Access sits in front of them (DESIGN.md §19.1). A phone makes a few
+    // requests a minute; a scan of codes or tokens makes far more.
+    { "name": "APP_API_RL", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
   ],
   // Daily retention; the hourly spike thresholds and outbox sweep; the weekly
   // report on Saturdays. src/worker.ts tells them apart by the cron string.
@@ -84,6 +89,10 @@
     "MAX_STORED_PER_GROUP_HOUR": "100",
     // The UI's origin, for links in emails.
     "APP_URL": "https://zentry.example.com",
+    // The origin the mobile app calls, which goes in the pairing QR code. It
+    // must be a host Cloudflare Access does not guard: the ingest host, where
+    // the API accepts device tokens only (DESIGN.md §19).
+    "MOBILE_API_URL": "https://ingest.zentry.example.com",
     // The notification sender, such as "Zentry <alerts@zentry.example.com>",
     // on a domain onboarded to Email Sending. Empty sends nothing.
     "EMAIL_FROM": "",

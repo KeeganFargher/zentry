@@ -15,6 +15,7 @@ import type { Route } from "~/lib/router";
 import { IssueDetail } from "~/pages/issue-detail";
 import { IssueEvents } from "~/pages/issue-events";
 import { IssueList } from "~/pages/issue-list";
+import { MobileSettings } from "~/pages/mobile-settings";
 import { NotificationSettings } from "~/pages/notification-settings";
 import { OrganizationSettings } from "~/pages/organization-settings";
 import { ProjectSettings } from "~/pages/project-settings";
@@ -48,6 +49,10 @@ function Page({ route }: { route: Route }): JSX.Element {
 
     case "notificationSettings": {
       return <NotificationSettings org={route.org} />;
+    }
+
+    case "mobileSettings": {
+      return <MobileSettings />;
     }
 
     default: {

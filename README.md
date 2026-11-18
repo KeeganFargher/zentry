@@ -2,7 +2,8 @@
 
 Error tracking that speaks the Sentry SDK protocol and runs on Cloudflare:
 one Worker, D1, R2 and Queues. Errors and stack traces, grouped into issues,
-in a Sentry-like UI. No tracing, performance, replays or alerting.
+in a Sentry-like UI, with email and push notifications and an Android app
+([mobile/](mobile/README.md)). No tracing, performance or replays.
 
 Apps keep the official `@sentry/*` or `sentry-sdk` packages and change only
 the DSN.
@@ -91,10 +92,12 @@ about that long; they run in parallel.
 | `src/consumer/` | Queue consumer | `shared`, `core`, `db`, `blobs` |
 | `src/api/` | Read API under `/api/0/` | `shared`, `db`, `blobs` |
 | `src/cron/` | Daily retention, spike thresholds, weekly reports | `shared`, `core`, `db`, `blobs` |
-| `src/notify/` | Notification emails: queue consumer, mailer, unsubscribe page | `shared`, `core`, `db` |
+| `src/push/` | Every request to Expo's push service | `shared` |
+| `src/notify/` | Notifications: queue consumer, mailer, pushes, unsubscribe page | `shared`, `core`, `db` |
 | `src/worker.ts` | Wires bindings to the handlers | everything |
 | `ui/` | React SPA | `src/shared/contract.ts`, types only |
 | `e2e/` | Playwright tests and the fixture shop | `src/shared/contract.ts`, types only |
+| `mobile/` | The Expo Android app ([mobile/README.md](mobile/README.md)) | `src/shared/contract.ts`, types only |
 
 The linter enforces the last column. To change it, change the table in
 DESIGN.md §16.3 and `oxlint.config.ts` together.
@@ -223,6 +226,17 @@ every invocation is billed, refused or not. Set these on the account:
 Workers Logs are sampled at 10% (`head_sampling_rate` in `wrangler.jsonc`),
 because every logged invocation past 20 million a month is billed too. Raise
 it while debugging.
+
+## Mobile app
+
+An Android app in `mobile/` shows issues and events, triages them, and gets
+push notifications. Sign a phone in from Settings, Mobile app, with a QR code;
+the app then calls the ingest host with its own device token, since Access
+guards the UI host. Building it and setting up push are in
+[mobile/README.md](mobile/README.md); the design is DESIGN.md §19.
+
+For production, set `MOBILE_API_URL` in `wrangler.production.jsonc` to
+`https://<your ingest host>`, and apply the migrations (`pnpm migrate:remote`).
 
 ## Licences
 

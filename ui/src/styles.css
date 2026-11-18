@@ -1,70 +1,100 @@
 @import "@fontsource-variable/rubik/index.css";
+@import "@fontsource/roboto-mono/400.css";
+@import "@fontsource/roboto-mono/500.css";
 
+/*
+ * Sentry's design tokens, from its open-source component library
+ * (getsentry/sentry, static/packages/scraps/src/theme/{light,dark}.tsx). The
+ * phone app uses the same values (mobile/src/lib/theme.ts); keep the two in step.
+ */
 :root {
   color-scheme: light;
+  /* background.primary / secondary / tertiary */
   --bg: #ffffff;
-  --rail: #f7f6fa;
-  --surface: #f9f8fb;
-  --raised: #efedf4;
-  --border: #dedae6;
-  --border-soft: #ebe8f0;
-  --text: #2b2233;
-  --muted: #5f5570;
-  --faint: #8c829b;
-  --accent: #6c5fc7;
-  --accent-hover: #5b4dbb;
-  --accent-soft: #ece9fb;
-  --accent-line: #6c5fc7;
-  --link: #5a4bc0;
-  --fatal: #d6266b;
-  --error: #e8590c;
-  --warning: #b98400;
-  --info: #3b6ecc;
-  --debug: #8a8296;
-  --ok: #1f8f6f;
-  --danger: #cf3a48;
-  --code-bg: #f7f6fa;
-  --highlight: #e6e1fb;
-  --literal: #5a3fd6;
-  --stripe: #f4f2f8;
+  --rail: #f8f8f9;
+  --surface: #f8f8f9;
+  --raised: #f0f0f2;
+  /* border.primary / secondary */
+  --border: #dad9de;
+  --border-soft: #e6e6e9;
+  /* content.primary / headings / secondary */
+  --text: #302e36;
+  --heading: #181225;
+  --muted: #6a6772;
+  /* content.disabled: under 4.5:1, so placeholders, separators and line numbers only. */
+  --faint: #878490;
+  /* background.accent.vibrant, its raised edge ("chonk") and tints */
+  --accent: #7553ff;
+  --accent-hover: #653de9;
+  --accent-edge: #5827d6;
+  --accent-soft: #edeeff;
+  --accent-line: #d4d3ff;
+  /* content.accent */
+  --link: #653de9;
+  --fatal: #f42132;
+  --error: #ff9838;
+  --warning: #ffce00;
+  --info: #7553ff;
+  --debug: #878490;
+  /* content.success / danger / warning, and their tag tints */
+  --ok: #008900;
+  --ok-soft: #e2f7e3;
+  --danger: #d50000;
+  --danger-soft: #ffe7e4;
+  --warning-text: #a45200;
+  /* The danger button's raised edge (chonky.embossed.danger.chonk). */
+  --danger-edge: #c10000;
+  /* Meter tracks and "other" swatches (graphics.neutral.muted). */
+  --track: #dad9de;
+  --code-bg: #f8f8f9;
+  /* The current source line: an accent tint, so it stands out of the code. */
+  --highlight: #edeeff;
+  --literal: #653de9;
+  --stripe: #f8f8f9;
   --tip: #ffffff;
-  --tip-shadow: rgb(43 34 51 / 16%);
-  --shadow: rgb(43 34 51 / 8%);
-  --sans: "Rubik Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  --radius: 6px;
+  --tip-shadow: rgb(24 18 37 / 16%);
+  --sans: "Rubik Variable", "Avenir Next", system-ui, sans-serif;
+  --mono: "Roboto Mono", Monaco, Consolas, monospace;
+  --radius: 8px;
 }
 
+/* Sentry's dark borders are darker than its backgrounds: edges read as grooves. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #1b1622;
-  --rail: #16111c;
-  --surface: #221b2c;
-  --raised: #2a2236;
-  --border: #382e45;
-  --border-soft: #2c2437;
-  --text: #ece8f1;
-  --muted: #b0a7bd;
-  --faint: #81768f;
+  --bg: #2e2936;
+  --rail: #24202b;
+  --surface: #24202b;
+  --raised: #1b1821;
+  --border: #141119;
+  --border-soft: #1b1821;
+  --text: #e7e5ea;
+  --heading: #ffffff;
+  --muted: #b5b0bd;
+  --faint: #958e9f;
   --accent: #7553ff;
-  --accent-hover: #8466ff;
-  --accent-soft: #2c2350;
-  --accent-line: #6c5fc7;
-  --link: #b8a8ff;
-  --fatal: #ff4d6a;
-  --error: #ff7a3d;
-  --warning: #f5c518;
-  --info: #5aa9ff;
-  --debug: #8f85a0;
-  --ok: #3ecf9a;
-  --danger: #ff5c6c;
-  --code-bg: #18131f;
-  --highlight: #3a2c5e;
-  --literal: #b8a8ff;
-  --stripe: #251e30;
-  --tip: #2a2236;
+  --accent-hover: #8a82e8;
+  --accent-edge: #120539;
+  --accent-soft: #4828b894;
+  --accent-line: #4c39a5;
+  --link: #aba8f8;
+  --fatal: #ff002b;
+  --error: #ff9838;
+  --warning: #ffce00;
+  --info: #7553ff;
+  --debug: #958e9f;
+  --ok: #5ece73;
+  --ok-soft: #00f8001f;
+  --danger: #f6938c;
+  --danger-soft: #f8000033;
+  --warning-text: #ffce00;
+  --danger-edge: #330000;
+  --track: #534d5e;
+  --code-bg: #24202b;
+  --highlight: #4828b894;
+  --literal: #aba8f8;
+  --stripe: #24202b;
+  --tip: #393442;
   --tip-shadow: rgb(0 0 0 / 45%);
-  --shadow: rgb(0 0 0 / 25%);
 }
 
 * {
@@ -81,7 +111,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.45 var(--sans);
+  font: 14px/1.4 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -98,7 +128,8 @@ h1,
 h2,
 h3 {
   margin: 0;
-  font-weight: 600;
+  font-weight: 500;
+  color: var(--heading);
 }
 
 h1 {
@@ -154,25 +185,56 @@ input[type="number"] {
   padding: 0 12px;
 }
 
+/*
+ * Sentry's "chonky" buttons: the face sits 2px above a solid edge in its
+ * border colour and drops onto it when pressed.
+ */
 button {
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
-  box-shadow: 0 2px 0 var(--shadow);
 }
 
-button:hover:not(:disabled) {
-  background: var(--raised);
+button:not(.plain) {
+  background: var(--bg);
+  color: var(--heading);
+  box-shadow: 0 2px 0 var(--border);
+  transition:
+    transform 60ms,
+    box-shadow 60ms;
 }
 
+button:not(.plain):hover:not(:disabled) {
+  background: var(--surface);
+}
+
+/* Pressed, and a menu trigger while its menu is open, sit on their edge. */
+button:not(.plain):active:not(:disabled),
+button:not(.plain)[aria-expanded="true"] {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+/* Flat buttons (icons, menu rows, the rail) have no edge to drop onto. */
+button.icon-button:active,
+.menu-list button:active,
+.rail button:active,
+.trend-head button.period:active {
+  transform: none;
+}
+
+/* Sentry flattens a disabled button onto its edge. */
 button:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: translateY(2px);
 }
 
 button.primary {
   background: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--accent-edge);
+  box-shadow: 0 2px 0 var(--accent-edge);
   color: #fff;
 }
 
@@ -205,7 +267,10 @@ select {
   padding-right: 28px;
   font-weight: 500;
   cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23a096ae' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-color: var(--bg);
+  color: var(--heading);
+  box-shadow: 0 2px 0 var(--border);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23878490' stroke-width='1.5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
 }
@@ -213,8 +278,14 @@ select {
 input:focus,
 select:focus,
 button:focus-visible {
-  outline: 2px solid var(--accent-line);
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
+}
+
+button.primary:focus-visible,
+input[type="checkbox"]:checked:focus {
+  outline-color: #fff;
+  outline-offset: -3px;
 }
 
 input[type="checkbox"] {
@@ -232,6 +303,14 @@ input[type="checkbox"] {
 input[type="checkbox"]:checked {
   background: var(--accent)
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8'%3E%3Cpath d='M1 4l3 3 5-6' fill='none' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E")
+    center no-repeat;
+  border-color: var(--accent);
+}
+
+/* Some rows selected: a dash, as Sentry's header checkbox. */
+input[type="checkbox"]:indeterminate {
+  background: var(--accent)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='2'%3E%3Cpath d='M1 1h8' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E")
     center no-repeat;
   border-color: var(--accent);
 }
@@ -280,7 +359,7 @@ input[type="checkbox"]:checked {
   border-radius: 7px;
   display: grid;
   place-items: center;
-  font-weight: 600;
+  font-weight: 500;
   color: #fff;
   background: linear-gradient(135deg, #7553ff, #4b2fd0);
 }
@@ -338,12 +417,14 @@ input[type="checkbox"]:checked {
 }
 
 .rail a.active {
-  color: var(--text);
+  color: var(--link);
 }
 
+/* The current section's icon sits on a raised accent pill, as Sentry's nav. */
 .rail a.active .icon-box {
   background: var(--accent-soft);
   border-color: var(--accent-line);
+  box-shadow: 0 2px 0 var(--accent-line);
   color: var(--link);
 }
 
@@ -361,7 +442,7 @@ input[type="checkbox"]:checked {
   display: flex;
   align-items: center;
   padding: 0 18px;
-  font-weight: 600;
+  font-weight: 500;
   font-size: 15px;
   border-bottom: 1px solid var(--border-soft);
   flex: none;
@@ -382,7 +463,7 @@ input[type="checkbox"]:checked {
 .subnav-label {
   padding: 6px 12px 4px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .subnav a {
@@ -420,7 +501,7 @@ input[type="checkbox"]:checked {
   gap: 8px;
   padding: 0 16px;
   border-bottom: 1px solid var(--border-soft);
-  font-weight: 600;
+  font-weight: 500;
   position: sticky;
   top: 0;
   background: var(--bg);
@@ -483,28 +564,28 @@ input[type="checkbox"]:checked {
   color: var(--danger);
 }
 
+/* Sentry's tag: a small tinted label, 20px high, no border. */
 .badge {
   display: inline-flex;
   align-items: center;
-  height: 18px;
+  height: 20px;
   padding: 0 6px;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 500;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 400;
   background: var(--raised);
   color: var(--muted);
-  border: 1px solid var(--border);
   text-transform: capitalize;
 }
 
 .badge.regressed {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .badge.resolved {
   color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: var(--ok-soft);
 }
 
 .platform {
@@ -520,7 +601,7 @@ input[type="checkbox"]:checked {
   background: var(--accent);
   color: #fff;
   font-size: 8px;
-  font-weight: 700;
+  font-weight: 500;
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -583,7 +664,7 @@ input[type="checkbox"]:checked {
 }
 
 .bars .bar.empty {
-  background: var(--border);
+  background: var(--track);
   border-radius: 0;
 }
 
@@ -635,7 +716,7 @@ input[type="checkbox"]:checked {
 .chart-tip strong {
   margin-left: auto;
   padding-left: 16px;
-  font-weight: 600;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -733,7 +814,7 @@ input[type="checkbox"]:checked {
 }
 
 .searchbox:focus-within {
-  outline: 2px solid var(--accent-line);
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 
@@ -770,7 +851,7 @@ input[type="checkbox"]:checked {
   color: var(--link);
 }
 
-.token button {
+.token button.plain {
   color: var(--muted);
   font-size: 14px;
   line-height: 1;
@@ -819,8 +900,10 @@ input[type="checkbox"]:checked {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
   cursor: default;
   position: sticky;
   top: 44px;
@@ -842,10 +925,12 @@ input[type="checkbox"]:checked {
 .trend-head .period {
   border: 0;
   background: none;
+  box-shadow: none;
+  height: auto;
   padding: 2px 4px;
   font: inherit;
   font-weight: 400;
-  color: var(--faint);
+  color: var(--muted);
   cursor: pointer;
 }
 
@@ -855,6 +940,9 @@ input[type="checkbox"]:checked {
 }
 
 .issue-row.head .bulk {
+  /* "3 selected" is a sentence, not a column name. */
+  text-transform: none;
+  letter-spacing: normal;
   grid-column: 2 / -1;
   display: flex;
   align-items: center;
@@ -880,7 +968,7 @@ input[type="checkbox"]:checked {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 600;
+  font-weight: 500;
   font-size: 15px;
   min-width: 0;
 }
@@ -903,7 +991,7 @@ input[type="checkbox"]:checked {
 }
 
 .unseen .issue-type {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .issue-row .select {
@@ -1034,7 +1122,7 @@ input[type="checkbox"]:checked {
 }
 
 .seen strong {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .timeline {
@@ -1130,7 +1218,7 @@ input[type="checkbox"]:checked {
 .tag-row .meter {
   height: 6px;
   border-radius: 3px;
-  background: var(--border);
+  background: var(--track);
   overflow: hidden;
 }
 
@@ -1159,7 +1247,7 @@ input[type="checkbox"]:checked {
 .tag-key {
   margin: 10px 0 2px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--muted);
 }
 
@@ -1176,14 +1264,14 @@ input[type="checkbox"]:checked {
   flex-wrap: wrap;
 }
 
+/* Sentry's tabs: the chosen one in the accent colour over a 3px underline. */
 .event-tabs .tab {
-  height: 34px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-radius: var(--radius) var(--radius) 0 0;
-  background: var(--accent-soft);
+  padding: 0 8px;
+  border-bottom: 2px solid var(--accent);
   color: var(--link);
   font-weight: 500;
 }
@@ -1191,13 +1279,13 @@ input[type="checkbox"]:checked {
 .event-tabs .count {
   padding: 0 6px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--accent-soft);
   font-size: 12px;
 }
 
 .event-panel {
   border: 1px solid var(--border);
-  border-radius: 0 var(--radius) var(--radius) var(--radius);
+  border-radius: var(--radius);
 }
 
 .event-id {
@@ -1210,7 +1298,7 @@ input[type="checkbox"]:checked {
 }
 
 .event-id strong {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .jump {
@@ -1259,7 +1347,7 @@ details.section > summary {
   cursor: pointer;
   list-style: none;
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 details.section > summary::-webkit-details-marker {
@@ -1362,7 +1450,7 @@ pre.message {
 
 .context-card h3 {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   margin: 0 0 8px 10px;
 }
 
@@ -1377,7 +1465,7 @@ pre.message {
 }
 
 .exception .type {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 15px;
 }
 
@@ -1430,12 +1518,12 @@ pre.message {
 
 .frame-title strong,
 .frame-file {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
 }
 
 .frame-title .dim {
-  color: var(--faint);
+  color: var(--muted);
 }
 
 .frame.library .frame-title {
@@ -1449,7 +1537,7 @@ pre.message {
 }
 
 .lead-hint {
-  color: var(--faint);
+  color: var(--muted);
   font-size: 12px;
   flex: none;
 }
@@ -1465,7 +1553,6 @@ pre.message {
 .frame .in-app {
   flex: none;
   color: var(--link);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: var(--accent-soft);
 }
 
@@ -1515,7 +1602,7 @@ pre.message {
 }
 
 .tok-comment {
-  color: var(--faint);
+  color: var(--muted);
   font-style: italic;
 }
 
@@ -1528,7 +1615,7 @@ pre.message {
 }
 
 .tok-keyword {
-  color: var(--fatal);
+  color: var(--danger);
 }
 
 /* ── Breadcrumbs ──────────────────────────────────────────────────────── */
@@ -1569,12 +1656,12 @@ pre.message {
 
 .crumb-icon.red,
 .crumb-title.red {
-  color: var(--error);
+  color: var(--danger);
 }
 
 .crumb-icon.yellow,
 .crumb-title.yellow {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .crumb-icon.green,
@@ -1604,7 +1691,7 @@ pre.message {
 }
 
 .crumb-title {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .crumb-level {
@@ -1615,11 +1702,11 @@ pre.message {
 
 .crumb-level.error,
 .crumb-level.fatal {
-  color: var(--error);
+  color: var(--danger);
 }
 
 .crumb-level.warning {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .crumb-time {
@@ -1640,8 +1727,8 @@ pre.message {
 }
 
 .crumb.this-event .crumb-icon {
-  background: var(--error);
-  border-color: var(--error);
+  background: var(--fatal);
+  border-color: var(--fatal);
   color: #fff;
 }
 
@@ -1663,7 +1750,7 @@ table.rows th {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--muted);
 }
 
@@ -1842,7 +1929,7 @@ table.rows tbody tr:hover {
 }
 
 .time-card strong {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .skeleton {
@@ -1935,21 +2022,21 @@ table.rows tbody tr:hover {
 .toast button {
   color: var(--bg);
   text-decoration: underline;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 dialog.confirm {
   width: min(440px, calc(100vw - 32px));
   padding: 20px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
   box-shadow: 0 20px 50px var(--tip-shadow);
 }
 
 dialog.confirm::backdrop {
-  background: rgb(20 14 28 / 45%);
+  background: rgb(24 18 37 / 45%);
 }
 
 .confirm-message {
@@ -1963,9 +2050,12 @@ dialog.confirm::backdrop {
   gap: 8px;
 }
 
-button.primary.danger {
-  background: var(--danger);
-  border-color: var(--danger);
+/* Sentry's danger button: a vibrant red face on a dark red edge. */
+button.primary.danger,
+button.primary.danger:hover:not(:disabled) {
+  background: var(--fatal);
+  border-color: var(--danger-edge);
+  box-shadow: 0 2px 0 var(--danger-edge);
   color: #fff;
 }
 
@@ -2023,12 +2113,15 @@ button.primary.danger {
   color: var(--danger);
 }
 
-.icon-button {
+/* A transparent button: just the icon, tinted on hover. */
+button.icon-button {
   display: inline-grid;
   place-items: center;
   width: 26px;
   height: 26px;
   padding: 0;
+  border: 0;
+  background: none;
   color: var(--muted);
   box-shadow: none;
 }
@@ -2038,31 +2131,35 @@ button.plain.link {
   color: var(--link);
 }
 
+/* Sentry's segmented control: joined raised buttons, the chosen one pressed in. */
 .segmented {
   display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: 0 2px 0 var(--shadow);
 }
 
 .segmented button {
-  height: 26px;
+  height: 28px;
   padding: 0 10px;
-  border: 0;
   border-radius: 0;
-  box-shadow: none;
+  margin-left: -1px;
   font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
 }
 
-.segmented button + button {
-  border-left: 1px solid var(--border);
+.segmented button:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+  margin-left: 0;
+}
+
+.segmented button:last-child {
+  border-radius: 0 var(--radius) var(--radius) 0;
 }
 
 .segmented button.active {
-  background: var(--accent-soft);
+  position: relative;
   color: var(--link);
+  transform: translateY(2px);
+  box-shadow: none;
 }
 
 .small-search {
@@ -2088,7 +2185,7 @@ button.plain.link {
   position: fixed;
   inset: 0;
   z-index: 15;
-  background: rgb(20 14 28 / 30%);
+  background: rgb(24 18 37 / 30%);
 }
 
 /* ── Issue list additions ─────────────────────────────────────────────── */
@@ -2246,7 +2343,7 @@ label.sort select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .event-id-copy svg {
@@ -2327,7 +2424,7 @@ details.section > summary > span:first-child {
 }
 
 .seg-other {
-  background: var(--border);
+  background: var(--track);
 }
 
 .tag-row-wrap {
@@ -2409,8 +2506,8 @@ details.exception > summary::-webkit-details-marker {
 }
 
 .badge.unhandled {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .chain-note {
@@ -2514,7 +2611,7 @@ pre.raw-trace {
 .sub-table h4 {
   margin: 0 0 6px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .kv-block {
@@ -2539,7 +2636,7 @@ pre.raw-trace {
 }
 
 .activity.regressed strong {
-  color: var(--error);
+  color: var(--danger);
 }
 
 .activity.resolved strong {
@@ -2562,7 +2659,7 @@ pre.raw-trace {
 .usage-meter {
   height: 8px;
   border-radius: 4px;
-  background: var(--border);
+  background: var(--track);
   overflow: hidden;
 }
 
@@ -2673,4 +2770,49 @@ pre.raw-trace {
 
 .topbar .follow {
   padding: 2px 10px;
+}
+
+/* ── Mobile app sign-in (DESIGN.md §19) ───────────────────────────────── */
+
+.pairing {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.pairing p {
+  margin: 0 0 10px;
+}
+
+/* A QR code must stay dark on light in both themes to scan. */
+.qr {
+  shape-rendering: crispEdges;
+  width: 220px;
+  height: 220px;
+  flex: none;
+  border-radius: var(--radius);
+}
+
+.qr-light {
+  fill: #fff;
+}
+
+.qr-dark {
+  fill: #1d1127;
+}
+
+.dsn .device-name {
+  width: auto;
+  min-width: 90px;
+}
+
+.device-facts {
+  flex: 1;
+  font-size: 12px;
+}
+
+.pairing-actions {
+  display: flex;
+  gap: 8px;
 }

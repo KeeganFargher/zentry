@@ -802,7 +802,8 @@ what it left.
 
 ## 8. D1 schema
 
-`migrations/0001_init.sql`. D1 enforces foreign keys. Tables with a composite
+`migrations/0001_init.sql`; the email tables are in §18 and the mobile app's
+(`device_pairings`, `devices`, `push_sends`) in §19. D1 enforces foreign keys. Tables with a composite
 primary key are `WITHOUT ROWID`, so the key is the table and no second index
 is written.
 
@@ -1022,6 +1023,9 @@ issue by hand from the UI also deletes its R2 objects, 1,000 keys per call.
 
 ### Authentication
 
+The mobile app signs in differently, with device tokens on the ingest host
+(§19.1). What follows is the web UI.
+
 - `zentry.example.com` is one Cloudflare Access application covering the
   whole hostname. `ingest.zentry.example.com` has no Access application.
 - `workers_dev` and preview URLs are off, so there is no unprotected route.
@@ -1093,7 +1097,10 @@ is in the URL but the UI shows no org switcher while there is one org.
 | `/{org}/settings/projects/{project}/` | Name, quota, DSN keys, SDK snippet | `projects`, `keys` |
 | `/{org}/settings/` | Organization settings: the monthly event cap | `limits` |
 
-**Layout.** After Sentry's current UI, in light and dark themes. The theme
+**Layout.** After Sentry's current UI, in light and dark themes. Colours, type,
+buttons, tags and tabs use Sentry's design tokens (getsentry/sentry,
+`static/packages/scraps`) in `ui/src/styles.css`, the same values as the
+phone app. The theme
 follows the system setting until the toggle at the foot of the icon rail is
 used; that choice is kept in `localStorage`. The shell is an icon rail (Issues,
 Projects), a second column of links for the section (Feed, Errors, Warnings,
@@ -1308,13 +1315,15 @@ fixed:
 | `core/` | Envelope parsing, normalization, scrubbing, grouping, batch planning | `shared` |
 | `db/` | Every SQL statement, behind typed functions | `shared` |
 | `blobs/` | Every R2 read and write, and all key construction | `shared` |
+| `push/` | Every request to Expo's push service (§19) | `shared` |
 | `ingest/` | HTTP ingest | `shared`, `core`, `db` |
 | `consumer/` | Queue handler | `shared`, `core`, `db`, `blobs` |
 | `api/` | Read API | `shared`, `core`, `db`, `blobs` |
 | `cron/` | Retention, spike thresholds, weekly reports | `shared`, `core`, `db`, `blobs` |
-| `notify/` | Notify queue consumer, mailer, unsubscribe page | `shared`, `core`, `db` |
+| `notify/` | Notify queue consumer, mailer, pushes, unsubscribe page | `shared`, `core`, `db` |
 | `worker.ts` | Wires handlers to bindings | everything |
 | `ui/` | SPA | `src/shared/contract.ts` only, as type imports |
+| `mobile/` | Expo app (§19) | `src/shared/contract.ts` only, as type imports |
 
 Rules that follow from the table:
 
@@ -1348,7 +1357,18 @@ has no `no-restricted-syntax`, so nothing stops a handler calling
 import { defineConfig } from "oxlint";
 
 // Domain boundaries. See DESIGN.md §16.3 before changing any of this.
-const DOMAINS = ["shared", "core", "db", "blobs", "ingest", "consumer", "api", "cron"];
+const DOMAINS = [
+  "shared",
+  "core",
+  "db",
+  "blobs",
+  "push",
+  "ingest",
+  "consumer",
+  "api",
+  "cron",
+  "notify",
+];
 
 type Pattern = { group: string[]; message: string };
 
@@ -1851,15 +1871,18 @@ included, then $0.35 per 1,000).
    rows in id order, handles each, and deletes it. A row that throws keeps
    its place with `attempts + 1` and the message is retried after 60 s; after
    five attempts the row is dropped and logged, so it cannot block the rest.
-   When Cloudflare asks to wait (rate or daily limit, an outage), the drain
-   stops at once and counts no attempt, so a busy hour cannot drop alerts.
+   When Cloudflare asks to wait (rate or daily limit, an outage), the row
+   counts no attempt, so a busy hour cannot drop alerts; it steps aside for
+   five minutes and email is paused for the rest of the drain, while push
+   carries on (§19.2).
    `notify_outbox.id` is AUTOINCREMENT because it is part of each email's
    idempotency key and a reused rowid would make a new email look sent.
 4. **Send.** One `send()` per recipient. `email_sends` is claimed first with
    a key unique to the email and recipient; a redelivery finds it sent and
    skips it.
 
-With `EMAIL_FROM` empty the outbox is still drained, and nothing is sent.
+With `EMAIL_FROM` empty the outbox is still drained and no email is sent;
+pushes still go out (§19.2).
 
 ### 18.2 Settings
 
@@ -1961,3 +1984,140 @@ no new issues gets no email.
 - Reply-by-email (an `email()` handler) and `mailto:` unsubscribe.
 - Timezones, deploy emails (Zentry has no deploys), nudges and account
   emails.
+
+## 19. Mobile app and push notifications
+
+An Expo (React Native) app for Android in `mobile/`: the issue list,
+issues with their events, projects, and notification settings, plus push
+notifications next to email. iOS is not built yet; nothing in the design
+is Android-only except the build scripts and notification channels.
+
+### 19.1 Signing a phone in
+
+Cloudflare Access guards the UI hostname at the edge, so a phone app cannot
+call the API there without an Access session. The app calls the **ingest
+host** instead, which Access does not guard, with a **device token**:
+
+1. In the web UI, Settings, Mobile app, `POST /api/0/me/pairings/` makes a
+   pairing code: 128 random bits, single use, valid for ten minutes. Only its
+   SHA-256 is stored (`device_pairings`). The UI shows
+   `zentry://pair?url=<MOBILE_API_URL>&code=<code>` as a QR code.
+2. The app scans it (or the phone's camera opens the link) and calls
+   `POST /api/0/pair/` with the code and a device name. That route needs no
+   sign-in: holding a live code is the proof. Guessing one is hopeless at 128
+   bits, so it has no rate limit.
+3. The answer is a device token, `zt_` + 256 random bits, shown once. Only its
+   hash is stored (`devices`). The app keeps it in the Android keystore
+   (expo-secure-store) and sends `Authorization: Bearer <token>`.
+
+Rules the router enforces (`src/api/router.ts`):
+
+- An `Authorization` header always means a device token, on every host and
+  even on localhost, where `DEV_USER_EMAIL` would otherwise sign anything in.
+  A bad token is a 401, never a fall-through to Access.
+- On the ingest host only device tokens are accepted, and only `/api/0/*`
+  besides ingest itself. The Access header is never honoured there.
+- A device token is looked up on every request, not cached, so signing a
+  phone out (deleting its row) takes effect at once. The user is read, never
+  created: devices exist only for users who signed in through Access.
+- Device tokens reach only what the app needs: reading issues and changing
+  their status, following them, notification settings, listing the user's
+  phones, and signing the calling phone out. Creating, changing and deleting
+  projects, DSN keys and limits, deleting issues, making pairing codes and
+  signing out other phones are web-only (403 with a device token). A route is
+  web-only unless it is marked `app()` in the router, so a new route never
+  opens to phones by accident.
+- A token unused for 30 days stops working and its device is deleted.
+  Nothing else expires it: a phone in use stays signed in. Revoking a
+  person's Access does not reach their phones by itself; sign their phones
+  out from the web UI, or let the idle limit run.
+- `last_seen_at` is written at most once an hour per device.
+- The API on the ingest host is rate-limited per client address
+  (`APP_API_RL`, 120 a minute): the pairing exchange and every token lookup
+  cost a D1 read, with no Access in front.
+
+`MOBILE_API_URL` names the origin put in the QR code: the ingest host in
+production, `http://10.0.2.2:8787` for the Android emulator against
+`pnpm dev`.
+
+### 19.2 Push
+
+Push is a second **provider** of the notifications in §18, next to email.
+`notification_settings.provider` takes `email` or `push`, and each is
+resolved on its own, so email can be off and push on. The weekly report is
+email only. Unsubscribe links in emails turn off email alone.
+
+Every outbox row is handled as before; each handler emails (when email is
+configured) and pushes to the phones of the members whose push setting
+wants it, with the same rules: digest windows, the alert interval, workflow
+never notifying the actor. Email no longer gates the drain: with `EMAIL_FROM`
+empty, pushes still go out.
+
+The two providers do not hold each other back (`src/notify/providers.ts`).
+Each row runs both even when one fails. A provider that asks to wait
+(Cloudflare's daily email cap, a sender not yet onboarded, Expo answering
+429 or 5xx) is paused for the rest of that drain, so it is not called again
+for every row, and the row steps aside for five minutes (`deferred_until`)
+with no attempt counted, so the rows behind it are drained. Both providers
+are idempotent, so the retry sends only what did not go out. A real failure
+in either still counts an attempt.
+
+Sending goes through Expo's push service (`src/push/expo.ts`, the only code
+that calls exp.host), which forwards to FCM. The Worker needs no Google
+credentials; the FCM key is uploaded to the Expo project once.
+
+- `push_sends` records each push per device, keyed like `email_sends`, so a
+  redelivery never pushes twice. It is claimed before sending; a crash
+  between claim and settle sends again, as for email.
+- Expo answering 429 or 5xx, or not answering, defers push as above. A
+  request Expo refuses outright is sent again one push at a time, so one bad
+  token (for example from a build of another Expo project) fails alone;
+  those failures are recorded and not retried.
+- A ticket or receipt saying `DeviceNotRegistered` forgets that push token,
+  by token: the device may have registered a new one since the push.
+- The hourly cron reads receipts for pushes sent 15 minutes to a day ago
+  (`src/cron/push-receipts.ts`), up to ten pages of 1,000 a run, and settles
+  them as delivered or failed; other receipt errors, such as
+  `InvalidCredentials`, are logged because they mean the FCM setup is wrong.
+  A push with no receipt after a day is settled as failed.
+- Retention prunes `push_sends` with `email_sends`, after 30 days.
+
+Each push carries `data` (the `PushData` type) naming what to open: an issue,
+a project's issues, or settings. The app parses it with a schema on tap. On
+Android each type has its own notification channel (`alerts`, `workflow`,
+`spikeProtection`, `quota`), so it can be muted in the phone's settings.
+
+### 19.3 The app
+
+- Expo SDK 58, Expo Router, TanStack Query. `mobile/` is its own pnpm root
+  with a hoisted `node_modules` (`mobile/pnpm-workspace.yaml`): React
+  Native's native builds on Windows fail on pnpm's symlinked layout.
+- It imports `src/shared/contract.ts` as types only (`@contract`), so Metro
+  never resolves outside `mobile/`. Some of the web UI's pure helpers are
+  copied rather than shared, so both word and show things alike:
+  `lib/format.ts`, `lib/issue.ts`, `lib/clock.ts` and, under
+  `components/event/`, `highlight.ts` and `raw-trace.ts` (with `lists.ts` and
+  `json.ts` adapted). A change to one belongs in the other. Sharing them
+  would mean Metro resolving outside `mobile/`, which the type-only rule
+  avoids.
+- Hermes, React Native's engine here, has no `Array#toSorted`, so the app
+  sorts copies; `unicorn/no-array-sort` is off for `mobile/` only.
+- Colours, radius and type are Sentry's design tokens (getsentry/sentry,
+  `static/packages/scraps`), in `mobile/src/lib/theme.ts` and kept in step with
+  `ui/src/styles.css`: Rubik at 400 and 500, Roboto Mono for code, Sentry's
+  raised buttons and tinted tags, light and dark following the system or the
+  user's choice.
+- The repository's lint, format and type checks cover `mobile/` with the
+  same rules as `ui/`; Expo Router's route files are exempt from the
+  default-export ban.
+
+### 19.4 Not done
+
+- iOS (APNs credentials, a Mac or EAS build).
+- Deleting issues, projects, keys and limits from the app (web only, by
+  design).
+- Rotating device tokens; a device token lasts until signed out or 30 days
+  unused.
+- Owners signing out other members' phones, and Access revocation reaching
+  phones directly.
+- A monochrome notification icon (Android shows the app icon's shape).

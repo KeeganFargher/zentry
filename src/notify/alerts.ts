@@ -6,12 +6,17 @@ import { extendWindow, intervalPassed, openWindow, secondsUntil } from "@/core/d
 import { alertEmail } from "@/core/email-alert";
 import { digestEmail } from "@/core/email-messages";
 import type { DigestItem, DigestNotice } from "@/core/email-messages";
+import { alertPush, digestPush } from "@/core/push-messages";
 import type { UnsubscribeTarget } from "@/core/unsubscribe";
 import { errorText, logError } from "@/shared/log";
 import type { AlertReason, EventSummary, IssueNotice, ProjectNotice } from "@/shared/notify";
 
-import type { MailDeps } from "./deps";
+import { withMail } from "./deps";
+import type { MailDeps, NotifyDeps } from "./deps";
 import { deliver, unsubscribeUrl } from "./mailer";
+import { eachProvider } from "./providers";
+import type { ProviderSend } from "./providers";
+import { pushTo } from "./push";
 import { recipients } from "./recipients";
 import type { Audience } from "./recipients";
 
@@ -40,12 +45,11 @@ async function latestEvent(deps: MailDeps, issue: IssueNotice): Promise<EventSum
   }
 }
 
-/** One issue's alert to everyone who wants it. `key` makes each send unique. */
-async function sendAlert(deps: MailDeps, item: DigestItem, key: string): Promise<void> {
+async function emailAlert(deps: MailDeps, item: DigestItem, key: string): Promise<void> {
   const { project } = item.issue;
   const event = await latestEvent(deps, item.issue);
 
-  for (const recipient of await recipients(deps, alertAudience(project))) {
+  for (const recipient of await recipients(deps, alertAudience(project), "email")) {
     const link = await unsubscribeUrl(deps, unsubscribeTarget(recipient.userId, project));
 
     const content = alertEmail(
@@ -64,10 +68,10 @@ async function sendAlert(deps: MailDeps, item: DigestItem, key: string): Promise
   }
 }
 
-async function sendDigest(deps: MailDeps, digest: DigestNotice): Promise<void> {
+async function emailDigest(deps: MailDeps, digest: DigestNotice): Promise<void> {
   const { project } = digest;
 
-  for (const recipient of await recipients(deps, alertAudience(project))) {
+  for (const recipient of await recipients(deps, alertAudience(project), "email")) {
     const link = await unsubscribeUrl(deps, unsubscribeTarget(recipient.userId, project));
     const links = { appUrl: deps.config.appUrl, unsubscribeUrl: link };
 
@@ -82,12 +86,55 @@ async function sendDigest(deps: MailDeps, digest: DigestNotice): Promise<void> {
   }
 }
 
+async function pushRecipients(deps: NotifyDeps, project: ProjectNotice): Promise<number[]> {
+  const pushed = await recipients(deps, alertAudience(project), "push");
+
+  return pushed.map((recipient) => recipient.userId);
+}
+
+/** One issue's alert to everyone who wants it, by email and push. `key` makes each send unique. */
+async function sendAlert(deps: NotifyDeps, item: DigestItem, key: string): Promise<void> {
+  const mail = withMail(deps);
+
+  const push: ProviderSend = [
+    "push",
+    async () =>
+      pushTo(deps, await pushRecipients(deps, item.issue.project), {
+        key,
+        content: alertPush(item.issue, item.reason),
+      }),
+  ];
+
+  await eachProvider(
+    deps,
+    mail === null ? [push] : [["email", () => emailAlert(mail, item, key)], push],
+  );
+}
+
+async function sendDigest(deps: NotifyDeps, digest: DigestNotice): Promise<void> {
+  const mail = withMail(deps);
+
+  const push: ProviderSend = [
+    "push",
+    async () =>
+      pushTo(deps, await pushRecipients(deps, digest.project), {
+        key: `digest:${digest.project.id}:${digest.since}`,
+        content: digestPush(digest.items),
+      }),
+  ];
+
+  await eachProvider(
+    deps,
+    mail === null ? [push] : [["email", () => emailDigest(mail, digest)], push],
+  );
+}
+
 /** An issue resolved or archived since the alert was raised no longer alerts. */
 function isOpen(issue: IssueNotice): boolean {
   return issue.status === "unresolved";
 }
 
-export async function handleAlert(deps: MailDeps, job: AlertJob): Promise<void> {
+export async function handleAlert(deps: NotifyDeps, job: AlertJob): Promise<void> {
   const now = deps.now();
   const [issue] = await deps.store.issues([job.groupId]);
   const last = await deps.store.lastAlert(job.groupId, job.kind);
@@ -126,7 +173,7 @@ export async function handleAlert(deps: MailDeps, job: AlertJob): Promise<void> 
 }
 
 /** Sends what the project's window held, once it is due. */
-export async function flushDigest(deps: MailDeps, projectId: number): Promise<void> {
+export async function flushDigest(deps: NotifyDeps, projectId: number): Promise<void> {
   const now = deps.now();
   const window = await deps.store.digestWindow(projectId);
 

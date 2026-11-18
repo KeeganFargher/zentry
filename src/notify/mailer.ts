@@ -7,6 +7,7 @@ import type { OutgoingEmail } from "@/shared/notify";
 import { DAY } from "@/shared/time";
 
 import type { MailDeps } from "./deps";
+import { SendDeferred } from "./providers";
 
 /** Cloudflare's codes worth retrying; anything else will fail the same way again. */
 const RETRYABLE = new Set([
@@ -16,13 +17,6 @@ const RETRYABLE = new Set([
   "E_EMAIL_SENDING_NOT_READY",
   "E_DELIVERY_FAILED",
 ]);
-
-/**
- * Thrown when Cloudflare asks to try later (rate or daily limit, an outage).
- * The drain stops and retries the whole message later, without counting it
- * against the row: a busy hour must not use up its attempts.
- */
-export class SendDeferred extends Error {}
 
 /** Cloudflare keeps a hard bounce suppressed for 7 days; so does Zentry. */
 const SUPPRESSED_FOR = 7 * DAY;
@@ -78,7 +72,8 @@ async function failed(deps: MailDeps, email: OutgoingEmail, cause: unknown): Pro
   const error = `${code} ${errorText(cause)}`.trim();
 
   if (RETRYABLE.has(code)) {
-    throw new SendDeferred(error);
+    // Cloudflare asked to try later (rate or daily limit, an outage).
+    throw new SendDeferred("email", error);
   }
 
   if (code === "E_RECIPIENT_SUPPRESSED") {

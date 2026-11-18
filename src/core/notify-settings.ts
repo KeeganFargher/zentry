@@ -2,7 +2,12 @@
 // most specific row stored for them, project over organization over user,
 // falling back to the default below.
 
-import type { NotificationScope, NotificationType, NotificationValue } from "@/shared/contract";
+import type {
+  NotificationProvider,
+  NotificationScope,
+  NotificationType,
+  NotificationValue,
+} from "@/shared/contract";
 
 /** As in Sentry: everything on, workflow only for the issues you follow. */
 export const NOTIFICATION_DEFAULTS = {
@@ -24,6 +29,14 @@ export const NOTIFICATION_TYPES: NotificationType[] = [
 /** Workflow alone has a middle setting. */
 export function allowedValues(type: NotificationType): NotificationValue[] {
   return type === "workflow" ? ["always", "subscribe_only", "never"] : ["always", "never"];
+}
+
+/**
+ * Where a type can go. The weekly report is a long read, so it is email only
+ * (DESIGN.md §19); everything else can also be a push.
+ */
+export function allowedProviders(type: NotificationType): NotificationProvider[] {
+  return type === "reports" ? ["email"] : ["email", "push"];
 }
 
 /** Which scopes a type can be set at: account-wide emails have no project. */

@@ -11,6 +11,7 @@ export type Route =
   | { name: "settings"; org: string; project: string }
   | { name: "organizationSettings"; org: string }
   | { name: "notificationSettings"; org: string }
+  | { name: "mobileSettings"; org: string }
   | { name: "missing" };
 
 const NAVIGATE = "zentry:navigate";
@@ -93,6 +94,10 @@ function settingsRoute(org: string, rest: string[]): Route {
 
   if (kind === "notifications" && project === undefined) {
     return { name: "notificationSettings", org };
+  }
+
+  if (kind === "mobile" && project === undefined) {
+    return { name: "mobileSettings", org };
   }
 
   return kind === "projects" && project !== undefined

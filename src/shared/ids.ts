@@ -35,3 +35,20 @@ export function parseId(text: string): number | null {
 
   return id > 0 ? id : null;
 }
+
+/** A device token for the mobile app: 256 random bits, prefixed so it is recognisable in a leak scan. */
+export function newDeviceToken(): string {
+  return `zt_${randomHex(32)}`;
+}
+
+/** A pairing code: 128 random bits, too many to guess in the ten minutes it works. */
+export function newPairingCode(): string {
+  return randomHex(16);
+}
+
+/** SHA-256 of the text, as hex. Device tokens and pairing codes are stored this way. */
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}

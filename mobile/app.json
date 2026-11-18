@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "Zentry",
+    "slug": "zentry",
+    "scheme": "zentry",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.zentry.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1d1127",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": ["android.permission.CAMERA", "android.permission.POST_NOTIFICATIONS"],
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-font",
+      "expo-splash-screen",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Zentry uses the camera to scan the sign-in code from the web UI.",
+          "recordAudioAndroid": false,
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#6c5fc7"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "allowHttp": false,
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "e4a28a8c-7a1f-41fd-96d1-6eff512604b0"
+      }
+    },
+    "owner": "fargherkeegan"
+  }
+}

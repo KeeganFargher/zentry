@@ -1,10 +1,16 @@
 // Notification settings and issue subscriptions. DESIGN.md §18.2.
 
-import type { NotificationScope, NotificationType, NotificationValue } from "@/shared/contract";
+import type {
+  NotificationProvider,
+  NotificationScope,
+  NotificationType,
+  NotificationValue,
+} from "@/shared/contract";
 import type { Recipient } from "@/shared/notify";
 
 /** One stored choice; the same shape as core's SettingRow. */
 export type StoredSetting = {
+  provider: NotificationProvider;
   userId: number;
   type: NotificationType;
   scope: NotificationScope;
@@ -16,7 +22,7 @@ export type SettingKey = Omit<StoredSetting, "value">;
 
 export type Subscriber = { userId: number; active: boolean };
 
-const SETTING_COLUMNS = `user_id AS userId, type, scope, scope_id AS scopeId, value`;
+const SETTING_COLUMNS = `provider, user_id AS userId, type, scope, scope_id AS scopeId, value`;
 
 export class NotificationSettingsStore {
   readonly #db: D1Database;
@@ -25,16 +31,16 @@ export class NotificationSettingsStore {
     this.#db = db;
   }
 
-  /** The user's rows that can apply inside one organization. */
+  /** The user's rows, for every provider, that can apply inside one organization. */
   async forUser(userId: number, organizationId: number): Promise<StoredSetting[]> {
     const { results } = await this.#db
       .prepare(
         `SELECT ${SETTING_COLUMNS} FROM notification_settings
-         WHERE user_id = ?1 AND provider = 'email' AND (
+         WHERE user_id = ?1 AND (
            (scope = 'user' AND scope_id = ?1)
            OR (scope = 'organization' AND scope_id = ?2)
            OR (scope = 'project' AND scope_id IN (SELECT id FROM projects WHERE organization_id = ?2)))
-         ORDER BY type, scope, scope_id`,
+         ORDER BY provider, type, scope, scope_id`,
       )
       .bind(userId, organizationId)
       .all<StoredSetting>();
@@ -46,11 +52,19 @@ export class NotificationSettingsStore {
     await this.#db
       .prepare(
         `INSERT INTO notification_settings (user_id, provider, type, scope, scope_id, value, updated_at)
-         VALUES (?1, 'email', ?2, ?3, ?4, ?5, ?6)
+         VALUES (?1, ?7, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (user_id, provider, type, scope, scope_id)
          DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
-      .bind(setting.userId, setting.type, setting.scope, setting.scopeId, setting.value, now)
+      .bind(
+        setting.userId,
+        setting.type,
+        setting.scope,
+        setting.scopeId,
+        setting.value,
+        now,
+        setting.provider,
+      )
       .run();
   }
 
@@ -58,9 +72,9 @@ export class NotificationSettingsStore {
     await this.#db
       .prepare(
         `DELETE FROM notification_settings
-         WHERE user_id = ?1 AND provider = 'email' AND type = ?2 AND scope = ?3 AND scope_id = ?4`,
+         WHERE user_id = ?1 AND provider = ?5 AND type = ?2 AND scope = ?3 AND scope_id = ?4`,
       )
-      .bind(key.userId, key.type, key.scope, key.scopeId)
+      .bind(key.userId, key.type, key.scope, key.scopeId, key.provider)
       .run();
   }
 
@@ -78,15 +92,19 @@ export class NotificationSettingsStore {
     return results;
   }
 
-  /** The organization's members' rows for one type. */
-  async ofMembers(organizationId: number, type: NotificationType): Promise<StoredSetting[]> {
+  /** The organization's members' rows for one type and provider. */
+  async ofMembers(
+    organizationId: number,
+    type: NotificationType,
+    provider: NotificationProvider,
+  ): Promise<StoredSetting[]> {
     const { results } = await this.#db
       .prepare(
         `SELECT ${SETTING_COLUMNS} FROM notification_settings
-         WHERE provider = 'email' AND type = ?2
+         WHERE provider = ?3 AND type = ?2
            AND user_id IN (SELECT user_id FROM organization_members WHERE organization_id = ?1)`,
       )
-      .bind(organizationId, type)
+      .bind(organizationId, type, provider)
       .all<StoredSetting>();
 
     return results;

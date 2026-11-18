@@ -1,19 +1,33 @@
 import { env } from "cloudflare:workers";
 
 import { EventBlobs } from "@/blobs/events";
+import { DeviceStore } from "@/db/devices";
 import { MailStore } from "@/db/mail";
 import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
+import { PushSendStore } from "@/db/pushes";
 import { ReportStore } from "@/db/reports";
 import type { MailMessage, NotifyDeps } from "@/notify/deps";
+import type { PushMessage, PushResult, PushTicket } from "@/shared/push";
 
 import { NOW } from "./helpers";
 
 export type Sent = MailMessage;
 
+/** What the fake Expo answers for one batch; by default every push is accepted. */
+export type PushReply = (messages: PushMessage[]) => PushResult<PushTicket[]>;
+
+const acceptAll: PushReply = (messages) => ({
+  ok: true,
+  value: messages.map((_, index) => ({ status: "ok", id: `ticket-${index}` })),
+});
+
 export type Harness = {
   deps: NotifyDeps;
   sent: Sent[];
+  pushed: PushMessage[];
+  /** Replaces how the fake Expo answers. */
+  replyToPush: (reply: PushReply) => void;
   scheduled: { projectId: number; delaySeconds: number }[];
   drains: number;
   /** Moves the clock the notify consumer sees. */
@@ -24,9 +38,14 @@ export type Harness = {
 export function notifyHarness(fail: (to: string) => Error | null = () => null): Harness {
   let clock = NOW;
   let sequence = 0;
+  let pushReply = acceptAll;
 
   const harness: Harness = {
     sent: [],
+    pushed: [],
+    replyToPush: (reply) => {
+      pushReply = reply;
+    },
     scheduled: [],
     drains: 0,
     advance: (ms) => {
@@ -49,6 +68,18 @@ export function notifyHarness(fail: (to: string) => Error | null = () => null): 
         harness.sent.push(message);
 
         return { messageId: `m${sequence}@zentry.test` };
+      },
+      devices: new DeviceStore(env.DB),
+      pushes: new PushSendStore(env.DB),
+      paused: new Set(),
+      sendPush: async (messages) => {
+        const reply = pushReply(messages);
+
+        if (reply.ok) {
+          harness.pushed.push(...messages);
+        }
+
+        return reply;
       },
       latestEvent: async (issue) =>
         issue.lastEventId === null

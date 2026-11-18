@@ -14,6 +14,9 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # mobile/ is its own pnpm root (mobile/pnpm-workspace.yaml); the lint and
+      # type checks read its dependencies' types.
+      - run: pnpm --dir mobile install --frozen-lockfile
       - run: pnpm build
       - run: pnpm check
       # Playwright drives the Chrome that the runner image already has.

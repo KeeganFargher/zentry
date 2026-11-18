@@ -79,13 +79,14 @@ export class NotifyStore {
   }
 
   /** The oldest unhandled rows. */
-  async outbox(limit: number): Promise<OutboxEntry[]> {
+  /** The oldest rows not stepped aside by a deferral. */
+  async outbox(limit: number, now: number): Promise<OutboxEntry[]> {
     const { results } = await this.#db
       .prepare(
         `SELECT id, kind, organization_id, project_id, group_id, actor_id, data, attempts
-         FROM notify_outbox ORDER BY id LIMIT ?1`,
+         FROM notify_outbox WHERE deferred_until <= ?2 ORDER BY id LIMIT ?1`,
       )
-      .bind(limit)
+      .bind(limit, now)
       .all<OutboxRow>();
 
     return results.map((row) => ({ item: toOutboxItem(row), attempts: row.attempts }));
@@ -95,6 +96,14 @@ export class NotifyStore {
     await this.#db
       .prepare(`UPDATE notify_outbox SET attempts = attempts + 1 WHERE id = ?1`)
       .bind(id)
+      .run();
+  }
+
+  /** A provider asked to wait: the row steps aside until `until`, with no attempt counted. */
+  async deferred(id: number, until: number): Promise<void> {
+    await this.#db
+      .prepare(`UPDATE notify_outbox SET deferred_until = ?2 WHERE id = ?1`)
+      .bind(id, until)
       .run();
   }
 

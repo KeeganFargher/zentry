@@ -3,6 +3,7 @@
 
 import type {
   ApiActivity,
+  ApiDeviceList,
   ApiEventDetail,
   ApiEventList,
   ApiIssue,
@@ -13,15 +14,18 @@ import type {
   ApiMe,
   ApiNotificationSettings,
   ApiOrganizationLimits,
+  ApiPairing,
   ApiProject,
   ApiTag,
   IssueStatus,
   Json,
+  NotificationProvider,
   NotificationScope,
   NotificationType,
 } from "@contract";
 
 export type NotificationChange = {
+  provider: NotificationProvider;
   type: NotificationType;
   scope: NotificationScope;
   scopeId: number;
@@ -81,6 +85,14 @@ export const eventJsonUrl = (org: string, issueId: string, eventId: string): str
 
 export const api = {
   me: (): Promise<ApiMe> => get("/me/"),
+
+  createPairing: async (): Promise<ApiPairing> => read(await send("POST", "/me/pairings/")),
+
+  devices: (): Promise<ApiDeviceList> => get("/me/devices/"),
+
+  removeDevice: async (deviceId: number): Promise<void> => {
+    await send("DELETE", `/me/devices/${deviceId}/`);
+  },
 
   limits: (org: string): Promise<ApiOrganizationLimits> => get(`/organizations/${org}/limits/`),
 
