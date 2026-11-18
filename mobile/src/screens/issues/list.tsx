@@ -8,7 +8,7 @@ import type { ApiIssue, IssueStatus } from "@contract";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import type { JSX } from "react";
+import type { JSX, RefObject } from "react";
 import { RefreshControl, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -205,6 +205,16 @@ function StatusBarBacking({ height }: { height: number }): JSX.Element {
   );
 }
 
+function focusSearch(searchRef: RefObject<SearchInput | null>): void {
+  // The field is always mounted in the header, so a missing ref is a bug
+  // worth hearing about, not a tap to drop quietly.
+  if (searchRef.current === null) {
+    throw new Error("The search field is not mounted");
+  }
+
+  searchRef.current.focus();
+}
+
 function IssueList(): JSX.Element {
   const api = useApi();
   const org = useOrg();
@@ -245,8 +255,8 @@ function IssueList(): JSX.Element {
         summary={filterSummary(filters, projects.data ?? [])}
         header={header}
         metrics={metrics}
-        onOpen={header.open}
-        onSearch={() => header.openThen(() => searchRef.current?.focus())}
+        onOpen={() => header.openThen(() => {})}
+        onSearch={() => header.openThen(() => focusSearch(searchRef))}
       />
       {selection.selected.size > 0 && (
         <SelectionBar

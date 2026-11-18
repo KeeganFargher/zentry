@@ -25,8 +25,6 @@ export type CollapsingHeader = {
   range: SharedValue<number>;
   /** Takes the collapsing part's height, once it is laid out. */
   measure: (collapsible: number) => void;
-  /** Brings the full header back. */
-  open: () => void;
   /** Brings the full header back, then runs `then`: focusing search, say. */
   openThen: (then: () => void) => void;
 };
@@ -63,19 +61,29 @@ export function useCollapsingHeader(): CollapsingHeader {
 
   const measure = useCallback(
     (collapsible: number) => {
-      range.set(Math.max(collapsible, 0));
-    },
-    [range],
-  );
+      const next = Math.max(collapsible, 0);
 
-  const open = useCallback(() => {
-    hidden.set(withTiming(0, SNAP));
-  }, [hidden]);
+      // The header's height changes while collapsed (the projects error comes
+      // or goes): keep it fully collapsed rather than hidden past its new
+      // height (the table header would slide under the bar) or left part-open
+      // (no scroll ends to snap it).
+      if (hidden.get() > 0 && hidden.get() >= range.get()) {
+        hidden.set(next);
+      } else {
+        hidden.set(Math.min(hidden.get(), next));
+      }
+
+      range.set(next);
+    },
+    [hidden, range],
+  );
 
   const openThen = useCallback(
     (then: () => void) => {
       hidden.set(
         withTiming(0, SNAP, (finished) => {
+          // A scroll during the opening interrupts it: the user has moved on,
+          // so whatever was to follow (focusing search) is dropped on purpose.
           if (finished === true) {
             scheduleOnRN(then);
           }
@@ -85,7 +93,7 @@ export function useCollapsingHeader(): CollapsingHeader {
     [hidden],
   );
 
-  return { onScroll, hidden, range, measure, open, openThen };
+  return { onScroll, hidden, range, measure, openThen };
 }
 
 /** Fully open or fully collapsed, whichever is nearer and the scroll allows. */
@@ -121,3 +129,31 @@ export function phase(progress: number, from: number, to: number): number {
 export function heightOf(event: LayoutChangeEvent): number {
   return event.nativeEvent.layout.height;
 }
+
+/**
+ * When each part moves, as windows of the collapse's progress (0 open, 1
+ * collapsed). The full header's parts leave in the first half, top to
+ * bottom, so the eye follows one movement down the header; the bar's parts
+ * arrive in the second half, once the space they need has cleared. Nothing
+ * is tappable while it is mostly faded: `HANDOFF` is where taps move from
+ * the header to the bar, and every leaving part is gone by then.
+ */
+export const TIMELINE = {
+  /** The organization name, first and quickest: it has nowhere to go. */
+  caption: [0, 0.3],
+  /**
+   * The search field. It rides up under the title (which is drawn above it)
+   * while it fades, so it is gone well before the bar's search button shows.
+   */
+  search: [0.04, 0.42],
+  /** The dropdowns, each starting this much after the one to its left. */
+  dropdowns: { start: 0.12, step: 0.08, length: 0.3 },
+  /** The projects error leaves with the dropdowns it explains. */
+  projectsError: [0.12, 0.42],
+  /** Taps go to the bar from here on, as its search button appears. */
+  handoff: 0.5,
+  /** The bar's search button, where the search field was headed. */
+  searchButton: [0.5, 0.95],
+  /** The summary, last, beside the title once it has nearly arrived. */
+  summary: [0.62, 1],
+} as const;

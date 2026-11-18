@@ -6,7 +6,7 @@
 
 import type { ApiProject } from "@contract";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { createContext, use } from "react";
+import { createContext, use, useMemo } from "react";
 import type { ComponentRef, JSX, ReactNode, Ref } from "react";
 import type { TextInput } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue } from "react-native-reanimated";
@@ -19,7 +19,7 @@ import { usePalette } from "~/lib/preferences";
 import { SPACE } from "~/lib/theme";
 
 import { BAR_HEIGHT, TITLE_SCALE } from "./bar";
-import { heightOf, phase, progressOf } from "./collapse";
+import { TIMELINE, heightOf, phase, progressOf } from "./collapse";
 import type { CollapsingHeader } from "./collapse";
 import { FilterButtons, ListHeader, SearchField } from "./filters";
 import type { Filters } from "./filters";
@@ -37,12 +37,14 @@ export type TitleMetrics = {
 };
 
 export function useTitleMetrics(): TitleMetrics {
-  return {
-    groupY: useSharedValue(0),
-    y: useSharedValue(0),
-    height: useSharedValue(0),
-    width: useSharedValue(0),
-  };
+  const groupY = useSharedValue(0);
+  const y = useSharedValue(0);
+  const height = useSharedValue(0);
+  const width = useSharedValue(0);
+
+  // One object for the screen's life: the animated styles capture it, and a
+  // new one each render would rebuild every one of them.
+  return useMemo(() => ({ groupY, y, height, width }), [groupY, y, height, width]);
 }
 
 export type SearchInput = ComponentRef<typeof TextInput>;
@@ -60,21 +62,41 @@ function useCollapse(): CollapsingHeader {
   return header;
 }
 
-/** A style that fades and lifts a part away within its window of the collapse. */
-function useLeave(from: number, to: number, lift: number) {
+/**
+ * Whether a part that is this far gone still takes taps: opacity alone does
+ * not stop them, and a tap on something you can barely see (or that is under
+ * the bar's search button) would open what you did not mean to.
+ */
+function touchable(gone: number): "auto" | "none" {
+  "worklet";
+
+  return gone < 0.5 ? "auto" : "none";
+}
+
+/**
+ * A style that fades a part away within its window of the collapse, lifting
+ * it a few points as it goes so it reads as leaving, not just dimming.
+ */
+function useLeave(window: readonly [number, number], lift: number) {
   const { hidden, range } = useCollapse();
+  const [from, to] = window;
 
   return useAnimatedStyle(() => {
     const gone = phase(progressOf(hidden.get(), range.get()), from, to);
 
-    return { opacity: 1 - gone, transform: [{ translateY: -lift * gone }] };
+    return {
+      opacity: 1 - gone,
+      pointerEvents: touchable(gone),
+      transform: [{ translateY: -lift * gone }],
+    };
   });
 }
 
 /** One dropdown, lifting away in its turn: left first, right last. */
 function StaggerItem({ index, children }: { index: number; children: ReactNode }): JSX.Element {
-  const from = 0.12 + index * 0.08;
-  const style = useLeave(from, from + 0.3, 10);
+  const { start, step, length } = TIMELINE.dropdowns;
+  const from = start + index * step;
+  const style = useLeave([from, from + length], 10);
 
   return <Animated.View style={[{ flexGrow: 1, flexBasis: 0 }, style]}>{children}</Animated.View>;
 }
@@ -101,6 +123,7 @@ function MorphingTitle({ metrics, top }: { metrics: TitleMetrics; top: number })
 
   return (
     <Animated.View
+      accessibilityRole="header"
       onLayout={(event) => {
         metrics.y.set(event.nativeEvent.layout.y);
         metrics.height.set(heightOf(event));
@@ -118,10 +141,14 @@ function MorphingTitle({ metrics, top }: { metrics: TitleMetrics; top: number })
 /** The organization's name over the title; it leaves first. */
 function TitleGroup({ metrics, top }: { metrics: TitleMetrics; top: number }): JSX.Element {
   const organization = useOrganization();
-  const caption = useLeave(0, 0.3, 6);
+  const caption = useLeave(TIMELINE.caption, 6);
 
   return (
-    <Animated.View onLayout={(event) => metrics.groupY.set(event.nativeEvent.layout.y)}>
+    <Animated.View
+      onLayout={(event) => metrics.groupY.set(event.nativeEvent.layout.y)}
+      // Above the search field, which rides up under the title as both move.
+      style={{ zIndex: 1 }}
+    >
       <Animated.View style={caption}>
         <Text size={12} tone="muted" lines={1}>
           {organization.name}
@@ -132,7 +159,7 @@ function TitleGroup({ metrics, top }: { metrics: TitleMetrics; top: number }): J
   );
 }
 
-/** Shrinks toward the right, where the bar's search button appears. */
+/** Fades as it shrinks toward the right, where the bar's search button appears. */
 function ShrinkingSearch(props: {
   filters: Filters;
   onFilters: (filters: Filters) => void;
@@ -141,9 +168,16 @@ function ShrinkingSearch(props: {
   const { hidden, range } = useCollapse();
 
   const style = useAnimatedStyle(() => {
-    const gone = phase(progressOf(hidden.get(), range.get()), 0.04, 0.42);
+    const [from, to] = TIMELINE.search;
+    const gone = phase(progressOf(hidden.get(), range.get()), from, to);
 
-    return { opacity: 1 - gone, transform: [{ scale: 1 - 0.12 * gone }] };
+    // A slight shrink about its right edge, where the bar's search button
+    // will appear, so the field reads as folding into that button.
+    return {
+      opacity: 1 - gone,
+      pointerEvents: touchable(gone),
+      transform: [{ scale: 1 - 0.12 * gone }],
+    };
   });
 
   return (
@@ -158,7 +192,7 @@ function ShrinkingSearch(props: {
 }
 
 function ProjectsError({ error }: { error: Error }): JSX.Element {
-  const style = useLeave(0.12, 0.42, 0);
+  const style = useLeave(TIMELINE.projectsError, 0);
 
   // Without the projects, the project dropdown can only offer "All Projects".
   return (

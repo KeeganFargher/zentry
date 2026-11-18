@@ -11,7 +11,7 @@ import { Icon } from "~/components/icons";
 import { Text } from "~/components/text";
 import { CONTROL, SPACE } from "~/lib/theme";
 
-import { phase, progressOf } from "./collapse";
+import { TIMELINE, phase, progressOf } from "./collapse";
 import type { CollapsingHeader } from "./collapse";
 import type { TitleMetrics } from "./header";
 
@@ -41,7 +41,8 @@ function Summary({ header, metrics, summary }: PartProps & { summary: string }):
   const { hidden, range } = header;
 
   const style = useAnimatedStyle(() => {
-    const shown = phase(progressOf(hidden.get(), range.get()), 0.62, 1);
+    const [from, to] = TIMELINE.summary;
+    const shown = phase(progressOf(hidden.get(), range.get()), from, to);
 
     return {
       opacity: shown,
@@ -82,8 +83,11 @@ function SearchButton({
   const { hidden, range } = header;
 
   const style = useAnimatedStyle(() => {
-    const shown = phase(progressOf(hidden.get(), range.get()), 0.5, 0.95);
+    const [from, to] = TIMELINE.searchButton;
+    const shown = phase(progressOf(hidden.get(), range.get()), from, to);
 
+    // Grows from smaller than itself, as the search field shrank: one control
+    // changing size rather than one leaving and another arriving.
     return { opacity: shown, transform: [{ scale: 0.6 + 0.4 * shown }] };
   });
 
@@ -116,8 +120,8 @@ export function CollapsedBar(props: CollapsedBarProps): JSX.Element {
   const { hidden, range } = header;
 
   const bar = useAnimatedStyle(() => ({
-    // Taps go through to the full header until the bar has mostly arrived.
-    pointerEvents: progressOf(hidden.get(), range.get()) > 0.6 ? "auto" : "none",
+    // Taps go through to the full header until the bar's parts start to show.
+    pointerEvents: progressOf(hidden.get(), range.get()) >= TIMELINE.handoff ? "auto" : "none",
   }));
 
   return (
