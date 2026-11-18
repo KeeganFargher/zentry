@@ -1,13 +1,20 @@
-# Builds the Android app and publishes the APK as a GitHub release, whenever
-# main gets a change under mobile/. Download it from the repository's
-# Releases page and install it on the phone; each build installs over the last.
+# Ships the Android app whenever main gets a change under mobile/: as an
+# over-the-air update when the change is JavaScript only, or as a new APK on
+# the repository's Releases page when it touches the native side.
 #
-# Needs four repository secrets (mobile/README.md, Release builds):
+# Which one is decided by the runtime version (app.json: runtimeVersion, the
+# "fingerprint" policy), a hash of everything native. Each APK release notes
+# its runtime ("Runtime: <hash>"). If the newest APK has this commit's runtime,
+# the installed apps can run its JavaScript, so it goes out through EAS Update
+# to the "production" channel they listen on; otherwise a new APK.
+#
+# Needs these repository secrets (mobile/README.md, Release builds):
 #   GOOGLE_SERVICES_JSON       mobile/google-services.json, for push (FCM)
 #   ANDROID_KEYSTORE_BASE64    the release keystore, base64; one key for every
 #                              build, or Android refuses to install over the last
 #   ANDROID_KEYSTORE_PASSWORD  its password
 #   ANDROID_KEY_PASSWORD       the key's password
+#   EXPO_TOKEN                 an Expo access token, for publishing updates
 name: mobile-release
 on:
   push:
@@ -17,8 +24,9 @@ on:
       - ".github/workflows/mobile-release.yml"
   workflow_dispatch:
 
-# One release build at a time, so two never race for the next version code.
-# A push that arrives meanwhile queues; GitHub keeps only the newest queued run.
+# One release at a time, so two never race for the next version code or
+# publish updates out of order. A push that arrives meanwhile queues; GitHub
+# keeps only the newest queued run.
 concurrency:
   group: mobile-release
   cancel-in-progress: false
@@ -40,7 +48,8 @@ jobs:
     env:
       # The run number is the versionCode (app.config.ts): it only grows, so
       # every build is an update to the one before. Set for the whole job, so
-      # the prebuild and the config embedded during the Gradle build agree.
+      # the prebuild and the config embedded during the Gradle build agree. The
+      # fingerprint leaves it out, so it never changes the runtime version.
       ZENTRY_VERSION_CODE: ${{ github.run_number }}
       # Not a secret: as one, GitHub would mask "zentry" all over the logs.
       KEY_ALIAS: zentry
@@ -58,9 +67,88 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
 
-      # Re-running an older run after a newer one published would release a
-      # lower versionCode, which no phone with the newer build can install.
+      # Re-running an older run would ship that run's code as the newest:
+      # an update would roll every phone back, an APK would carry stale code.
+      - name: Check this is main's latest commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_SHA is not main's latest commit ($head); run the workflow for that instead"
+            exit 1
+          fi
+
+      # mobile/ is its own pnpm root (mobile/pnpm-workspace.yaml).
+      - run: pnpm install --frozen-lockfile
+
+      # Before the runtime version is worked out: google-services.json is one
+      # of the files the fingerprint hashes. A missing secret fails here, by
+      # name, rather than as a build that silently has no push.
+      - name: Write google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "::error::Repository secret GOOGLE_SERVICES_JSON is not set (mobile/README.md, Release builds)"
+            exit 1
+          fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json
+
+      # Only the newest APK counts: an older one sharing this runtime is not
+      # what phones have once they installed a newer build with another.
+      - name: Decide between an update and a new APK
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runtime=$(pnpm exec expo-updates runtimeversion:resolve --platform android | jq -r '.runtimeVersion')
+          if [ -z "$runtime" ] || [ "$runtime" = "null" ]; then
+            echo "::error::Could not resolve the runtime version"
+            exit 1
+          fi
+          newest=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select((.draft | not) and (.tag_name | startswith("mobile-build-"))) | [(.tag_name | ltrimstr("mobile-build-") | tonumber), .body] | @json' \
+            | jq -s 'sort_by(.[0]) | last // [0, ""]')
+          echo "Newest APK: build $(jq -r '.[0]' <<< "$newest")"
+          newest_runtime=$(jq -r '.[1]' <<< "$newest" | tr -d '\r' | sed -n 's/^Runtime: //p')
+          if [ "$newest_runtime" = "$runtime" ]; then
+            mode=update
+          else
+            mode=build
+          fi
+          echo "Runtime $runtime (newest APK: ${newest_runtime:-none}): $mode"
+          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      # ── JavaScript only: an over-the-air update ─────────────────────────
+      # No --environment: EAS's server-side variables would reach the update's
+      # bundle but never the APK's, so the two could differ. The runtime the
+      # update went out for must be the APK's, or no phone would receive it.
+      - name: Publish an over-the-air update
+        if: steps.decide.outputs.mode == 'update'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          RUNTIME: ${{ steps.decide.outputs.runtime }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Repository secret EXPO_TOKEN is not set (mobile/README.md, Release builds)"
+            exit 1
+          fi
+          message=$(git log -1 --format=%s "$GITHUB_SHA")
+          pnpm exec eas update --channel production --platform android \
+            --message "$message" --non-interactive --json > "$RUNNER_TEMP/update.json"
+          jq '[.[] | {id, runtimeVersion, platform}]' "$RUNNER_TEMP/update.json"
+          if ! jq -e --arg r "$RUNTIME" 'length > 0 and all(.[]; .runtimeVersion == $r)' "$RUNNER_TEMP/update.json" > /dev/null; then
+            echo "::error::The update was published for a different runtime than the newest APK's ($RUNTIME); no phone will receive it"
+            exit 1
+          fi
+
+      # ── Native change: a new APK ────────────────────────────────────────
+      # A run older than the newest release would publish a lower versionCode,
+      # which no phone with the newer build can install.
       - name: Check this build is newer than the last release
+        if: steps.decide.outputs.mode == 'build'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -70,34 +158,30 @@ jobs:
             exit 1
           fi
 
-      # mobile/ is its own pnpm root (mobile/pnpm-workspace.yaml).
-      - run: pnpm install --frozen-lockfile
-
-      # A missing secret fails here, by name, rather than as a build that
-      # silently has no push or an APK that will not install over the last.
-      - name: Write google-services.json and the keystore
+      - name: Write the keystore
+        if: steps.decide.outputs.mode == 'build'
         env:
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          for name in GOOGLE_SERVICES_JSON ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD; do
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD; do
             if [ -z "${!name}" ]; then
               echo "::error::Repository secret $name is not set (mobile/README.md, Release builds)"
               exit 1
             fi
           done
-          printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
 
       - name: Generate the Android project
+        if: steps.decide.outputs.mode == 'build'
         run: pnpm exec expo prebuild --platform android --no-install
 
       # Gradle's injected signing properties sign the release with the
       # project's key without editing the generated android/ project, whose
       # release build would otherwise use a throwaway debug key.
       - name: Build the release APK
+        if: steps.decide.outputs.mode == 'build'
         working-directory: mobile/android
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -110,11 +194,14 @@ jobs:
           -Pandroid.injected.signing.key.alias="$KEY_ALIAS"
           -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
 
-      # Fails the run if the APK came out signed with anything but the
-      # project's key, before it is published.
-      - name: Check the signature
+      # Before it is published, the APK must be signed with the project's key
+      # and carry the runtime version the release notes will name: the one
+      # later runs compare against, and the one updates are published for.
+      - name: Check the signature and runtime version
+        if: steps.decide.outputs.mode == 'build'
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RUNTIME: ${{ steps.decide.outputs.runtime }}
         run: |
           apk=android/app/build/outputs/apk/release/app-release.apk
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
@@ -130,15 +217,27 @@ jobs:
             echo "::error::The APK is not signed with the release key (expected $expected)"
             exit 1
           fi
+          embedded=$(unzip -p "$apk" assets/fingerprint)
+          echo "APK runtime $embedded"
+          if [ "$embedded" != "$RUNTIME" ]; then
+            echo "::error::The APK's runtime version ($embedded) is not the one resolved before the build ($RUNTIME)"
+            exit 1
+          fi
 
+      # The "Runtime:" line is how later runs find this APK's runtime version.
       - name: Publish the release
+        if: steps.decide.outputs.mode == 'build'
         env:
           GH_TOKEN: ${{ github.token }}
+          RUNTIME: ${{ steps.decide.outputs.runtime }}
         run: |
           version=$(node -p "require('./app.json').expo.version")
           apk="zentry-$version-build$ZENTRY_VERSION_CODE.apk"
           cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          notes=$(printf '%s\n\n%s\n' \
+            "Built from $GITHUB_SHA. Download the APK on the phone and open it to install; it updates the previous build in place. Later JavaScript-only changes reach it over the air." \
+            "Runtime: $RUNTIME")
           gh release create "mobile-build-$ZENTRY_VERSION_CODE" "$apk" \
             --target "$GITHUB_SHA" \
             --title "Zentry Android $version (build $ZENTRY_VERSION_CODE)" \
-            --notes "Built from $GITHUB_SHA. Download the APK on the phone and open it to install; it updates the previous build in place."
+            --notes "$notes"

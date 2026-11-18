@@ -1,3 +1,8 @@
+# eas-cli's dependencies; neither install script is needed (dtrace-provider is
+# optional tracing, protobufjs only prints a notice).
+allowBuilds:
+  dtrace-provider: false
+  protobufjs: false
 minimumReleaseAgeExclude:
   - "@expo/cli@58.1.21"
   - "@expo/metro-config@58.0.23"

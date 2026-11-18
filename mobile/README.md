@@ -67,13 +67,38 @@ it yourself. A Play Store build needs its own key (`eas build` or a
 
 ## Release builds
 
-`.github/workflows/mobile-release.yml` builds a signed release APK whenever
-`main` gets a change under `mobile/` (or from the Actions tab, "Run
-workflow"), and publishes it as a GitHub release named
-`mobile-build-<run number>`. Download the APK on the phone from the
-repository's Releases page and open it to install. Each build has a higher
-versionCode (the run number) and the same signing key, so it installs over the
-last one. The repository is public, so its releases are too.
+`.github/workflows/mobile-release.yml` ships the app whenever `main` gets a
+change under `mobile/` (or from the Actions tab, "Run workflow"), one of two
+ways:
+
+- **JavaScript only:** an over-the-air update through EAS Update, on the
+  `production` channel. The app checks for one each time it starts, downloads
+  it in the background, and runs it from the next start.
+- **Anything native** (a new native package, a config plugin, `app.json`
+  settings that reach the native project): a signed release APK, published as
+  a GitHub release named `mobile-build-<run number>`. Download it on the phone
+  from the repository's Releases page and open it to install. Each build has
+  a higher versionCode (the run number) and the same signing key, so it
+  installs over the last one. The repository is public, so its releases are
+  too.
+
+The workflow tells them apart by the runtime version, a fingerprint of the
+native side (`runtimeVersion` in `app.json`). Each APK release notes its
+runtime (`Runtime: <hash>`); when the newest APK has the commit's runtime, its
+installs can run the new JavaScript, so it goes over the air. An update only
+ever reaches APKs with the same runtime, so it cannot crash an older build by
+calling native code that build lacks. Only main's latest commit ships: re-run
+an older run and it stops, rather than roll phones back.
+
+The fingerprint leaves out a few native things, which then go out as an
+update that cannot change them: `expo.version` (the APK's versionName stays
+as it was) and the monochrome adaptive icon's image. To ship either, rename
+the icon file, or make another native change alongside.
+
+A local `android/` made before `expo-updates` was added has updates switched
+off; `build-android.ps1` only generates one when it is missing. Run
+`npx expo prebuild --clean` in `mobile/` once. Debug builds never use updates:
+they load JavaScript from Metro.
 
 It needs these repository secrets (Settings, Secrets and variables, Actions):
 
@@ -83,6 +108,7 @@ It needs these repository secrets (Settings, Secrets and variables, Actions):
 | `ANDROID_KEYSTORE_BASE64` | the release keystore, base64-encoded |
 | `ANDROID_KEYSTORE_PASSWORD` | its password |
 | `ANDROID_KEY_PASSWORD` | the key's password (the same as the keystore's) |
+| `EXPO_TOKEN` | an Expo access token (expo.dev, Account settings, Access tokens), for publishing updates |
 
 The key's alias, `zentry`, is in the workflow itself: as a secret, GitHub
 would mask the word "zentry" throughout the logs.

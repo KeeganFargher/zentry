@@ -53,6 +53,15 @@
         "projectId": "e4a28a8c-7a1f-41fd-96d1-6eff512604b0"
       }
     },
-    "owner": "fargherkeegan"
+    "owner": "fargherkeegan",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e4a28a8c-7a1f-41fd-96d1-6eff512604b0",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
+    }
   }
 }
