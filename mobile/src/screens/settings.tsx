@@ -125,6 +125,18 @@ function appVersion(): string {
   return `Update ${Updates.updateId.slice(0, 8)}, ${dateTime(Updates.createdAt.getTime())}`;
 }
 
+/** Why the last update check or download failed, if it did; else nothing. */
+function UpdateFailure(): JSX.Element | null {
+  const { checkError, downloadError } = Updates.useUpdates();
+  const failure = downloadError ?? checkError;
+
+  if (failure === undefined) {
+    return null;
+  }
+
+  return <Fact label="Update check failed" value={failure.message} />;
+}
+
 function Account({ session }: { session: Session }): JSX.Element {
   const signOut = useSignOut(session);
 
@@ -134,6 +146,7 @@ function Account({ session }: { session: Session }): JSX.Element {
       <Fact label="Signed in as" value={session.email} />
       <Fact label="Server" value={new URL(session.apiUrl).host} />
       <Fact label="App version" value={appVersion()} />
+      <UpdateFailure />
       <Button label="Sign out" kind="danger" onPress={signOut} />
     </Panel>
   );
