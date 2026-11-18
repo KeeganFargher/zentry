@@ -1,14 +1,13 @@
 // One issue in the list, laid out as a row of Sentry's issue stream: the
 // error type with where it happened, the level bar and message, the short ID
 // and ages with a state tag, and the trend and event count on the right.
-// Swipe right to resolve, left to archive; long-press to start selecting.
+// Swipe right to resolve, left to archive (screens/issues/swipe.tsx locks the
+// axis, so scrolling never swipes); long-press to start selecting.
 
 import type { ApiIssue, IssueStatus } from "@contract";
-import { useRef } from "react";
+import { useCallback } from "react";
 import type { JSX } from "react";
 import { Pressable, View } from "react-native";
-import ReanimatedSwipeable from "react-native-gesture-handler/ReanimatedSwipeable";
-import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 
 import { LevelBar, stateTone, Tag } from "~/components/basics";
 import { MiniBars } from "~/components/charts";
@@ -20,6 +19,9 @@ import { issueMessage, issueTitle, substatus } from "~/lib/issue";
 import { usePalette } from "~/lib/preferences";
 import type { Palette } from "~/lib/theme";
 import { SPACE } from "~/lib/theme";
+
+import { SwipeRow } from "./swipe";
+import type { SwipeSide } from "./swipe";
 
 type RowProps = {
   issue: ApiIssue;
@@ -178,26 +180,21 @@ function Counts({ issue }: { issue: ApiIssue }): JSX.Element {
 export function IssueRow(props: RowProps): JSX.Element {
   const { issue, now, selecting, selected, onOpen, onToggle, onStatus } = props;
   const palette = usePalette();
-  const swipeable = useRef<SwipeableMethods>(null);
   const [right, left] = swipeActions(issue, palette);
+  const rightStatus = right.status;
+  const leftStatus = left.status;
 
-  const opened = (direction: "left" | "right"): void => {
-    swipeable.current?.close();
-    // The direction is the swipe's, not the side of the panel it reveals:
-    // checked on the emulator, a swipe to the right reports "right".
-    onStatus(direction === "right" ? right.status : left.status);
-  };
+  const swiped = useCallback(
+    (side: SwipeSide) => onStatus(side === "right" ? rightStatus : leftStatus),
+    [onStatus, rightStatus, leftStatus],
+  );
 
   return (
-    <ReanimatedSwipeable
-      ref={swipeable}
+    <SwipeRow
       enabled={!selecting}
-      friction={1.5}
-      leftThreshold={90}
-      rightThreshold={90}
-      renderLeftActions={() => <SwipePanel action={right} align="flex-start" />}
-      renderRightActions={() => <SwipePanel action={left} align="flex-end" />}
-      onSwipeableOpen={opened}
+      rightPanel={<SwipePanel action={right} align="flex-start" />}
+      leftPanel={<SwipePanel action={left} align="flex-end" />}
+      onSwipe={swiped}
     >
       <Pressable
         accessibilityRole="button"
@@ -220,7 +217,7 @@ export function IssueRow(props: RowProps): JSX.Element {
         <Summary issue={issue} now={now} />
         <Counts issue={issue} />
       </Pressable>
-    </ReanimatedSwipeable>
+    </SwipeRow>
   );
 }
 
