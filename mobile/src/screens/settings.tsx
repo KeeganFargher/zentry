@@ -125,16 +125,22 @@ function appVersion(): string {
   return `Update ${Updates.updateId.slice(0, 8)}, ${dateTime(Updates.createdAt.getTime())}`;
 }
 
-/** Why the last update check or download failed, if it did; else nothing. */
-function UpdateFailure(): JSX.Element | null {
+/**
+ * Why the last update check or download failed, each under its own label.
+ * expo-updates clears a check error on the next good check, but a download
+ * error only on the next good download, so the two can differ in age.
+ */
+function UpdateFailures(): JSX.Element {
   const { checkError, downloadError } = Updates.useUpdates();
-  const failure = downloadError ?? checkError;
 
-  if (failure === undefined) {
-    return null;
-  }
-
-  return <Fact label="Update check failed" value={failure.message} />;
+  return (
+    <>
+      {checkError !== undefined && <Fact label="Update check failed" value={checkError.message} />}
+      {downloadError !== undefined && (
+        <Fact label="Update download failed" value={downloadError.message} />
+      )}
+    </>
+  );
 }
 
 function Account({ session }: { session: Session }): JSX.Element {
@@ -146,7 +152,7 @@ function Account({ session }: { session: Session }): JSX.Element {
       <Fact label="Signed in as" value={session.email} />
       <Fact label="Server" value={new URL(session.apiUrl).host} />
       <Fact label="App version" value={appVersion()} />
-      <UpdateFailure />
+      <UpdateFailures />
       <Button label="Sign out" kind="danger" onPress={signOut} />
     </Panel>
   );

@@ -10,6 +10,8 @@ export type Palette = {
   surface: string;
   /** background.tertiary: stack-frame headers, pressed rows, meter tracks. */
   raised: string;
+  /** background.overlay: toasts, floating over the page; lighter in dark mode. */
+  overlay: string;
   /** border.primary: controls and cards. */
   border: string;
   /** border.secondary: dividers between rows. */
@@ -63,6 +65,7 @@ export const LIGHT: Palette = {
   bg: "#FFFFFF",
   surface: "#F8F8F9",
   raised: "#F0F0F2",
+  overlay: "#FFFFFF",
   border: "#DAD9DE",
   borderSoft: "#E6E6E9",
   text: "#302E36",
@@ -96,6 +99,7 @@ export const DARK: Palette = {
   bg: "#2E2936",
   surface: "#24202B",
   raised: "#1B1821",
+  overlay: "#393442",
   border: "#141119",
   borderSoft: "#1B1821",
   text: "#E7E5EA",

@@ -1,8 +1,12 @@
 // Sentry's toast (getsentry/sentry, static/packages/scraps/src/toast): a card
-// on the primary background with a 1px border and a 2px bottom edge, the
-// message, a small secondary action, and a transparent dismiss button. This
-// is its "default" variant, the one without a status icon. It rises from the
-// bottom and sinks back when dismissed.
+// with a 1px border and a 2px bottom edge, the message, a small secondary
+// action, and a transparent dismiss button. This is its "default" variant,
+// the one without a status icon. It rises from the bottom and sinks back when
+// dismissed.
+//
+// Sentry also gives it shadow.medium, a zero-blur 1-2px offset. That is left
+// out: the 2px bottom border already draws the same edge, and zero-blur
+// shadows render unevenly across Android versions (see button.tsx).
 
 import type { JSX } from "react";
 import { Pressable, View } from "react-native";
@@ -34,7 +38,9 @@ export function Toast({ message, action, onDismiss, bottom }: ToastProps): JSX.E
     <Animated.View
       entering={ENTER}
       exiting={EXIT}
-      accessibilityRole="alert"
+      // Sentry's role="status": TalkBack reads the message when it appears,
+      // without interrupting what it was saying.
+      accessibilityLiveRegion="polite"
       style={{
         position: "absolute",
         left: SPACE.md,
@@ -42,26 +48,29 @@ export function Toast({ message, action, onDismiss, bottom }: ToastProps): JSX.E
         bottom,
         flexDirection: "row",
         alignItems: "center",
-        backgroundColor: palette.bg,
+        overflow: "hidden",
+        backgroundColor: palette.overlay,
         borderColor: palette.border,
         borderWidth: 1,
         borderBottomWidth: 2,
         borderRadius: RADIUS.md,
-        // Sentry's shadow.medium: the toast floats over the page.
-        boxShadow: "0px 2px 8px rgba(0, 0, 0, 0.12)",
       }}
     >
-      <View style={{ flex: 1, padding: SPACE.lg }}>
+      <View style={{ flex: 1, padding: SPACE.md }}>
         <Text>{message}</Text>
       </View>
-      <Button
-        label={action.label}
-        height={CONTROL.compact}
-        onPress={() => {
-          action.onPress();
-          onDismiss();
-        }}
-      />
+      <View style={{ paddingLeft: SPACE.md }}>
+        {/* Sentry's is its 28px "xs" button; 36 is as small as a tap target here goes. */}
+        <Button
+          label={action.label}
+          height={CONTROL.compact}
+          onPress={() => {
+            action.onPress();
+            onDismiss();
+          }}
+        />
+      </View>
+      {/* Sentry's is a transparent xs button; this keeps a full touch target. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Dismiss"
