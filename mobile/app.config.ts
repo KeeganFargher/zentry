@@ -6,6 +6,7 @@
 import { existsSync } from "node:fs";
 
 import type { ConfigContext, ExpoConfig } from "expo/config";
+import { z } from "zod";
 
 // FCM, and so push, needs the Firebase project's google-services.json
 // (mobile/README.md, Push). It holds that project's ids, so it is not
@@ -20,8 +21,15 @@ const allowHttp = process.env["ZENTRY_ALLOW_HTTP"] === "1";
 
 // The release workflow (.github/workflows/mobile-release.yml) sets this to its
 // run number: Android installs an APK over the previous one only when its
-// versionCode is higher. Local builds keep app.json's.
-const versionCode = process.env["ZENTRY_VERSION_CODE"];
+// versionCode is higher. Local builds keep app.json's. Parsed, not read: in CI
+// there is no Expo-generated expo-env.d.ts, so `process` is untyped here, and a
+// bad value must stop the build rather than ship as NaN.
+const versionCode = z.coerce
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .parse(process.env["ZENTRY_VERSION_CODE"]);
 
 export default ({ config }: ConfigContext): ExpoConfig => {
   const android = { ...config.android };
@@ -31,13 +39,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   }
 
   if (versionCode !== undefined) {
-    const code = Number(versionCode);
-
-    if (!Number.isInteger(code) || code < 1) {
-      throw new Error(`ZENTRY_VERSION_CODE must be a positive integer, not "${versionCode}"`);
-    }
-
-    android.versionCode = code;
+    android.versionCode = versionCode;
   }
 
   return {

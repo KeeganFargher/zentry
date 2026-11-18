@@ -176,6 +176,8 @@ export default defineConfig({
         "src/push/expo.ts",
         // A tapped push's data, which crossed Expo and FCM.
         "mobile/src/lib/push.ts",
+        // The build's environment variables, set by CI or the person building.
+        "mobile/app.config.ts",
       ],
       rules: { "zentry/zod-only-at-boundaries": "off" },
     },
