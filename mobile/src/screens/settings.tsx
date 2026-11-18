@@ -2,6 +2,7 @@
 // signing out. Spend limits, projects and DSN keys stay in the web UI.
 
 import { useRouter } from "expo-router";
+import * as Updates from "expo-updates";
 import type { JSX } from "react";
 import { Alert, Linking, Pressable, ScrollView, View } from "react-native";
 
@@ -11,6 +12,7 @@ import { Icon } from "~/components/icons";
 import { Segmented } from "~/components/segmented";
 import { SectionTitle, Text } from "~/components/text";
 import { ApiFailure } from "~/lib/api";
+import { dateTime } from "~/lib/format";
 import { useOrganizations } from "~/lib/organization";
 import { usePreferences } from "~/lib/preferences";
 import type { ThemeChoice } from "~/lib/preferences";
@@ -106,6 +108,23 @@ function useSignOut(session: Session): () => void {
   };
 }
 
+/**
+ * Which JavaScript this install runs: the bundle inside the APK, or an
+ * over-the-air update (mobile/README.md, Release builds), so it is plain
+ * whether an update has arrived. Debug builds load from Metro instead.
+ */
+function appVersion(): string {
+  if (!Updates.isEnabled) {
+    return "Development build";
+  }
+
+  if (Updates.isEmbeddedLaunch || Updates.updateId === null || Updates.createdAt === null) {
+    return "Built in";
+  }
+
+  return `Update ${Updates.updateId.slice(0, 8)}, ${dateTime(Updates.createdAt.getTime())}`;
+}
+
 function Account({ session }: { session: Session }): JSX.Element {
   const signOut = useSignOut(session);
 
@@ -114,6 +133,7 @@ function Account({ session }: { session: Session }): JSX.Element {
       <SectionTitle>Account</SectionTitle>
       <Fact label="Signed in as" value={session.email} />
       <Fact label="Server" value={new URL(session.apiUrl).host} />
+      <Fact label="App version" value={appVersion()} />
       <Button label="Sign out" kind="danger" onPress={signOut} />
     </Panel>
   );
