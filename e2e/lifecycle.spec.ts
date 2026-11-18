@@ -216,7 +216,8 @@ test("an issue is unread until it is opened", async ({ page, request }) => {
 
   await page.goto(`/${ORG}/issues/?project=${fixture.project.id}`);
   await expect(row.locator(".unread-dot")).toBeVisible();
-  await expect(row.locator(".issue-type")).toHaveCSS("font-weight", "600");
+  // Sentry's type has two weights: unread titles are medium (500), read ones regular.
+  await expect(row.locator(".issue-type")).toHaveCSS("font-weight", "500");
 
   // Opening the issue is what marks it as seen.
   await row.getByRole("link", { name: "TypeError" }).click();
