@@ -266,3 +266,26 @@ describe("logger", () => {
     expect(prepareEvent(result).metadata.logger).toBe("Shop.Checkout.PaymentService");
   });
 });
+
+describe("titles", () => {
+  it("says a value that is mostly not text is binary data", () => {
+    const gzip = "\u001f�\b\u0000\u0000\tn�\u0000�\u0004��\t\u0000!\f\u0003�]";
+    const event = normalize({ exception: [{ type: "System.Exception", value: gzip }] });
+
+    expect(event.title).toBe("System.Exception: <binary data>");
+  });
+
+  it("keeps a readable value readable, marking each run of unprintable characters once", () => {
+    const event = normalize({
+      exception: [{ type: "Error", value: "bad\u0000\u0001 input\tfrom user" }],
+    });
+
+    expect(event.title).toBe("Error: bad� input from user");
+  });
+
+  it("keeps the value as it was sent in the stored event", () => {
+    const event = normalize({ exception: [{ type: "Error", value: "a\u0000b" }] });
+
+    expect(event.exceptions[0]?.value).toBe("a\u0000b");
+  });
+});

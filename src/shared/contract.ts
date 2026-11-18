@@ -21,6 +21,8 @@ export type StoredFrame = {
   absPath: string | null;
   module: string | null;
   function: string | null;
+  /** The binary or assembly the code is in. Absent on events stored before this field existed. */
+  package?: string | null;
   lineno: number | null;
   colno: number | null;
   inApp: boolean;

@@ -483,7 +483,7 @@ refused. Normalization then works on the typed result and applies:
 | `exception` | Accept `{values:[…]}` and the legacy bare array. Keep at most 20 exceptions. |
 | `stacktrace.frames` | Keep at most 250 frames: the first 125 and the last 125. Source context keeps the 10 `pre_context` lines nearest the error (the last ones) and the 10 `post_context` lines nearest it (the first ones). |
 | `threads`, top-level `stacktrace` | Used only when no exception has frames. The stack of the crashed thread (else the current one, else the first with frames) goes on the last exception, or on a bare exception with no type or value when the event has none. |
-| `frame.in_app` | If the SDK set it, keep it. Otherwise `false` for platform and framework code (`core/inapp.ts`): library paths (`node_modules/`, `site-packages/`, `/usr/lib/`, `/System/Library/`, …), module prefixes (`java.`, `android.`, `org.springframework.`, `System.`, `Microsoft.`, …) and Go runtime functions; `true` otherwise. |
+| `frame.in_app` | One override first: when the stack trace names the `package` (assembly or binary) of its frames and a frame has none, that frame is runtime-generated code (a reflection stub, a dynamic method) and is not in-app, whatever the SDK said. The .NET SDK marks such frames in-app because their module is `"(unknown)"`, and they appear only once the runtime warms up, so counting them split one crash into two issues. Then: if the SDK set it, keep it. Otherwise `false` for platform and framework code (`core/inapp.ts`): library paths (`node_modules/`, `site-packages/`, `/usr/lib/`, `/System/Library/`, …), module prefixes (`java.`, `android.`, `org.springframework.`, `System.`, `Microsoft.`, …) and Go runtime functions; `true` otherwise. |
 | `frame.vars` | Depth 3, 50 keys, strings cut at 512 characters. |
 | `breadcrumbs` | Accept `{values:[…]}` and a bare array. Keep the last 100. |
 | `logentry` / `message` | Normalize to `logentry: {message, formatted, params}`. With `params` and no `formatted`, fill `%s`, `%d`, `%(name)s`, `{}`, `{0}` and `{name}` placeholders; the title uses the filled text and grouping uses the template. |
@@ -498,9 +498,16 @@ refused. Normalization then works on the typed result and applies:
 
 - `title`: for an exception event, `"{type}: {value}"` of the last exception
   in the list, cut at 200 characters. For a message event, the first line of
-  `logentry.formatted`. Otherwise `<unlabeled event>`.
+  `logentry.formatted`. Otherwise `<unlabeled event>`. The title is for
+  display only: a line that is mostly unprintable (control characters, lone
+  surrogates, U+FFFD) becomes `<binary data>`, as when an app reads gzip
+  bytes as a string, and otherwise each run of unprintable characters becomes
+  one U+FFFD. The stored event and grouping keep the value as sent.
 - `culprit`: `"{module or filename} in {function}"` of the last in-app frame,
-  falling back to the last frame, then to `transaction`, then empty.
+  falling back to the last frame. A frame with a function but no module or
+  filename gives the function alone (the .NET SDK clears `module`, and a
+  build without symbols has no files). Without a frame, `transaction`, then
+  empty.
 - `metadata`: `{type, value, filename, function}` from the same exception and
   frame. Stored on the group so the list can render type and value separately.
 - `user_label`: first present of `user.email`, `user.username`, `user.id`,

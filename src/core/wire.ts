@@ -97,6 +97,7 @@ const Frame = z.object({
   abs_path: label(MAX_STRING),
   module: label(MAX_STRING),
   function: label(MAX_STRING),
+  package: label(MAX_STRING),
   lineno: lenient(z.number()),
   colno: lenient(z.number()),
   in_app: lenient(z.boolean()),

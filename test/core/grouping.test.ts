@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { computeHash } from "@/core/grouping";
 import { md5Hex } from "@/core/md5";
+import type { JsonObject } from "@/shared/contract";
 
 import { normalize, pythonError } from "./helpers";
 
@@ -136,5 +137,76 @@ describe("computeHash", () => {
       );
 
     expect(browserError("index-a1b2c3", "xe")).toBe(browserError("index-ffee99", "Qt"));
+  });
+});
+
+describe("frames the runtime generates", () => {
+  const APP = "DataAccess, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null";
+  const CORE = "System.Private.CoreLib, Version=9.0.0.0, Culture=neutral";
+
+  const own = (fn: string): JsonObject => ({ function: fn, package: APP, in_app: true });
+
+  /** A Hangfire job's exception, as the .NET SDK sends it: no files, modules cleared. */
+  function dotnetError(invoker: JsonObject): JsonObject {
+    return {
+      platform: "csharp",
+      exception: {
+        values: [
+          {
+            type: "System.Exception",
+            value: "GeeWiz request failed with HTTP 403",
+            stacktrace: {
+              frames: [
+                {
+                  function:
+                    "object MethodBaseInvoker.InvokeWithNoArgs(object obj, BindingFlags invokeAttr)",
+                  package: CORE,
+                  in_app: false,
+                },
+                invoker,
+                own("async Task GeeWizProductFetcher.ProcessAndUploadProductsToQueueAsync()"),
+                own("async Task<int> GeeWizProductFetcher.GetTotalPagesToFetchAsync()"),
+              ],
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  // Cold, .NET calls the job through the interpreter; warm, through a stub it
+  // emits, which has no assembly and which the SDK marks in-app.
+  const cold = normalize(
+    dotnetError({
+      function: "object RuntimeMethodHandle.InvokeMethod(object target, Void** arguments)",
+      package: CORE,
+      in_app: false,
+    }),
+  );
+
+  const warm = normalize(
+    dotnetError({
+      function: "object InvokeStub_TaskAwaiter.GetResult(object, object, IntPtr*)",
+      in_app: true,
+    }),
+  );
+
+  it("does not count a frame without a package as the app's code when the others have one", () => {
+    expect(warm.exceptions[0]?.frames[1]?.inApp).toBe(false);
+    expect(warm.exceptions[0]?.frames[2]?.inApp).toBe(true);
+  });
+
+  it("groups a job's failure the same before and after the runtime warms up", () => {
+    expect(computeHash(warm)).toBe(computeHash(cold));
+  });
+
+  it("leaves the SDK's flag alone when no frame names a package", () => {
+    const event = normalize(pythonError(frame));
+
+    expect(event.exceptions[0]?.frames.map((item) => item.inApp)).toEqual([false, true]);
+  });
+
+  it("names the culprit by function when the frame has no module or file", () => {
+    expect(warm.culprit).toBe("async Task<int> GeeWizProductFetcher.GetTotalPagesToFetchAsync()");
   });
 });

@@ -16,7 +16,24 @@ function nearestLines(lines: string[], side: "pre" | "post"): string[] {
   return side === "pre" ? lines.slice(-MAX_CONTEXT_LINES) : lines.slice(0, MAX_CONTEXT_LINES);
 }
 
-function toStoredFrame(raw: WireFrame): StoredFrame {
+/**
+ * Whether a frame is the app's own code. The SDK's flag wins, with one
+ * exception: when the stack trace names the package (assembly or binary) of
+ * its frames and this frame has none, the frame is code the runtime generated
+ * (a reflection stub, a dynamic method), whatever the SDK said. Such a frame
+ * appears only after the runtime warms up, so counting it would split one
+ * crash into two issues. The .NET SDK marks these in-app because their module
+ * is "(unknown)", which none of its exclusions match.
+ */
+function isInApp(raw: WireFrame, packaged: boolean): boolean {
+  if (packaged && raw.package === null) {
+    return false;
+  }
+
+  return raw.in_app ?? !looksLikeLibrary({ ...raw, absPath: raw.abs_path });
+}
+
+function toStoredFrame(raw: WireFrame, packaged: boolean): StoredFrame {
   const located = {
     filename: raw.filename,
     absPath: raw.abs_path,
@@ -26,9 +43,10 @@ function toStoredFrame(raw: WireFrame): StoredFrame {
 
   return {
     ...located,
+    package: raw.package,
     lineno: raw.lineno,
     colno: raw.colno,
-    inApp: raw.in_app ?? !looksLikeLibrary(located),
+    inApp: isInApp(raw, packaged),
     contextLine: raw.context_line,
     preContext: nearestLines(raw.pre_context, "pre"),
     postContext: nearestLines(raw.post_context, "post"),
@@ -44,5 +62,8 @@ export function toStoredFrames(stacktrace: WireStacktrace): StoredFrame[] {
   const kept =
     frames.length > MAX_FRAMES ? [...frames.slice(0, half), ...frames.slice(-half)] : frames;
 
-  return kept.map(toStoredFrame);
+  // Decided over every frame, before any are dropped.
+  const packaged = frames.some((frame) => frame.package !== null);
+
+  return kept.map((frame) => toStoredFrame(frame, packaged));
 }
