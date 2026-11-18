@@ -18,6 +18,12 @@ export type QueueMessage = {
   spill_key: string | null;
 };
 
+/**
+ * Work for the notify consumer. `drain` reads the outbox (DESIGN.md §18);
+ * `digest` flushes one project's digest window once it is due.
+ */
+export type NotifyMessage = { kind: "drain" } | { kind: "digest"; project_id: number };
+
 export const INLINE_PAYLOAD_MAX_BYTES = 100_000;
 
 /** One event, as Relay's `max_event_size`. */

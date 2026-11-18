@@ -1,7 +1,7 @@
 import { defineConfig } from "oxlint";
 
 // Domain boundaries. See DESIGN.md §16.3 before changing any of this.
-const DOMAINS = ["shared", "core", "db", "blobs", "ingest", "consumer", "api", "cron"];
+const DOMAINS = ["shared", "core", "db", "blobs", "ingest", "consumer", "api", "cron", "notify"];
 
 type Pattern = { group: string[]; message: string };
 
@@ -117,6 +117,11 @@ export default defineConfig({
       files: ["src/cron/**"],
       rules: { "no-restricted-imports": except("shared", "core", "db", "blobs") },
     },
+    // notify sends email, built by core from what db reads (DESIGN.md §18).
+    {
+      files: ["src/notify/**"],
+      rules: { "no-restricted-imports": except("shared", "core", "db") },
+    },
     { files: ["ui/**"], rules: { "no-restricted-imports": except() } },
 
     // Named exemptions. Each is one file or one folder, with the reason.
@@ -147,6 +152,7 @@ export default defineConfig({
         "src/consumer/handler.ts",
         "src/api/**",
         "src/db/**",
+        "src/blobs/events.ts",
       ],
       rules: { "zentry/zod-only-at-boundaries": "off" },
     },

@@ -18,7 +18,8 @@
     "migrate:local": "wrangler d1 migrations apply zentry --local",
     "migrate:remote": "wrangler d1 migrations apply zentry --remote -c wrangler.production.jsonc",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p ui && tsc --noEmit -p e2e"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ui && tsc --noEmit -p e2e",
+    "types": "wrangler types --strict-vars=false"
   },
   "dependencies": {
     "react": "19.3.1",

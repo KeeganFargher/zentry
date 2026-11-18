@@ -2655,3 +2655,19 @@ pre.raw-trace {
     display: none;
   }
 }
+
+/* ── Notifications ────────────────────────────────────────────────────── */
+
+.notify-projects {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.notify-projects .form-row label {
+  min-width: 160px;
+}
+
+.topbar .follow {
+  padding: 2px 10px;
+}

@@ -64,8 +64,8 @@ issue status (unresolved, resolved, ignored, regressed); counts, first/last
 seen, hourly stats, tags; projects and DSN keys; organizations (present in the
 data model and API, hidden in the UI); rate limits; scrubbing; retention; UI.
 
-**Later (§13):** JavaScript source maps, attachments, issue merge, new-issue
-notifications, inbound filters.
+**Later (§13):** JavaScript source maps, attachments, issue merge, inbound
+filters. Email notifications were added after v1 (§18).
 
 **Never:** transactions, spans, profiles, replays, sessions, cron monitors,
 logs, metrics, native symbolication, teams, SSO, integrations.
@@ -109,24 +109,27 @@ without them), Analytics Engine.
 zentry/
 ├─ wrangler.jsonc
 ├─ oxlint.config.ts  .oxfmtrc.json  tsconfig.json  lefthook.yml      # §16
-├─ migrations/0001_init.sql  0002_group_seen.sql  0003_spend_limits.sql   # §8, §6
+├─ migrations/0001_init.sql … 0005_notifications.sql      # §8, §6, §18
 ├─ src/
 │  ├─ worker.ts      # composition root: exports { fetch, queue, scheduled }
 │  ├─ shared/        # no internal imports
-│  │    types  ids  time  json  schema  contract  plan  log
+│  │    types  ids  time  json  schema  contract  plan  log  notify
 │  ├─ core/          # pure functions: no bindings, no I/O, no clock
 │  │    wire  envelope  normalize  fields  context  exceptions  frames  inapp
 │  │    logentry  useragent  trim  scrub  secrets  derive  tags  grouping
 │  │    fingerprint  parameterize  md5  buckets  plan  spike
+│  │    notify-settings  digest  unsubscribe  email-layout  email-messages
+│  │    email-alert
 │  ├─ db/            # the only place SQL lives
 │  │    keys  batch  projects  issues  events  tenancy  organizations
-│  │    usage  spike  retention
+│  │    usage  spike  retention  notify  notify-settings  mail  reports
 │  ├─ blobs/         events  spill            # the only place R2 keys are built
 │  ├─ ingest/        auth  body  handler  http  limits
 │  ├─ consumer/      handler
 │  ├─ api/           access  context  router  http  series  issues  events
-│  │                 projects  organization
-│  └─ cron/          retention  spike
+│  │                 projects  organization  notifications
+│  ├─ cron/          retention  spike  notify
+│  └─ notify/        deps  handler  alerts  jobs  recipients  mailer  unsubscribe
 ├─ ui/               # Vite + React SPA, built to ui/dist
 ├─ tools/oxlint/     anti-slop/ (vendored)  zentry/ (our own rules), §16
 ├─ test/             core/ (pure)  integration/ (Workers runtime)  fixtures/envelopes/*.bin
@@ -1183,8 +1186,8 @@ browser rule, so they land in a different issue from later ones.
 **Merge.** Repoint the absorbed issue's `grouphashes` rows, add its counters,
 move its events, delete it. The schema already supports this.
 
-**Notifications.** On new issue or regression, post to a webhook from the
-consumer after commit.
+**Notifications.** Email is built (§18). Slack, webhooks and reply-by-email
+are later: the settings table already has a `provider` column.
 
 **Inbound filters.** Per-project switches to drop browser-extension errors,
 localhost events and known crawlers at ingest.
@@ -1301,7 +1304,8 @@ fixed:
 | `ingest/` | HTTP ingest | `shared`, `core`, `db` |
 | `consumer/` | Queue handler | `shared`, `core`, `db`, `blobs` |
 | `api/` | Read API | `shared`, `core`, `db`, `blobs` |
-| `cron/` | Retention, spike thresholds | `shared`, `core`, `db`, `blobs` |
+| `cron/` | Retention, spike thresholds, weekly reports | `shared`, `core`, `db`, `blobs` |
+| `notify/` | Notify queue consumer, mailer, unsubscribe page | `shared`, `core`, `db` |
 | `worker.ts` | Wires handlers to bindings | everything |
 | `ui/` | SPA | `src/shared/contract.ts` only, as type imports |
 
@@ -1311,7 +1315,7 @@ Rules that follow from the table:
   `db`, `blobs`, `cloudflare:workers`, or read the clock; the current time is
   passed in. This is what makes grouping and planning unit-testable without
   Miniflare.
-- **`ingest`, `consumer`, `api` and `cron` never import each other.** Anything
+- **`ingest`, `consumer`, `api`, `cron` and `notify` never import each other.** Anything
   two of them need moves to `shared`, `core`, `db` or `blobs`.
 - **SQL appears only in `db/`**, and R2 key strings only in `blobs/`. Handlers
   receive typed functions, not `D1Database`. The schema in §8 then has one
@@ -1812,3 +1816,141 @@ What changed when the design met running code. The code is the reference.
 - Nothing has been deployed, and CI does not deploy (§16.7). The R2
   lifecycle rules, the Access application and the queue retention setting
   are manual steps listed in `README.md`.
+
+---
+
+## 18. Email notifications
+
+Modelled on Sentry's notifications; the research behind this section is the
+"How Sentry notifications and emails work" doc. Email goes through Cloudflare
+Email Service's `send_email` binding (public beta, Workers Paid, 3,000 a month
+included, then $0.35 per 1,000).
+
+### 18.1 Pipeline
+
+1. **Outbox.** Anything that may need an email writes a `notify_outbox` row
+   in the same transaction as the change itself, so no notification is lost
+   between a commit and an enqueue:
+   - the consumer's commit (§7.4): `new_issue` with each new group,
+     `regression` with E2, `spike` before E8 when spike protection starts
+     refusing a project, `quota` before E9 when the month's count crosses 80%
+     or 100% of the cap;
+   - `IssueStore.setStatus`: `status`, with the acting user;
+   - the Saturday 12:00 UTC cron: `weekly_report`, one per organization.
+2. **Wake-up.** After such a write the writer sends `{kind: "drain"}` to the
+   `zentry-notify` queue. A failed send is only logged: the hourly cron
+   sweeps a non-empty outbox and wakes the consumer itself.
+3. **Drain.** The notify consumer (`max_concurrency: 1`) reads up to 25
+   rows in id order, handles each, and deletes it. A row that throws keeps
+   its place with `attempts + 1` and the message is retried after 60 s; after
+   five attempts the row is dropped and logged, so it cannot block the rest.
+   When Cloudflare asks to wait (rate or daily limit, an outage), the drain
+   stops at once and counts no attempt, so a busy hour cannot drop alerts.
+   `notify_outbox.id` is AUTOINCREMENT because it is part of each email's
+   idempotency key and a reused rowid would make a new email look sent.
+4. **Send.** One `send()` per recipient. `email_sends` is claimed first with
+   a key unique to the email and recipient; a redelivery finds it sent and
+   skips it.
+
+With `EMAIL_FROM` empty the outbox is still drained, and nothing is sent.
+
+### 18.2 Settings
+
+| Type | Values | Default | Scopes |
+|---|---|---|---|
+| `alerts` | always, never | always | user, organization, project |
+| `workflow` | always, subscribe_only, never | subscribe_only | user, organization, project |
+| `spikeProtection` | always, never | always | user, organization, project |
+| `quota` | always, never | always | user, organization |
+| `reports` | always, never | always | user, organization |
+
+The most specific row wins: project, then organization, then user, then the
+default (`core/notify-settings.ts`). Sentry also has a team scope; Zentry has
+no teams. The UI edits organization and project rows; unsubscribe links write
+project or organization rows, so the UI always shows what a link did.
+
+`issue_subscriptions` records who follows an issue. Changing an issue's
+status follows it (`INSERT OR IGNORE`, so an explicit unfollow survives); the
+Follow button and the workflow unsubscribe link set it explicitly.
+`subscribe_only` sends only for followed issues; an unfollow beats `always`.
+
+### 18.3 Recipients
+
+Every organization member is a candidate (no teams, no ownership rules, no
+suspect commits), filtered by their setting for the type where the email comes
+from. Workflow emails never go to the user who made the change. The `quota`
+emails go to every member, not only owners, until Zentry has billing roles.
+
+### 18.4 Alerts and digests
+
+- An issue alerts on creation and on regression, at most once per 30 minutes
+  per reason (`notify_state`), and only while it is unresolved.
+- Per project, the first alert goes out at once and opens a window in
+  `digest_windows`, due 5 minutes later. Alerts inside the window wait in
+  `digest_pending`; each pushes the due time to 30 s after itself, never past
+  30 minutes after the window opened (`core/digest.ts`, Sentry's
+  `minimum_delay`, `increment_delay` and `maximum_delay`).
+- A `{kind: "digest"}` message, delayed with `delaySeconds`, flushes the
+  window: early, it re-delays itself; due with nothing held, it closes the
+  window; with one issue it sends a normal alert; with more, one digest email
+  listing up to 10. A send opens the next window.
+- An alert arriving at a window already past due re-requests the flush, in
+  case its message went to the dead letter queue; the hourly sweep does the
+  same for any window more than 10 minutes past due.
+- After the first alert's send, the alert is recorded before the window is
+  opened, so a retry stops at the interval check instead of holding an issue
+  already emailed.
+
+### 18.5 Emails
+
+`core/email-layout.ts` renders one list of blocks twice, so every email has an
+HTML part and a matching plain-text part. Subjects follow Sentry's:
+`API-12 - <title>` for anything about an issue, with no prefix, as Sentry now
+sends them. Times are UTC, since users have no timezone yet.
+
+The issue alert (`core/email-alert.ts`) is laid out like Sentry's: the issue
+card (innermost exception type, its value, event time and id), project,
+environment, level and release, then the latest event's exception with
+in-app frames, user (id, email, username, IP), message and tags. The notify
+consumer reads that event back from R2 through `latestEvent`, wired in
+`worker.ts`, so `notify/` still imports no `blobs/`; `blobs/events.ts` parses
+it leniently with its own schema. When the event is missing (not stored
+under the per-issue cap, aged out, or R2 failing), the alert goes out with
+the issue's fields alone. Values are clipped (2,000 characters, 12 frames,
+40 tags), because an exception value can be a whole HTML error page.
+
+Headers: `Auto-Submitted: auto-generated`, `X-Zentry-Kind`, and on every
+email `List-Unsubscribe` with `List-Unsubscribe-Post: List-Unsubscribe=One-Click`
+(RFC 8058), which Sentry omits. Cloudflare picks the Message-ID, so
+`email_threads` keeps the id `send()` returned for the first email per
+address and issue, and later ones set `In-Reply-To` and `References` to it.
+
+Errors: rate, daily-limit, internal, not-ready and delivery failures throw, so
+the row is retried. `E_RECIPIENT_SUPPRESSED` (Cloudflare's own bounce and
+complaint list) adds the address to `email_suppressions` for 7 days. Anything
+else is recorded as failed in `email_sends` and logged.
+
+### 18.6 Unsubscribe
+
+The link is `https://INGEST_HOST/notifications/unsubscribe?t=<token>`, on the
+ingest host because Access guards the UI host and mail providers POST without
+signing in. The token is `user.type.scope.id.<HMAC-SHA256>` with
+`EMAIL_SIGNING_KEY`; it does not expire, since all it can do is turn an email
+off. GET shows a confirmation page (link scanners fetch every URL); POST,
+from that page or from the mail provider, applies it.
+
+### 18.7 Weekly report
+
+Saturdays at 12:00 UTC, covering the seven UTC days before. Per organization:
+received events and new issues per project, issues regressed and resolved,
+and the five issues with the most events. An organization with no events and
+no new issues gets no email.
+
+### 18.8 Not done
+
+- Delivery events. Bounces and complaints are learnt only when `send()`
+  refuses a suppressed address; Email Sending's event subscription queue is
+  not consumed.
+- Reply-by-email (an `email()` handler) and `mailto:` unsubscribe.
+- Timezones, deploy emails (Zentry has no deploys), nudges and account
+  emails.

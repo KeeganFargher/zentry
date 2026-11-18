@@ -3,6 +3,7 @@
 import type { EventBlobs } from "@/blobs/events";
 import type { EventStore } from "@/db/events";
 import type { IssueStore } from "@/db/issues";
+import type { NotificationSettingsStore } from "@/db/notify-settings";
 import type { OrganizationStore } from "@/db/organizations";
 import type { ProjectStore } from "@/db/projects";
 import type { Membership, TenancyStore, UserRecord } from "@/db/tenancy";
@@ -17,6 +18,11 @@ export type ApiDeps = {
   issues: IssueStore;
   events: EventStore;
   blobs: EventBlobs;
+  notificationSettings: NotificationSettingsStore;
+  /** Wakes the notify consumer after a change that queued notifications. */
+  notify: () => Promise<void>;
+  /** False while no sender address is configured, so nothing is emailed. */
+  emailEnabled: boolean;
   /** Hostname SDKs send to; used to build DSNs. */
   ingestHost: string;
   now: () => number;

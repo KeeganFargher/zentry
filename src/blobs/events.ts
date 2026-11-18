@@ -1,6 +1,54 @@
 // Full event JSON in R2. This file owns the `events/` key layout.
 
+import { z } from "zod";
+
+import { jsonText } from "@/shared/json";
+import type { EventSummary } from "@/shared/notify";
+import { Flag, Text, lenient, lenientList } from "@/shared/schema";
+
 export type EventBlob = { projectId: number; eventId: string; json: string };
+
+const MaybeText = lenient(z.string());
+
+const SummaryFrame = z.object({
+  filename: MaybeText,
+  function: MaybeText,
+  lineno: lenient(z.number()),
+  colno: lenient(z.number()),
+  inApp: Flag,
+  contextLine: MaybeText,
+});
+
+const SummaryException = z.object({
+  type: MaybeText,
+  value: MaybeText,
+  frames: lenientList(SummaryFrame),
+});
+
+const SummaryUser = z
+  .object({ id: lenient(Text), email: MaybeText, username: MaybeText, ip_address: MaybeText })
+  .transform(({ ip_address: ipAddress, ...rest }) => ({ ...rest, ipAddress }));
+
+const SummaryMessage = z
+  .object({ message: MaybeText, formatted: MaybeText })
+  .transform((message) => message.formatted ?? message.message);
+
+/**
+ * The parts of a stored event an alert email shows. Read leniently: an event
+ * stored by an older version keeps its alert, with whatever fields it has.
+ */
+const StoredSummary: z.ZodType<EventSummary, string> = jsonText(
+  z.object({
+    eventId: z.string(),
+    timestamp: z.number(),
+    environment: z.string().catch(""),
+    release: MaybeText,
+    message: lenient(SummaryMessage).transform((message) => message ?? null),
+    exceptions: lenientList(SummaryException),
+    tags: lenientList(z.tuple([z.string(), z.string()])),
+    user: lenient(SummaryUser),
+  }),
+);
 
 const PUT_CONCURRENCY = 10;
 const DELETE_CHUNK = 1000;
@@ -46,6 +94,14 @@ export class EventBlobs {
     const object = await this.#bucket.get(eventKey(projectId, eventId));
 
     return object === null ? null : gunzip(object.body);
+  }
+
+  /** What an alert shows of the event; null when it is gone or unreadable. */
+  async summary(projectId: number, eventId: string): Promise<EventSummary | null> {
+    const json = await this.getJson(projectId, eventId);
+    const parsed = json === null ? null : StoredSummary.safeParse(json);
+
+    return parsed?.success === true ? parsed.data : null;
   }
 
   async deleteAll(projectId: number, eventIds: string[]): Promise<void> {

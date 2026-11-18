@@ -19,6 +19,12 @@ import {
   updateIssue,
   updateIssues,
 } from "./issues";
+import {
+  getIssueSubscription,
+  getNotificationSettings,
+  updateIssueSubscription,
+  updateNotificationSetting,
+} from "./notifications";
 import { getLimits, updateLimits } from "./organization";
 import {
   createKey,
@@ -53,6 +59,8 @@ const ROUTES: Route[] = [
   route("PUT", `/projects/${ORG}/${SLUG}/keys/${ID}`, updateKey),
   route("GET", `/organizations/${ORG}/limits`, getLimits),
   route("PUT", `/organizations/${ORG}/limits`, updateLimits),
+  route("GET", `/organizations/${ORG}/notifications`, getNotificationSettings),
+  route("PUT", `/organizations/${ORG}/notifications`, updateNotificationSetting),
   route("GET", `/organizations/${ORG}/issues`, listIssues),
   route("PUT", `/organizations/${ORG}/issues`, updateIssues),
   route("GET", `/organizations/${ORG}/issues/${ID}`, getIssue),
@@ -63,6 +71,8 @@ const ROUTES: Route[] = [
   route("GET", `/organizations/${ORG}/issues/${ID}/tags`, getIssueTags),
   route("GET", `/organizations/${ORG}/issues/${ID}/stats`, getIssueStats),
   route("GET", `/organizations/${ORG}/issues/${ID}/activity`, getIssueActivity),
+  route("GET", `/organizations/${ORG}/issues/${ID}/subscription`, getIssueSubscription),
+  route("PUT", `/organizations/${ORG}/issues/${ID}/subscription`, updateIssueSubscription),
   route("GET", `/organizations/${ORG}/shortids/([\\w-]+)`, getShortId),
 ];
 

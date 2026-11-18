@@ -18,6 +18,7 @@ function retentionDeps(now: number): RetentionDeps {
     deleteProjectStatsBefore: (cutoff) => store.deleteProjectStatsBefore(cutoff),
     pruneTags: (keep) => store.pruneTags(keep),
     clearExpiredLimits: (time) => store.clearExpiredLimits(time),
+    deleteEmailSendsBefore: (cutoff) => store.deleteEmailSendsBefore(cutoff),
     retentionDays: 90,
     now: () => now,
   };
@@ -147,6 +148,7 @@ describe("retention", () => {
       deleteProjectStatsBefore: step("projectStats"),
       pruneTags: step("tags"),
       clearExpiredLimits: step("limits"),
+      deleteEmailSendsBefore: step("emailSends"),
       retentionDays: 90,
       now: () => clock,
     });

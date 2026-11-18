@@ -7,6 +7,7 @@ import { handleApi, Sessions } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
+import { NotificationSettingsStore } from "@/db/notify-settings";
 import { OrganizationStore } from "@/db/organizations";
 import { ProjectStore } from "@/db/projects";
 import { TenancyStore } from "@/db/tenancy";
@@ -96,6 +97,9 @@ export function apiDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
     blobs: new EventBlobs(env.BLOBS),
+    notificationSettings: new NotificationSettingsStore(env.DB),
+    notify: async () => {},
+    emailEnabled: true,
     ingestHost: "ingest.zentry.test",
     now: () => NOW,
     ...overrides,

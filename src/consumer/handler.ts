@@ -20,10 +20,13 @@ import type { QueueMessage } from "@/shared/types";
 export type ConsumerDeps = {
   readState: (keys: BatchKeys) => Promise<BatchState>;
   readStored: (keys: GroupHourKey[]) => Promise<GroupHourStored[]>;
-  commit: (writes: BatchWrites, now: number) => Promise<void>;
+  /** Returns how many notifications the commit queued in the outbox. */
+  commit: (writes: BatchWrites, now: number) => Promise<number>;
   putBlobs: (blobs: EventBlob[]) => Promise<void>;
   loadSpill: (key: string) => Promise<string | null>;
   deleteSpill: (keys: string[]) => Promise<void>;
+  /** Wakes the notify consumer to drain the outbox (DESIGN.md §18). */
+  notify: () => Promise<void>;
   maxStoredPerGroupHour: number;
   now: () => number;
 };
@@ -128,7 +131,22 @@ export async function processMessages(messages: QueueMessage[], deps: ConsumerDe
       })),
     );
 
-    await deps.commit(plan.writes, now);
+    if ((await deps.commit(plan.writes, now)) > 0) {
+      await wake(deps);
+    }
+  }
+}
+
+/**
+ * The outbox rows are committed, so a failure here loses nothing: the hourly
+ * sweep wakes the notify consumer anyway. It must not fail the batch, whose
+ * retry would find its events already stored.
+ */
+async function wake(deps: ConsumerDeps): Promise<void> {
+  try {
+    await deps.notify();
+  } catch (cause) {
+    logError("could not wake the notify consumer", { error: errorText(cause) });
   }
 }
 

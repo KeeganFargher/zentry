@@ -178,19 +178,37 @@ export class IssueStore {
     return row === null ? null : toRecord(row);
   }
 
-  /** Changes status and records an activity row for each issue that changed. */
-  async setStatus(change: StatusChange): Promise<void> {
+  /**
+   * Changes status and records an activity row for each issue that changed,
+   * with an outbox row for its workflow email (DESIGN.md §18). The user who
+   * made the change follows the issue from then on, unless they unfollowed
+   * it. Returns how many issues changed.
+   */
+  async setStatus(change: StatusChange): Promise<number> {
     const db = this.#db;
     const ids = JSON.stringify(change.issueIds);
     const changed = `id IN (SELECT value FROM json_each(?1)) AND ${IN_ORGANIZATION} AND status != ?3`;
+    const binds = [ids, change.organizationId, change.status, change.userId, change.now];
 
-    await db.batch([
+    const results = await db.batch([
       db
         .prepare(
           `INSERT INTO activity (group_id, project_id, type, user_id, data, created_at)
            SELECT id, project_id, ?3, ?4, '{}', ?5 FROM groups WHERE ${changed}`,
         )
-        .bind(ids, change.organizationId, change.status, change.userId, change.now),
+        .bind(...binds),
+      db
+        .prepare(
+          `INSERT INTO notify_outbox (kind, organization_id, project_id, group_id, actor_id, data, created_at)
+           SELECT 'status', ?2, project_id, id, ?4, json_object('status', ?3), ?5 FROM groups WHERE ${changed}`,
+        )
+        .bind(...binds),
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO issue_subscriptions (user_id, group_id, active, reason, created_at)
+           SELECT ?4, id, 1, 'status_change', ?5 FROM groups WHERE ${changed}`,
+        )
+        .bind(...binds),
       db
         .prepare(
           `UPDATE groups SET
@@ -202,8 +220,10 @@ export class IssueStore {
              resolved_by = CASE WHEN ?3 = 'resolved' THEN ?4 ELSE NULL END
            WHERE ${changed}`,
         )
-        .bind(ids, change.organizationId, change.status, change.userId, change.now),
+        .bind(...binds),
     ]);
+
+    return results[0]?.meta.changes ?? 0;
   }
 
   /** Records that the user opened the issue now. */

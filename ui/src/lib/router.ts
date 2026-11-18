@@ -10,6 +10,7 @@ export type Route =
   | { name: "projects"; org: string }
   | { name: "settings"; org: string; project: string }
   | { name: "organizationSettings"; org: string }
+  | { name: "notificationSettings"; org: string }
   | { name: "missing" };
 
 const NAVIGATE = "zentry:navigate";
@@ -80,13 +81,21 @@ export function matchRoute(pathname: string): Route {
     return { name: "projects", org };
   }
 
-  if (section === "settings" && rest.length === 0) {
+  return section === "settings" ? settingsRoute(org, rest) : { name: "missing" };
+}
+
+function settingsRoute(org: string, rest: string[]): Route {
+  const [kind, project] = rest;
+
+  if (kind === undefined) {
     return { name: "organizationSettings", org };
   }
 
-  const [kind, project] = rest;
+  if (kind === "notifications" && project === undefined) {
+    return { name: "notificationSettings", org };
+  }
 
-  return section === "settings" && kind === "projects" && project !== undefined
+  return kind === "projects" && project !== undefined
     ? { name: "settings", org, project }
     : { name: "missing" };
 }

@@ -8,6 +8,8 @@ import { EventBlobs } from "@/blobs/events";
 import { SpillStore } from "@/blobs/spill";
 import { handleBatch } from "@/consumer/handler";
 import type { ConsumerDeps } from "@/consumer/handler";
+import { runWeeklyReports, sweepOutbox } from "@/cron/notify";
+import type { NotifyCronDeps } from "@/cron/notify";
 import { runRetention } from "@/cron/retention";
 import type { RetentionDeps } from "@/cron/retention";
 import { runSpikeProtection } from "@/cron/spike";
@@ -16,8 +18,12 @@ import { BatchStore } from "@/db/batch";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
+import { MailStore } from "@/db/mail";
+import { NotifyStore } from "@/db/notify";
+import { NotificationSettingsStore } from "@/db/notify-settings";
 import { OrganizationStore } from "@/db/organizations";
 import { ProjectStore } from "@/db/projects";
+import { ReportStore } from "@/db/reports";
 import { RetentionStore } from "@/db/retention";
 import { SpikeStore } from "@/db/spike";
 import { TenancyStore } from "@/db/tenancy";
@@ -27,8 +33,11 @@ import { handleIngest, matchIngestRoute } from "@/ingest/handler";
 import type { IngestDeps } from "@/ingest/handler";
 import { rejected } from "@/ingest/http";
 import { UsageCache } from "@/ingest/limits";
+import type { MailConfig, NotifyDeps } from "@/notify/deps";
+import { handleNotifyBatch } from "@/notify/handler";
+import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "@/notify/unsubscribe";
 import { errorText, logError } from "@/shared/log";
-import type { QueueMessage } from "@/shared/types";
+import type { NotifyMessage, QueueMessage } from "@/shared/types";
 
 // Per-isolate caches, shared by every request the isolate serves.
 let keyCache: KeyCache | undefined;
@@ -59,6 +68,86 @@ function ingestDeps(env: Env): IngestDeps {
   };
 }
 
+const EVENTS_QUEUE = "zentry-events";
+const NOTIFY_QUEUE = "zentry-notify";
+
+/** Wakes the notify consumer to drain the outbox. */
+async function wakeNotify(env: Env): Promise<void> {
+  await env.NOTIFY_Q.send({ kind: "drain" } satisfies NotifyMessage);
+}
+
+/**
+ * A required secret that was never set arrives as undefined at runtime,
+ * whatever the generated type says; treat it as empty.
+ */
+function signingKey(env: Env): string {
+  const secrets: Partial<Pick<Env, "EMAIL_SIGNING_KEY">> = env;
+
+  return secrets.EMAIL_SIGNING_KEY ?? "";
+}
+
+/** Asks for a flush of the project's digest window after `delaySeconds`. */
+async function flushLater(env: Env, projectId: number, delaySeconds: number): Promise<void> {
+  const body: NotifyMessage = { kind: "digest", project_id: projectId };
+
+  await env.NOTIFY_Q.send(body, { delaySeconds });
+}
+
+/**
+ * Null while EMAIL_FROM is empty: notifications are then drained unsent. A
+ * sender without a signing key is a configuration mistake, so it is logged
+ * and treated the same, rather than sending emails with no unsubscribe link.
+ */
+function mailConfig(env: Env): MailConfig | null {
+  if (env.EMAIL_FROM === "") {
+    return null;
+  }
+
+  if (signingKey(env) === "") {
+    logError("EMAIL_FROM is set but EMAIL_SIGNING_KEY is not; sending no email");
+
+    return null;
+  }
+
+  return {
+    from: env.EMAIL_FROM,
+    appUrl: env.APP_URL.replace(/\/+$/, ""),
+    unsubscribeUrl: `https://${env.INGEST_HOST}${UNSUBSCRIBE_PATH}`,
+    signingKey: signingKey(env),
+  };
+}
+
+function notifyDeps(env: Env): NotifyDeps {
+  return {
+    store: new NotifyStore(env.DB),
+    settings: new NotificationSettingsStore(env.DB),
+    mail: new MailStore(env.DB),
+    reports: new ReportStore(env.DB),
+    send: (message) => env.EMAIL.send(message),
+    latestEvent: async (issue) =>
+      issue.lastEventId === null
+        ? null
+        : new EventBlobs(env.BLOBS).summary(issue.project.id, issue.lastEventId),
+    scheduleDigest: (projectId, delaySeconds) => flushLater(env, projectId, delaySeconds),
+    drainAgain: () => wakeNotify(env),
+    config: mailConfig(env),
+    now: () => Date.now(),
+  };
+}
+
+function notifyCronDeps(env: Env): NotifyCronDeps {
+  const store = new NotifyStore(env.DB);
+
+  return {
+    queueWeeklyReports: (range, now) => store.queueWeeklyReports(range, now),
+    outboxSize: () => store.outboxSize(),
+    overdueDigests: (now, grace) => store.overdueDigests(now, grace),
+    scheduleDigest: (projectId) => flushLater(env, projectId, 0),
+    notify: () => wakeNotify(env),
+    now: () => Date.now(),
+  };
+}
+
 function consumerDeps(env: Env): ConsumerDeps {
   const store = new BatchStore(env.DB);
   const blobs = new EventBlobs(env.BLOBS);
@@ -71,6 +160,7 @@ function consumerDeps(env: Env): ConsumerDeps {
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),
+    notify: () => wakeNotify(env),
     maxStoredPerGroupHour: Number(env.MAX_STORED_PER_GROUP_HOUR),
     now: () => Date.now(),
   };
@@ -90,6 +180,9 @@ function apiDeps(env: Env): ApiDeps {
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
     blobs: new EventBlobs(env.BLOBS),
+    notificationSettings: new NotificationSettingsStore(env.DB),
+    notify: () => wakeNotify(env),
+    emailEnabled: mailConfig(env) !== null,
     ingestHost: env.INGEST_HOST,
     now: () => Date.now(),
   };
@@ -104,6 +197,7 @@ function retentionDeps(env: Env): RetentionDeps {
     deleteProjectStatsBefore: (cutoff) => store.deleteProjectStatsBefore(cutoff),
     pruneTags: (keep) => store.pruneTags(keep),
     clearExpiredLimits: (now) => store.clearExpiredLimits(now),
+    deleteEmailSendsBefore: (cutoff) => store.deleteEmailSendsBefore(cutoff),
     retentionDays: Number(env.RETENTION_DAYS),
     now: () => Date.now(),
   };
@@ -121,6 +215,7 @@ function spikeDeps(env: Env): SpikeDeps {
 
 const RETENTION_CRON = "17 3 * * *";
 const SPIKE_CRON = "3 * * * *";
+const WEEKLY_REPORT_CRON = "0 12 * * 6";
 
 async function runCron(cron: string, env: Env): Promise<void> {
   if (cron === RETENTION_CRON) {
@@ -131,12 +226,30 @@ async function runCron(cron: string, env: Env): Promise<void> {
 
   if (cron === SPIKE_CRON) {
     await runSpikeProtection(spikeDeps(env));
+    await sweepOutbox(notifyCronDeps(env));
+
+    return;
+  }
+
+  if (cron === WEEKLY_REPORT_CRON) {
+    await runWeeklyReports(notifyCronDeps(env));
 
     return;
   }
 
   // A cron added to wrangler.jsonc without a handler here is a bug to see, not to skip.
   throw new Error(`no handler for cron "${cron}"`);
+}
+
+type AnyBatch = MessageBatch<QueueMessage | NotifyMessage>;
+
+// Each queue carries one kind of message, sent only by this Worker.
+function isEventBatch(batch: AnyBatch): batch is MessageBatch<QueueMessage> {
+  return batch.queue === EVENTS_QUEUE;
+}
+
+function isNotifyBatch(batch: AnyBatch): batch is MessageBatch<NotifyMessage> {
+  return batch.queue === NOTIFY_QUEUE;
 }
 
 async function serveApi(request: Request, env: Env): Promise<Response> {
@@ -152,6 +265,18 @@ async function serveApi(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
+
+    // On every host, the ingest one included: mail providers POST here without
+    // signing in to Access (DESIGN.md §18.6).
+    if (url.pathname === UNSUBSCRIBE_PATH) {
+      return handleUnsubscribe(request, {
+        store: new NotifyStore(env.DB),
+        settings: new NotificationSettingsStore(env.DB),
+        signingKey: signingKey(env),
+        now: () => Date.now(),
+      });
+    }
+
     const ingestRoute = matchIngestRoute(url);
 
     if (ingestRoute !== null) {
@@ -167,10 +292,16 @@ export default {
   },
 
   async queue(batch, env): Promise<void> {
-    await handleBatch(batch, consumerDeps(env));
+    if (isEventBatch(batch)) {
+      await handleBatch(batch, consumerDeps(env));
+    } else if (isNotifyBatch(batch)) {
+      await handleNotifyBatch(batch, notifyDeps(env));
+    } else {
+      throw new Error(`no consumer for queue "${batch.queue}"`);
+    }
   },
 
   async scheduled(controller, env): Promise<void> {
     await runCron(controller.cron, env);
   },
-} satisfies ExportedHandler<Env, QueueMessage>;
+} satisfies ExportedHandler<Env, QueueMessage | NotifyMessage>;

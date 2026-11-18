@@ -281,7 +281,7 @@ describe("consumer", () => {
         // A second copy of an event row makes the events insert hit its primary key.
         const [first] = writes.events;
 
-        await store.commit({ ...writes, events: first === undefined ? [] : [first, first] }, now);
+        return store.commit({ ...writes, events: first === undefined ? [] : [first, first] }, now);
       },
     });
 

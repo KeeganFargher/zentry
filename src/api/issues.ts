@@ -12,6 +12,7 @@ import type {
   Pair,
 } from "@/shared/contract";
 import { parseId } from "@/shared/ids";
+import { errorText, logError } from "@/shared/log";
 
 import type { ApiContext, Handler } from "./context";
 import {
@@ -160,13 +161,21 @@ async function changeStatus(
   issueIds: number[],
   status: IssueStatus,
 ): Promise<void> {
-  await context.deps.issues.setStatus({
+  const changed = await context.deps.issues.setStatus({
     organizationId: context.organizationId,
     issueIds,
     status,
     userId: context.user.id,
     now: context.now,
   });
+
+  // The outbox rows are committed; a failure to wake the consumer only delays
+  // the emails until the hourly sweep, so it must not fail the request.
+  if (changed > 0) {
+    await context.deps.notify().catch((cause: unknown) => {
+      logError("could not wake the notify consumer", { error: errorText(cause) });
+    });
+  }
 }
 
 export const updateIssues: Handler = async (context) => {

@@ -29,8 +29,18 @@
     },
   ],
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "zentry-blobs" }],
+  // Notification email through Cloudflare Email Service (DESIGN.md §18). It
+  // sends only once the sender's domain is onboarded; until EMAIL_FROM is set
+  // below, nothing is sent at all.
+  "send_email": [{ "name": "EMAIL" }],
+  // Signs unsubscribe links: `wrangler secret put EMAIL_SIGNING_KEY`, and a
+  // line in .dev.vars for local development.
+  "secrets": { "required": ["EMAIL_SIGNING_KEY"] },
   "queues": {
-    "producers": [{ "binding": "EVENTS_Q", "queue": "zentry-events" }],
+    "producers": [
+      { "binding": "EVENTS_Q", "queue": "zentry-events" },
+      { "binding": "NOTIFY_Q", "queue": "zentry-notify" },
+    ],
     "consumers": [
       {
         "queue": "zentry-events",
@@ -40,14 +50,24 @@
         "max_retries": 5,
         "dead_letter_queue": "zentry-events-dlq",
       },
+      // Notifications (DESIGN.md §18). One batch at a time, so two deliveries
+      // never handle the same outbox row or digest window together.
+      {
+        "queue": "zentry-notify",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_concurrency": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "zentry-notify-dlq",
+      },
     ],
   },
   "ratelimits": [
     { "name": "INGEST_RL", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } },
   ],
-  // The first is the daily retention; the second recomputes spike thresholds
-  // each hour. src/worker.ts tells them apart by the cron string.
-  "triggers": { "crons": ["17 3 * * *", "3 * * * *"] },
+  // Daily retention; the hourly spike thresholds and outbox sweep; the weekly
+  // report on Saturdays. src/worker.ts tells them apart by the cron string.
+  "triggers": { "crons": ["17 3 * * *", "3 * * * *", "0 12 * * 6"] },
   // Without this, `wrangler dev` presents requests as if they came to the
   // first route above, and the Worker would treat everything as ingest-only.
   "dev": { "port": 8787, "host": "localhost:8787", "upstream_protocol": "http" },
@@ -62,6 +82,11 @@
     "ACCESS_AUD": "replace-with-the-access-application-audience-tag",
     "RETENTION_DAYS": "90",
     "MAX_STORED_PER_GROUP_HOUR": "100",
+    // The UI's origin, for links in emails.
+    "APP_URL": "https://zentry.example.com",
+    // The notification sender, such as "Zentry <alerts@zentry.example.com>",
+    // on a domain onboarded to Email Sending. Empty sends nothing.
+    "EMAIL_FROM": "",
     // Local development only: honoured when the request host is localhost.
     "DEV_USER_EMAIL": "",
   },

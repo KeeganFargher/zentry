@@ -90,7 +90,8 @@ about that long; they run in parallel.
 | `src/ingest/` | `POST /api/:project/envelope/` and `/store/` | `shared`, `core`, `db` |
 | `src/consumer/` | Queue consumer | `shared`, `core`, `db`, `blobs` |
 | `src/api/` | Read API under `/api/0/` | `shared`, `db`, `blobs` |
-| `src/cron/` | Daily retention | `shared`, `db`, `blobs` |
+| `src/cron/` | Daily retention, spike thresholds, weekly reports | `shared`, `core`, `db`, `blobs` |
+| `src/notify/` | Notification emails: queue consumer, mailer, unsubscribe page | `shared`, `core`, `db` |
 | `src/worker.ts` | Wires bindings to the handlers | everything |
 | `ui/` | React SPA | `src/shared/contract.ts`, types only |
 | `e2e/` | Playwright tests and the fixture shop | `src/shared/contract.ts`, types only |
@@ -122,6 +123,14 @@ which is git-ignored, and `pnpm deploy` and `pnpm migrate:remote` read that file
    pnpm wrangler queues create zentry-events-dlq
    ```
 
+   ```bash
+   pnpm wrangler queues create zentry-notify
+   ```
+
+   ```bash
+   pnpm wrangler queues create zentry-notify-dlq
+   ```
+
 2. Copy `wrangler.jsonc` to `wrangler.production.jsonc` and set, in the copy,
    the D1 `database_id`, both hostnames under `routes`, and `INGEST_HOST`.
 3. In Cloudflare Zero Trust, add an Access application for the UI hostname
@@ -145,6 +154,28 @@ which is git-ignored, and `pnpm deploy` and `pnpm migrate:remote` read that file
 
 `DEV_USER_EMAIL` is honoured only for requests to `localhost`. Leave it
 empty in `wrangler.jsonc`.
+
+## Email
+
+Zentry emails issue alerts, workflow changes, quota and spike-protection
+warnings and a weekly report, through Cloudflare Email Service (Workers Paid;
+3,000 emails a month included). DESIGN.md §18 has the details. To turn it on:
+
+1. In the dashboard, open Compute > Email Service > Email Sending and onboard
+   the domain you will send from.
+2. In `wrangler.production.jsonc`, set `EMAIL_FROM` (for example
+   `Zentry <alerts@zentry.example.com>`) and `APP_URL` (the UI's origin).
+3. Set the key that signs unsubscribe links:
+
+   ```bash
+   pnpm wrangler secret put EMAIL_SIGNING_KEY -c wrangler.production.jsonc
+   ```
+
+4. Deploy. Each user chooses what they get under Projects > Notifications.
+
+Until `EMAIL_FROM` is set, nothing is sent. Locally, add `EMAIL_SIGNING_KEY`
+and, to see emails, `EMAIL_FROM` to `.dev.vars`: `wrangler dev` simulates the
+binding and writes each email to `.wrangler/tmp/email/`.
 
 ## Spend protection
 

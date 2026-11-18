@@ -7,15 +7,27 @@ import type {
   ApiEventList,
   ApiIssue,
   ApiIssueList,
+  ApiIssueSubscription,
   ApiIssueStats,
   ApiKey,
   ApiMe,
+  ApiNotificationSettings,
   ApiOrganizationLimits,
   ApiProject,
   ApiTag,
   IssueStatus,
   Json,
+  NotificationScope,
+  NotificationType,
 } from "@contract";
+
+export type NotificationChange = {
+  type: NotificationType;
+  scope: NotificationScope;
+  scopeId: number;
+  /** Null removes the row, so the next scope out decides. */
+  value: string | null;
+};
 
 export class ApiFailure extends Error {
   readonly status: number;
@@ -74,6 +86,29 @@ export const api = {
 
   updateLimits: async (org: string, maxEventsPerMonth: number): Promise<ApiOrganizationLimits> =>
     read(await sendJson("PUT", `/organizations/${org}/limits/`, { maxEventsPerMonth })),
+
+  notifications: (org: string): Promise<ApiNotificationSettings> =>
+    get(`/organizations/${org}/notifications/`),
+
+  updateNotification: async (
+    org: string,
+    change: NotificationChange,
+  ): Promise<ApiNotificationSettings> =>
+    read(await sendJson("PUT", `/organizations/${org}/notifications/`, change)),
+
+  subscription: (org: string, issueId: string): Promise<ApiIssueSubscription> =>
+    get(`/organizations/${org}/issues/${issueId}/subscription/`),
+
+  setSubscription: async (
+    org: string,
+    issueId: string,
+    subscribed: boolean,
+  ): Promise<ApiIssueSubscription> =>
+    read(
+      await sendJson("PUT", `/organizations/${org}/issues/${issueId}/subscription/`, {
+        subscribed,
+      }),
+    ),
 
   projects: (org: string): Promise<ApiProject[]> => get(`/organizations/${org}/projects/`),
 

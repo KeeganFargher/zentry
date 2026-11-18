@@ -81,6 +81,12 @@ const BUMP_SHORT_ID = `
       first_event_at = COALESCE(first_event_at, ?2)
   WHERE id = ?1`;
 
+const OUTBOX_NEW_GROUP = `
+  INSERT INTO notify_outbox (kind, organization_id, project_id, group_id, created_at)
+  SELECT 'new_issue', p.organization_id, g.project_id, g.id, ?3
+  FROM groups g JOIN projects p ON p.id = g.project_id
+  WHERE g.project_id = ?1 AND g.primary_hash = ?2`;
+
 const INSERT_GROUPHASH = `
   INSERT INTO grouphashes (project_id, hash, group_id, grouping_config, created_at)
   SELECT ?1, ?2, g.id, ?3, ?4 FROM groups g WHERE g.project_id = ?1 AND g.primary_hash = ?2`;
@@ -92,6 +98,16 @@ const INSERT_REGRESSIONS = `
   FROM json_each(?1) j
   JOIN grouphashes gh ON gh.project_id = j.value->>'p' AND gh.hash = j.value->>'h'
   JOIN groups g ON g.id = gh.group_id
+  WHERE g.status = 'resolved' AND j.value->>'last_received' > COALESCE(g.resolved_at, 0)`;
+
+// E2b. A regression may need an email (DESIGN.md §18). Same condition as E2.
+const OUTBOX_REGRESSIONS = `
+  INSERT INTO notify_outbox (kind, organization_id, project_id, group_id, created_at)
+  SELECT 'regression', p.organization_id, g.project_id, g.id, ?2
+  FROM json_each(?1) j
+  JOIN grouphashes gh ON gh.project_id = j.value->>'p' AND gh.hash = j.value->>'h'
+  JOIN groups g ON g.id = gh.group_id
+  JOIN projects p ON p.id = g.project_id
   WHERE g.status = 'resolved' AND j.value->>'last_received' > COALESCE(g.resolved_at, 0)`;
 
 // E3. Every right-hand side sees the row as it was before the update.
@@ -159,9 +175,31 @@ const UPSERT_PROJECT_STATS = `
   ON CONFLICT(project_id, bucket) DO UPDATE SET
     received = received + excluded.received, stored = stored + excluded.stored`;
 
+// E8a. Spike protection turning on for a project not already refused for it
+// needs an email. Must run before E8, which sets the state it looks for.
+const OUTBOX_SPIKE = `
+  INSERT INTO notify_outbox (kind, organization_id, project_id, data, created_at)
+  SELECT 'spike', p.organization_id, p.id, json_object('until', ?2, 'limit', p.spike_limit_per_hour), ?3
+  FROM projects p
+  WHERE p.id = ?1
+    AND NOT (p.rate_limit_reason IS 'spike_protection' AND p.rate_limited_until > ?3)`;
+
 // E8.
 const SET_RATE_LIMIT = `
   UPDATE projects SET rate_limited_until = ?2, rate_limit_reason = ?3 WHERE id = ?1`;
+
+// E9a. The monthly count crossing 80% or 100% of the cap needs an email. Must
+// run before E9, which moves the count past the threshold.
+const OUTBOX_QUOTA = `
+  INSERT INTO notify_outbox (kind, organization_id, data, created_at)
+  SELECT 'quota', o.id,
+         json_object('percent', t.percent, 'month', j.value->>'m', 'limit', o.max_events_per_month), ?2
+  FROM json_each(?1) j
+  JOIN organizations o ON o.id = j.value->>'o'
+  JOIN (SELECT 80 AS percent UNION ALL SELECT 100) t
+  LEFT JOIN usage_months u ON u.organization_id = o.id AND u.month = j.value->>'m'
+  WHERE COALESCE(u.received, 0) * 100 < t.percent * o.max_events_per_month
+    AND (COALESCE(u.received, 0) + j.value->>'n') * 100 >= t.percent * o.max_events_per_month`;
 
 // E9. The organization's monthly count, for the monthly cap. EXISTS skips an
 // organization deleted while its events were queued, as E7 does for projects.
@@ -170,6 +208,17 @@ const UPSERT_USAGE = `
   SELECT value->>'o', value->>'m', value->>'n' FROM json_each(?1)
   WHERE EXISTS (SELECT 1 FROM organizations WHERE id = value->>'o')
   ON CONFLICT(organization_id, month) DO UPDATE SET received = received + excluded.received`;
+
+/** A statement in the commit, and whether its rows are outbox rows. */
+type Step = { statement: D1PreparedStatement; queues: boolean };
+
+function write(statement: D1PreparedStatement): Step {
+  return { statement, queues: false };
+}
+
+function queue(statement: D1PreparedStatement): Step {
+  return { statement, queues: true };
+}
 
 export class BatchStore {
   readonly #db: D1Database;
@@ -226,47 +275,66 @@ export class BatchStore {
     }));
   }
 
-  /** E1 to E9, as one transaction. */
-  async commit(writes: BatchWrites, now: number): Promise<void> {
+  /**
+   * E1 to E9, as one transaction. Returns how many notifications it queued in
+   * the outbox, so the caller knows whether to wake the notify consumer.
+   */
+  async commit(writes: BatchWrites, now: number): Promise<number> {
     const db = this.#db;
     const aggregates = JSON.stringify(writes.aggregates);
+    const usage = JSON.stringify(writes.usage);
 
-    const statements = [
-      ...writes.newGroups.flatMap((row) => this.#newGroupStatements(row, now)),
-      db.prepare(INSERT_REGRESSIONS).bind(aggregates, now),
-      db.prepare(UPDATE_GROUPS).bind(aggregates),
-      db.prepare(INSERT_EVENTS).bind(JSON.stringify(writes.events)),
-      db.prepare(UPSERT_GROUP_STATS).bind(JSON.stringify(writes.groupStats)),
-      db.prepare(UPSERT_TAGS).bind(JSON.stringify(writes.tags)),
-      db.prepare(UPSERT_PROJECT_STATS).bind(JSON.stringify(writes.projectStats)),
-      ...writes.limits.map((row) => db.prepare(SET_RATE_LIMIT).bind(row.p, row.until, row.reason)),
-      db.prepare(UPSERT_USAGE).bind(JSON.stringify(writes.usage)),
+    const steps: Step[] = [
+      ...writes.newGroups.flatMap((row) => this.#newGroupSteps(row, now)),
+      write(db.prepare(INSERT_REGRESSIONS).bind(aggregates, now)),
+      queue(db.prepare(OUTBOX_REGRESSIONS).bind(aggregates, now)),
+      write(db.prepare(UPDATE_GROUPS).bind(aggregates)),
+      write(db.prepare(INSERT_EVENTS).bind(JSON.stringify(writes.events))),
+      write(db.prepare(UPSERT_GROUP_STATS).bind(JSON.stringify(writes.groupStats))),
+      write(db.prepare(UPSERT_TAGS).bind(JSON.stringify(writes.tags))),
+      write(db.prepare(UPSERT_PROJECT_STATS).bind(JSON.stringify(writes.projectStats))),
+      ...writes.limits.flatMap((row) => [
+        ...(row.reason === "spike_protection"
+          ? [queue(db.prepare(OUTBOX_SPIKE).bind(row.p, row.until, now))]
+          : []),
+        write(db.prepare(SET_RATE_LIMIT).bind(row.p, row.until, row.reason)),
+      ]),
+      queue(db.prepare(OUTBOX_QUOTA).bind(usage, now)),
+      write(db.prepare(UPSERT_USAGE).bind(usage)),
     ];
 
-    await db.batch(statements);
+    const results = await db.batch(steps.map((step) => step.statement));
+
+    return results.reduce(
+      (queued, result, index) => queued + (steps[index]?.queues === true ? result.meta.changes : 0),
+      0,
+    );
   }
 
-  #newGroupStatements(row: NewGroupRow, now: number): D1PreparedStatement[] {
+  #newGroupSteps(row: NewGroupRow, now: number): Step[] {
     const db = this.#db;
 
     return [
-      db
-        .prepare(INSERT_GROUP)
-        .bind(
-          row.p,
-          row.h,
-          row.title,
-          row.culprit,
-          row.level,
-          row.platform,
-          row.metadata,
-          row.first_ts,
-          row.eid,
-          row.release,
-          now,
-        ),
-      db.prepare(BUMP_SHORT_ID).bind(row.p, now),
-      db.prepare(INSERT_GROUPHASH).bind(row.p, row.h, GROUPING_CONFIG, now),
+      write(
+        db
+          .prepare(INSERT_GROUP)
+          .bind(
+            row.p,
+            row.h,
+            row.title,
+            row.culprit,
+            row.level,
+            row.platform,
+            row.metadata,
+            row.first_ts,
+            row.eid,
+            row.release,
+            now,
+          ),
+      ),
+      write(db.prepare(BUMP_SHORT_ID).bind(row.p, now)),
+      write(db.prepare(INSERT_GROUPHASH).bind(row.p, row.h, GROUPING_CONFIG, now)),
+      queue(db.prepare(OUTBOX_NEW_GROUP).bind(row.p, row.h, now)),
     ];
   }
 }

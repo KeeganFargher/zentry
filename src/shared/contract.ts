@@ -214,3 +214,32 @@ export type ApiActivity = {
 };
 
 export type ApiError = { detail: string };
+
+// ── Notifications (DESIGN.md §18) ────────────────────────────────────────
+
+export type NotificationType = "alerts" | "workflow" | "quota" | "spikeProtection" | "reports";
+
+/** `subscribe_only` is for `workflow` alone: only the issues you follow. */
+export type NotificationValue = "always" | "never" | "subscribe_only";
+
+/** The most specific scope wins: project, then organization, then user. */
+export type NotificationScope = "user" | "organization" | "project";
+
+export type ApiNotificationSetting = {
+  type: NotificationType;
+  scope: NotificationScope;
+  scopeId: number;
+  value: NotificationValue;
+};
+
+export type ApiNotificationSettings = {
+  defaults: { [type in NotificationType]: NotificationValue };
+  /** The caller's own rows: user-wide, and for this organization and its projects. */
+  settings: ApiNotificationSetting[];
+  /** The caller's user id: the scope id of a user-wide row. */
+  userId: number;
+  /** False while the deployment has no sender address, so nothing is emailed. */
+  emailEnabled: boolean;
+};
+
+export type ApiIssueSubscription = { subscribed: boolean };

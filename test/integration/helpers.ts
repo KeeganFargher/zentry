@@ -78,6 +78,7 @@ export function consumerDeps(overrides: Partial<ConsumerDeps> = {}): ConsumerDep
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),
+    notify: async () => {},
     maxStoredPerGroupHour: 100,
     now: () => NOW,
     ...overrides,

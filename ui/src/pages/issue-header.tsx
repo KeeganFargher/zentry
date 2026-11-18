@@ -8,8 +8,11 @@ import { Count, LevelBar, Link, Platform, TimeSince } from "~/components/basics"
 import { Icon } from "~/components/icons";
 import { CopyButton, Menu } from "~/components/overlays";
 import { Clipped, Tooltip } from "~/components/tooltip";
+import { api, ApiFailure } from "~/lib/api";
 import { useNow } from "~/lib/clock";
 import { issueMessage, issueTitle, substatus } from "~/lib/issue";
+import { useResource } from "~/lib/resource";
+import { toast } from "~/lib/toast";
 
 type HeaderProps = {
   org: string;
@@ -78,6 +81,49 @@ function ClosedBanner({
   );
 }
 
+/**
+ * Follow or unfollow the issue's workflow emails. Changing an issue's status
+ * follows it, so the key includes the status to reload after one.
+ */
+function FollowButton({ org, issue }: Pick<HeaderProps, "org" | "issue">): JSX.Element | null {
+  const id = String(issue.id);
+
+  const subscription = useResource(`subscription:${org}:${id}:${issue.status}`, () =>
+    api.subscription(org, id),
+  );
+
+  if (subscription.data === null) {
+    return null;
+  }
+
+  const { subscribed } = subscription.data;
+
+  const toggle = async (): Promise<void> => {
+    try {
+      await api.setSubscription(org, id, !subscribed);
+      toast(
+        subscribed ? "Unfollowed: no more workflow emails for this issue" : "Following this issue",
+      );
+      subscription.reload();
+    } catch (cause) {
+      toast(cause instanceof ApiFailure ? cause.message : "Could not change the subscription");
+    }
+  };
+
+  return (
+    <Tooltip content="Workflow emails when someone resolves, archives or reopens this issue.">
+      <button
+        type="button"
+        className="follow"
+        aria-pressed={subscribed}
+        onClick={() => void toggle()}
+      >
+        {subscribed ? "Unfollow" : "Follow"}
+      </button>
+    </Tooltip>
+  );
+}
+
 function Breadcrumb({ org, issue }: Pick<HeaderProps, "org" | "issue">): JSX.Element {
   return (
     <header className="topbar">
@@ -89,6 +135,7 @@ function Breadcrumb({ org, issue }: Pick<HeaderProps, "org" | "issue">): JSX.Ele
       </Tooltip>
       <CopyButton text={issue.shortId} message="Copied the short ID" label="Copy short ID" />
       <span className="spacer" />
+      <FollowButton org={org} issue={issue} />
       <Link to={`/${org}/issues/?project=${issue.projectId}`}>{issue.projectSlug}</Link>
     </header>
   );
