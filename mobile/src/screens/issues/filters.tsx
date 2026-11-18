@@ -28,9 +28,9 @@ export type Filters = {
   query: string;
 };
 
-type Choice<T> = { value: T; label: string };
+export type Choice<T> = { value: T; label: string };
 
-const LEVELS: Choice<Level | null>[] = [
+export const LEVELS: Choice<Level | null>[] = [
   { value: null, label: "All Levels" },
   { value: "fatal", label: "Fatal" },
   { value: "error", label: "Error" },
@@ -47,7 +47,7 @@ export const DEFAULT_FILTERS: Filters = {
   query: "",
 };
 
-const STATUSES: Choice<StatusFilter>[] = [
+export const STATUSES: Choice<StatusFilter>[] = [
   { value: "unresolved", label: "Unresolved" },
   { value: "resolved", label: "Resolved" },
   { value: "ignored", label: "Archived" },

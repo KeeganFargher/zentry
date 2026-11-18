@@ -1,14 +1,17 @@
 // The issue list, as Sentry's issue stream: the page header with search and
 // filters, a table header that holds the sort, then the rows, more as you
-// scroll. Pull down to refresh. A long-press starts selecting, for resolving
-// or archiving many at once.
+// scroll. The header floats over the list and collapses into a slim bar as
+// it scrolls down (collapse.ts), coming back on the way up. Pull down to
+// refresh. A long-press starts selecting, for resolving or archiving many.
 
-import type { ApiIssue, IssueStatus } from "@contract";
+import type { ApiIssue, ApiProject, IssueStatus } from "@contract";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
-import { FlatList, RefreshControl, View } from "react-native";
+import { RefreshControl, View } from "react-native";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Notice } from "~/components/basics";
@@ -21,9 +24,13 @@ import { usePalette } from "~/lib/preferences";
 import { useApi } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
+import { BAR_HEIGHT, CollapsedBar } from "./bar";
+import { fullOpacity, heightOf, useCollapsingHeader } from "./collapse";
+import type { CollapsingHeader } from "./collapse";
 import { DEFAULT_FILTERS, FilterBar, filterQuery, ListHeader } from "./filters";
 import type { Filters } from "./filters";
 import { IssueRow } from "./row";
+import { filterSummary } from "./summary";
 
 /** The first page has no cursor. */
 const FIRST_PAGE: string | null = null;
@@ -119,7 +126,15 @@ function useSelection(): Selection {
 
 type Pages = ReturnType<typeof useIssuePages>;
 
-function IssueFeed({ pages, selection }: { pages: Pages; selection: Selection }): JSX.Element {
+type FeedProps = {
+  pages: Pages;
+  selection: Selection;
+  /** The floating header's height, which the first row starts below. */
+  top: number;
+  onScroll: CollapsingHeader["onScroll"];
+};
+
+function IssueFeed({ pages, selection, top, onScroll }: FeedProps): JSX.Element {
   const router = useRouter();
   const setStatus = useSetStatus();
   const now = useNow();
@@ -127,8 +142,11 @@ function IssueFeed({ pages, selection }: { pages: Pages; selection: Selection })
   const selecting = selection.selected.size > 0;
 
   return (
-    <FlatList
+    <Animated.FlatList
       data={issues}
+      onScroll={onScroll}
+      scrollEventThrottle={16}
+      contentContainerStyle={{ paddingTop: top }}
       keyExtractor={(issue) => String(issue.id)}
       renderItem={({ item }) => (
         <IssueRow
@@ -148,7 +166,12 @@ function IssueFeed({ pages, selection }: { pages: Pages; selection: Selection })
       }}
       onEndReachedThreshold={0.5}
       refreshControl={
-        <RefreshControl refreshing={pages.isRefetching} onRefresh={() => void pages.refetch()} />
+        <RefreshControl
+          refreshing={pages.isRefetching}
+          onRefresh={() => void pages.refetch()}
+          // Below the header, not hidden behind it.
+          progressViewOffset={top}
+        />
       }
       ListEmptyComponent={
         <Notice
@@ -163,10 +186,65 @@ function IssueFeed({ pages, selection }: { pages: Pages; selection: Selection })
   );
 }
 
+type FloatingHeaderProps = {
+  header: CollapsingHeader;
+  filters: Filters;
+  onFilters: (filters: Filters) => void;
+  projects: UseQueryResult<ApiProject[]>;
+  /** The whole header's height, which the list's first row starts below. */
+  onHeight: (height: number) => void;
+};
+
+/** Title, search, filters and the table header, floating over the list. */
+function FloatingHeader(props: FloatingHeaderProps): JSX.Element {
+  const { header, filters, onFilters, projects, onHeight } = props;
+  const organization = useOrganization();
+  const palette = usePalette();
+  const insets = useSafeAreaInsets();
+  const { hidden, range } = header;
+  const slide = useAnimatedStyle(() => ({ transform: [{ translateY: -hidden.get() }] }));
+  const fade = useAnimatedStyle(() => ({ opacity: fullOpacity(hidden.get(), range.get()) }));
+
+  return (
+    <Animated.View
+      onLayout={(event) => onHeight(heightOf(event))}
+      style={[
+        { position: "absolute", top: 0, left: 0, right: 0, backgroundColor: palette.bg },
+        slide,
+      ]}
+    >
+      <Animated.View
+        // What collapses: all of this but the slim bar's height, so the
+        // table header ends up just under the bar. Only the contents fade;
+        // the background above stays opaque, so rows never show through.
+        onLayout={(event) => header.measure(heightOf(event) - insets.top - BAR_HEIGHT)}
+        style={[{ paddingTop: insets.top + SPACE.lg }, fade]}
+      >
+        <FilterBar
+          organization={organization.name}
+          filters={filters}
+          projects={projects.data ?? []}
+          onChange={onFilters}
+        />
+        {projects.error !== null && (
+          // Without the projects, the project dropdown can only offer "All Projects".
+          <Text
+            tone="danger"
+            size={13}
+            style={{ paddingHorizontal: SPACE.lg, paddingBottom: SPACE.sm }}
+          >
+            Could not load projects: {projects.error.message}
+          </Text>
+        )}
+      </Animated.View>
+      <ListHeader sort={filters.sort} onSort={(sort) => onFilters({ ...filters, sort })} />
+    </Animated.View>
+  );
+}
+
 function IssueList(): JSX.Element {
   const api = useApi();
   const org = useOrg();
-  const organization = useOrganization();
   const palette = usePalette();
   const insets = useSafeAreaInsets();
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
@@ -174,29 +252,43 @@ function IssueList(): JSX.Element {
   const projects = useQuery({ queryKey: ["projects", org], queryFn: () => api.projects(org) });
   const setStatus = useSetStatus();
   const selection = useSelection();
+  const header = useCollapsingHeader();
+  const [headerHeight, setHeaderHeight] = useState(0);
 
   useProjectParam(setFilters);
 
   return (
-    <View style={{ flex: 1, backgroundColor: palette.bg, paddingTop: insets.top + SPACE.lg }}>
-      <FilterBar
-        organization={organization.name}
-        filters={filters}
-        projects={projects.data ?? []}
-        onChange={setFilters}
+    <View style={{ flex: 1, backgroundColor: palette.bg }}>
+      <IssueFeed
+        pages={pages}
+        selection={selection}
+        top={headerHeight}
+        onScroll={header.onScroll}
       />
-      {projects.error !== null && (
-        // Without the projects, the project dropdown can only offer "All Projects".
-        <Text
-          tone="danger"
-          size={13}
-          style={{ paddingHorizontal: SPACE.lg, paddingBottom: SPACE.sm }}
-        >
-          Could not load projects: {projects.error.message}
-        </Text>
-      )}
-      <ListHeader sort={filters.sort} onSort={(sort) => setFilters({ ...filters, sort })} />
-      <IssueFeed pages={pages} selection={selection} />
+      <FloatingHeader
+        header={header}
+        filters={filters}
+        onFilters={setFilters}
+        projects={projects}
+        onHeight={setHeaderHeight}
+      />
+      {/* Covers the status bar's area, so a half-hidden header slides under it. */}
+      <View
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: insets.top,
+          backgroundColor: palette.bg,
+        }}
+      />
+      <CollapsedBar
+        top={insets.top}
+        summary={filterSummary(filters, projects.data ?? [])}
+        onOpen={header.open}
+        header={header}
+      />
       {selection.selected.size > 0 && (
         <SelectionBar
           count={selection.selected.size}
