@@ -1,0 +1,9 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "zentry-uptime-probe",
+  "main": "../src/uptime-probe.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": { "UPTIME_ORIGINS": "", "FIXTURE_ORIGIN": "http://localhost:5199" },
+}

@@ -7,6 +7,7 @@ export type Route =
   | { name: "issues"; org: string }
   | { name: "issue"; org: string; issueId: string; eventId: string | null }
   | { name: "events"; org: string; issueId: string }
+  | { name: "monitors"; org: string; id: string | undefined }
   | { name: "projects"; org: string }
   | { name: "settings"; org: string; project: string }
   | { name: "organizationSettings"; org: string }
@@ -76,6 +77,12 @@ export function matchRoute(pathname: string): Route {
 
   if (section === "issues") {
     return issueRoute(org, rest);
+  }
+
+  if (section === "monitors") {
+    const [id] = rest;
+
+    return { name: "monitors", org, id };
   }
 
   if (section === "projects" && rest.length === 0) {

@@ -209,6 +209,21 @@ const UPSERT_USAGE = `
   WHERE EXISTS (SELECT 1 FROM organizations WHERE id = value->>'o')
   ON CONFLICT(organization_id, month) DO UPDATE SET received = received + excluded.received`;
 
+// Metric receipts cover events whose bodies were dropped by the flood sampler.
+const INSERT_METRIC_EVENTS = `
+  INSERT INTO metric_receipts (project_id, event_id, minute, environment)
+  SELECT value->>'project', value->>'eventId', (value->>'received' / 60000) * 60000,
+    CASE WHEN length(value->>'environment') <= 64 THEN value->>'environment' ELSE '' END
+  FROM json_each(?1)
+  WHERE value->>'level' IN ('error', 'fatal')
+    AND value->>'received' >= ?2 - 86400000
+    AND EXISTS (
+      SELECT 1 FROM monitors
+      WHERE project_id = value->>'project' AND type = 'metric' AND status != 'archived'
+        AND created_at <= value->>'received'
+    )
+  ON CONFLICT(project_id, event_id) DO NOTHING`;
+
 /** A statement in the commit, and whether its rows are outbox rows. */
 type Step = { statement: D1PreparedStatement; queues: boolean };
 
@@ -290,6 +305,7 @@ export class BatchStore {
       queue(db.prepare(OUTBOX_REGRESSIONS).bind(aggregates, now)),
       write(db.prepare(UPDATE_GROUPS).bind(aggregates)),
       write(db.prepare(INSERT_EVENTS).bind(JSON.stringify(writes.events))),
+      write(db.prepare(INSERT_METRIC_EVENTS).bind(JSON.stringify(writes.metricEvents), now)),
       write(db.prepare(UPSERT_GROUP_STATS).bind(JSON.stringify(writes.groupStats))),
       write(db.prepare(UPSERT_TAGS).bind(JSON.stringify(writes.tags))),
       write(db.prepare(UPSERT_PROJECT_STATS).bind(JSON.stringify(writes.projectStats))),

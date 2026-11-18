@@ -166,6 +166,10 @@ export default defineConfig({
       files: [
         "src/shared/json.ts",
         "src/shared/schema.ts",
+        "src/cron/uptime.ts",
+        "src/db/monitors.ts",
+        "src/uptime-probe.ts",
+        "src/shared/monitors.ts",
         "src/core/wire.ts",
         "src/core/envelope.ts",
         "src/ingest/handler.ts",
@@ -211,11 +215,13 @@ export default defineConfig({
     {
       // Workers, Vite, Vitest, Playwright and oxlint require a default export in these files.
       files: [
+        "src/uptime-probe.ts",
         "src/worker.ts",
         "ui/vite.config.ts",
         "vitest.config.ts",
         "oxlint.config.ts",
         "e2e/playwright.config.ts",
+        "e2e/shop/vite.config.ts",
         "tools/oxlint/zentry/index.ts",
         // Expo Router takes each screen as its file's default export.
         "mobile/src/app/**",

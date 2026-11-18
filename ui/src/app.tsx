@@ -16,6 +16,7 @@ import { IssueDetail } from "~/pages/issue-detail";
 import { IssueEvents } from "~/pages/issue-events";
 import { IssueList } from "~/pages/issue-list";
 import { MobileSettings } from "~/pages/mobile-settings";
+import { MonitorsRoute } from "~/pages/monitors";
 import { NotificationSettings } from "~/pages/notification-settings";
 import { OrganizationSettings } from "~/pages/organization-settings";
 import { ProjectSettings } from "~/pages/project-settings";
@@ -33,6 +34,10 @@ function Page({ route }: { route: Route }): JSX.Element {
 
     case "events": {
       return <IssueEvents org={route.org} issueId={route.issueId} />;
+    }
+
+    case "monitors": {
+      return <MonitorsRoute route={route} />;
     }
 
     case "projects": {

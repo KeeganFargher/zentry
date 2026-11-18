@@ -3,11 +3,13 @@
 
 import { AccessVerifier, fetchAccessKeys } from "@/api/access";
 import type { ApiDeps } from "@/api/context";
-import { handleApi, Sessions } from "@/api/router";
+import { handleApi, Sessions, serveAppApi } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
 import { SpillStore } from "@/blobs/spill";
 import { handleBatch } from "@/consumer/handler";
 import type { ConsumerDeps } from "@/consumer/handler";
+import { nextCronOccurrence } from "@/core/cron-schedule";
+import { evaluateMonitors } from "@/cron/monitors";
 import { runWeeklyReports, sweepOutbox } from "@/cron/notify";
 import type { NotifyCronDeps } from "@/cron/notify";
 import { checkPushReceipts } from "@/cron/push-receipts";
@@ -16,12 +18,15 @@ import { runRetention } from "@/cron/retention";
 import type { RetentionDeps } from "@/cron/retention";
 import { runSpikeProtection } from "@/cron/spike";
 import type { SpikeDeps } from "@/cron/spike";
+import { handleUptimeBatch, requestProbe } from "@/cron/uptime";
 import { BatchStore } from "@/db/batch";
+import { CronMonitorStore } from "@/db/cron-monitors";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
 import { MailStore } from "@/db/mail";
+import { MonitorStore } from "@/db/monitors";
 import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
 import { OrganizationStore } from "@/db/organizations";
@@ -31,6 +36,7 @@ import { ReportStore } from "@/db/reports";
 import { RetentionStore } from "@/db/retention";
 import { SpikeStore } from "@/db/spike";
 import { TenancyStore } from "@/db/tenancy";
+import { UptimeMonitorStore } from "@/db/uptime-monitors";
 import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
 import { handleIngest, matchIngestRoute } from "@/ingest/handler";
@@ -42,6 +48,7 @@ import { handleNotifyBatch } from "@/notify/handler";
 import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "@/notify/unsubscribe";
 import { ExpoPush } from "@/push/expo";
 import { errorText, logError } from "@/shared/log";
+import type { UptimeJob } from "@/shared/monitors";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
 
 // Per-isolate caches, shared by every request the isolate serves.
@@ -65,6 +72,9 @@ function ingestDeps(env: Env): IngestDeps {
   );
 
   return {
+    allowCheckIn: async (publicKey) => (await env.CHECK_IN_RL.limit({ key: publicKey })).success,
+    recordCheckIn: (projectId, checkIn, now) =>
+      new CronMonitorStore(env.DB, nextCronOccurrence).record(projectId, checkIn, now),
     keys: keyCache,
     usage: usageCache,
     allow: async (publicKey) => (await env.INGEST_RL.limit({ key: publicKey })).success,
@@ -189,6 +199,7 @@ function apiDeps(env: Env): ApiDeps {
     tenancy: new TenancyStore(env.DB),
     organizations: new OrganizationStore(env.DB),
     projects: new ProjectStore(env.DB),
+    monitors: new MonitorStore(env.DB),
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
     blobs: new EventBlobs(env.BLOBS),
@@ -196,6 +207,9 @@ function apiDeps(env: Env): ApiDeps {
     devices: new DeviceStore(env.DB),
     notify: () => wakeNotify(env),
     emailEnabled: mailConfig(env) !== null,
+    uptimeOrigins: env.UPTIME_ORIGINS,
+    allowMonitorPreview: async (key) => (await env.MONITOR_PREVIEW_RL.limit({ key })).success,
+    previewUptime: (config) => requestProbe(env.UPTIME_PROBE, config),
     ingestHost: env.INGEST_HOST,
     mobileApiUrl: env.MOBILE_API_URL.replace(/\/+$/, ""),
     now: () => Date.now(),
@@ -281,7 +295,7 @@ async function runCron(cron: string, env: Env): Promise<void> {
   throw new Error(`no handler for cron "${cron}"`);
 }
 
-type AnyBatch = MessageBatch<QueueMessage | NotifyMessage>;
+type AnyBatch = MessageBatch<QueueMessage | NotifyMessage | UptimeJob>;
 
 // Each queue carries one kind of message, sent only by this Worker.
 function isEventBatch(batch: AnyBatch): batch is MessageBatch<QueueMessage> {
@@ -306,21 +320,6 @@ async function serveApi(request: Request, env: Env): Promise<Response> {
  * The API on the public ingest host, limited per client address: Access does
  * not guard it, and every request costs a D1 read (DESIGN.md §19.1).
  */
-async function serveAppApi(request: Request, env: Env): Promise<Response> {
-  const client = request.headers.get("cf-connecting-ip");
-
-  // Cloudflare sets the header on every request it routes to the Worker.
-  if (client === null) {
-    throw new Error("request without cf-connecting-ip on the ingest host");
-  }
-
-  const { success } = await env.APP_API_RL.limit({ key: client });
-
-  return success
-    ? serveApi(request, env)
-    : Response.json({ detail: "too many requests" }, { status: 429 });
-}
-
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -348,7 +347,7 @@ export default {
     // could not reach the API there.
     if (url.hostname === env.INGEST_HOST) {
       return url.pathname.startsWith("/api/0/")
-        ? serveAppApi(request, env)
+        ? serveAppApi(request, env.APP_API_RL, () => serveApi(request, env))
         : rejected(404, "not found");
     }
 
@@ -358,6 +357,8 @@ export default {
   async queue(batch, env): Promise<void> {
     if (isEventBatch(batch)) {
       await handleBatch(batch, consumerDeps(env));
+    } else if (batch.queue === "zentry-uptime") {
+      await handleUptimeBatch(batch, new UptimeMonitorStore(env.DB), env.UPTIME_PROBE);
     } else if (isNotifyBatch(batch)) {
       await handleNotifyBatch(batch, notifyDeps(env));
     } else {
@@ -366,6 +367,16 @@ export default {
   },
 
   async scheduled(controller, env): Promise<void> {
+    if (controller.cron === "* * * * *") {
+      return evaluateMonitors(controller.scheduledTime, {
+        cron: new CronMonitorStore(env.DB, nextCronOccurrence),
+        metric: new MonitorStore(env.DB),
+        uptime: new UptimeMonitorStore(env.DB),
+        queue: env.UPTIME_Q,
+        notify: notifyCronDeps(env),
+      });
+    }
+
     await runCron(controller.cron, env);
   },
-} satisfies ExportedHandler<Env, QueueMessage | NotifyMessage>;
+} satisfies ExportedHandler<Env, QueueMessage | NotifyMessage | UptimeJob>;

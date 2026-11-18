@@ -8,7 +8,7 @@
     "build": "vite build ui",
     "check": "pnpm fmt:check && pnpm lint && pnpm typecheck && pnpm test",
     "deploy": "pnpm build && wrangler deploy -c wrangler.production.jsonc",
-    "dev": "wrangler dev",
+    "dev": "wrangler dev -c wrangler.jsonc -c wrangler.probe.jsonc",
     "dev:ui": "vite ui",
     "e2e": "pnpm build && playwright test -c e2e",
     "fmt": "oxfmt",
@@ -22,6 +22,7 @@
     "types": "wrangler types --strict-vars=false"
   },
   "dependencies": {
+    "cron-parser": "5.10.6",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "uqr": "0.1.3",

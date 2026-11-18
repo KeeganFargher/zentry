@@ -1,3 +1,4 @@
+import type { ApiMonitor } from "./monitors";
 // Types shared between the Worker and the UI. This file has no imports so
 // that the UI can depend on it without pulling in Worker code.
 
@@ -160,6 +161,7 @@ export type ApiKey = {
 };
 
 export type ApiIssue = {
+  monitorId?: string;
   id: number;
   shortId: string;
   projectId: number;
@@ -180,6 +182,30 @@ export type ApiIssue = {
   /** Whether the signed-in user has opened the issue since it last became active. */
   hasSeen: boolean;
   stats: StatPoint[];
+};
+
+export type { ApiMonitor, NewMonitor } from "./monitors";
+
+export type MonitorObservation = {
+  id: number;
+  time: number;
+  health: ApiMonitor["health"];
+  evidence: Json;
+};
+
+export type MonitorPreview =
+  | { type: "metric"; count: number; windowEnd: number }
+  | { type: "cron"; occurrences: number[] }
+  | {
+      type: "uptime";
+      outcome: "ok" | "failed" | "unknown";
+      httpStatus?: number | undefined;
+      durationMs?: number | undefined;
+    };
+
+export type MonitorDetail = {
+  monitor: ApiMonitor;
+  observations: MonitorObservation[];
 };
 
 export type ApiIssueList = { issues: ApiIssue[]; nextCursor: string | null };

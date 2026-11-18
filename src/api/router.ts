@@ -30,6 +30,14 @@ import {
   updateIssues,
 } from "./issues";
 import {
+  createMonitor,
+  editMonitor,
+  getMonitor,
+  listMonitors,
+  previewMonitor,
+  setMonitorStatus,
+} from "./monitors";
+import {
   getIssueSubscription,
   getNotificationSettings,
   updateIssueSubscription,
@@ -76,6 +84,12 @@ function app<H>(closed: Route<H>): Route<H> {
 const ROUTES: Route<Handler>[] = [
   app(route("GET", `/organizations/${ORG}/projects`, listProjects)),
   route("POST", `/organizations/${ORG}/projects`, createProject),
+  route("POST", `/organizations/${ORG}/monitors`, createMonitor),
+  route("POST", `/organizations/${ORG}/monitor-previews`, previewMonitor),
+  route("GET", `/organizations/${ORG}/monitors`, listMonitors),
+  route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, getMonitor),
+  route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, editMonitor),
+  route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)/status`, setMonitorStatus),
   app(route("GET", `/projects/${ORG}/${SLUG}`, getProject)),
   route("PUT", `/projects/${ORG}/${SLUG}`, updateProject),
   route("DELETE", `/projects/${ORG}/${SLUG}`, deleteProject),
@@ -287,4 +301,20 @@ export async function handleApi(
 
     throw cause;
   }
+}
+
+export async function serveAppApi(
+  request: Request,
+  limiter: RateLimit,
+  serve: () => Promise<Response>,
+): Promise<Response> {
+  const client = request.headers.get("cf-connecting-ip");
+
+  if (client === null) {
+    throw new Error("request without cf-connecting-ip on the ingest host");
+  }
+
+  const { success } = await limiter.limit({ key: client });
+
+  return success ? serve() : Response.json({ detail: "too many requests" }, { status: 429 });
 }

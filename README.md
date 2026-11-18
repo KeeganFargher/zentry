@@ -102,6 +102,47 @@ about that long; they run in parallel.
 The linter enforces the last column. To change it, change the table in
 DESIGN.md §16.3 and `oxlint.config.ts` together.
 
+## Monitors
+
+Under **Projects → Monitors**, choose a project and create a Metric, Cron, or
+Uptime monitor. Owners can edit settings, pause execution and archive monitors.
+A confirmed failure opens an issue. Select the notification option to route
+failures through the project's existing notification preferences. A recovery
+resolves the issue and can notify its workflow subscribers. Use **Preview**
+to inspect a draft without changing the monitor's health.
+
+- **Metric** counts processed error and fatal events in receive-time windows.
+  Configure an environment, a breach threshold and an optional recovery
+  threshold. Rollups start when the project creates its first metric monitor.
+  Evaluations wait two minutes for ingestion. Heavy queue lag can delay coverage.
+- **Cron** accepts Sentry SDK terminal check-ins and start/finish pairs. Create
+  the monitor before sending a check-in and match its configured slug and
+  environment. A valid first check-in arms missing-run detection. Crontab
+  schedules use the configured IANA timezone. Intervals use elapsed time.
+- **Uptime** sends GET or HEAD to operator-approved HTTPS origins from a
+  separate Worker. Checks use a timeout, no redirects and HTTP 2xx for success.
+  Failure and recovery streaks count scheduled observations.
+
+Monitor history retains up to 14 days, with the latest 50 observations on the
+detail page. The initial implementation uses Zentry's existing issue alert
+configuration. Listed rollout milestones and follow-on monitor capabilities
+are in the [monitoring plan](docs/sentry-monitoring-workers-plan.md).
+
+### Deploy monitoring on Workers
+
+1. Create the `zentry-uptime` and `zentry-uptime-dlq` Queues.
+2. Prepare a private deployment configuration from `wrangler.probe.jsonc`.
+   Set `UPTIME_ORIGINS` to a comma-separated list of exact HTTPS origins you
+   operate and permit for probing. Keep `FIXTURE_ORIGIN` empty. Deploy this
+   Worker first with `pnpm wrangler deploy -c <probe-config>`.
+3. Update the main production config with the binding, queues, limiters,
+   minute trigger and the same approved origins from `wrangler.jsonc`.
+   Then follow the main migration and deployment steps below.
+
+`pnpm dev` starts both Workers locally. Playwright starts an isolated
+database, the application and probe Workers, and a local HTTP fixture server.
+Run the monitor tests with `pnpm e2e monitors.spec.ts`.
+
 ## Deploy
 
 The steps, in order. `wrangler.jsonc` holds placeholders so that nothing about

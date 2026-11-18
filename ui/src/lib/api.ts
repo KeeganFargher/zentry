@@ -11,6 +11,7 @@ import type {
   ApiIssueSubscription,
   ApiIssueStats,
   ApiKey,
+  ApiMonitor,
   ApiMe,
   ApiNotificationSettings,
   ApiOrganizationLimits,
@@ -19,6 +20,8 @@ import type {
   ApiTag,
   IssueStatus,
   Json,
+  MonitorDetail,
+  MonitorPreview,
   NotificationProvider,
   NotificationScope,
   NotificationType,
@@ -122,6 +125,31 @@ export const api = {
       }),
     ),
 
+  previewMonitor: async (org: string, body: Json): Promise<MonitorPreview> =>
+    read(await sendJson("POST", `/organizations/${org}/monitor-previews/`, body)),
+  monitors: (org: string): Promise<ApiMonitor[]> => get(`/organizations/${org}/monitors/`),
+  monitor: (org: string, id: string): Promise<MonitorDetail> =>
+    get(`/organizations/${org}/monitors/${id}/`),
+  createMonitor: async (org: string, body: Json): Promise<ApiMonitor> =>
+    read(await sendJson("POST", `/organizations/${org}/monitors/`, body)),
+  editMonitor: async (org: string, monitor: ApiMonitor, body: Json): Promise<ApiMonitor> =>
+    read(
+      await sendJson("PUT", `/organizations/${org}/monitors/${monitor.id}/`, {
+        version: monitor.version,
+        monitor: body,
+      }),
+    ),
+  setMonitorStatus: async (
+    org: string,
+    monitor: ApiMonitor,
+    status: ApiMonitor["status"],
+  ): Promise<ApiMonitor> =>
+    read(
+      await sendJson("PUT", `/organizations/${org}/monitors/${monitor.id}/status/`, {
+        version: monitor.version,
+        status,
+      }),
+    ),
   projects: (org: string): Promise<ApiProject[]> => get(`/organizations/${org}/projects/`),
 
   project: (org: string, slug: string): Promise<ApiProject> => get(`/projects/${org}/${slug}/`),

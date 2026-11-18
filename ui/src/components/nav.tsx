@@ -125,6 +125,7 @@ function ProjectLinks({ org, projects }: Omit<SubNavProps, "section">): JSX.Elem
   return (
     <>
       <div className="subnav-group">
+        <SubLink to={`/${org}/monitors/`} label="Monitors" />
         <SubLink to={`/${org}/projects/`} label="All projects" />
       </div>
       <div className="subnav-group">

@@ -11,6 +11,8 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          // The probe Worker itself is exercised by the multi-Worker Playwright suite.
+          serviceBindings: { UPTIME_PROBE: () => new Response(null, { status: 503 }) },
           bindings: { TEST_MIGRATIONS: migrations, EMAIL_SIGNING_KEY: "test-signing-key" },
         },
       }),

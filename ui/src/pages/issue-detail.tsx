@@ -4,7 +4,7 @@ import type { ApiActivity, ApiEventDetail, ApiIssue, IssueStatus } from "@contra
 import { useEffect } from "react";
 import type { JSX } from "react";
 
-import { Link, Notice, Skeleton } from "~/components/basics";
+import { Link, Notice } from "~/components/basics";
 import { useConfirm } from "~/components/overlays";
 import { api } from "~/lib/api";
 import { issueTitle } from "~/lib/issue";
@@ -12,6 +12,7 @@ import { useResource } from "~/lib/resource";
 import type { Resource } from "~/lib/resource";
 import { navigate } from "~/lib/router";
 import { toast } from "~/lib/toast";
+import { MonitorsRoute } from "~/pages/monitors";
 
 import { EventId, EventNav, EventSummary } from "./event-nav";
 import { EventSections, sectionList } from "./event-sections";
@@ -149,11 +150,11 @@ export function IssueDetail({ org, issueId, eventId }: DetailProps): JSX.Element
   );
 
   if (issue.data === null) {
-    return issue.error === null ? (
-      <Skeleton lines={6} height={18} />
-    ) : (
-      <Notice loading={false} error={issue.error} onRetry={issue.reload} />
-    );
+    return <Notice loading={issue.loading} error={issue.error} onRetry={issue.reload} />;
+  }
+
+  if (issue.data.monitorId !== undefined) {
+    return <MonitorsRoute route={{ org, id: issue.data.monitorId }} />;
   }
 
   return (

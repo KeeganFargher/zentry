@@ -40,7 +40,7 @@ export type LimitCause = {
  * sessions and transactions, which Zentry drops anyway but which still cost a
  * Worker request each.
  */
-export function rateLimited(seconds: number, cause: LimitCause): Response {
+export function rateLimited(seconds: number, cause: LimitCause, category = ""): Response {
   const wait = String(Math.max(1, Math.ceil(seconds)));
 
   return Response.json(
@@ -50,7 +50,7 @@ export function rateLimited(seconds: number, cause: LimitCause): Response {
       headers: {
         ...CORS_HEADERS,
         "Retry-After": wait,
-        "X-Sentry-Rate-Limits": `${wait}::${cause.scope}:${cause.reason}`,
+        "X-Sentry-Rate-Limits": `${wait}:${category}:${cause.scope}:${cause.reason}`,
       },
     },
   );

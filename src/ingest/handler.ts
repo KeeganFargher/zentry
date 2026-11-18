@@ -9,6 +9,7 @@ import type { KeyInfo } from "@/db/keys";
 import { newEventId, normalizeEventId, parseId } from "@/shared/ids";
 import { jsonText } from "@/shared/json";
 import { errorText, logError } from "@/shared/log";
+import type { MonitorCheckIn } from "@/shared/monitors";
 import { Label, lenient } from "@/shared/schema";
 import { nextMonthBucket, SECOND } from "@/shared/time";
 import { INLINE_PAYLOAD_MAX_BYTES, MAX_ENVELOPE_BYTES, MAX_EVENT_BYTES } from "@/shared/types";
@@ -17,6 +18,7 @@ import type { QueueMessage } from "@/shared/types";
 import { publicKeyOf, requestKey } from "./auth";
 import type { KeyCache } from "./auth";
 import { readBody } from "./body";
+import { acceptCheckIn } from "./check-ins";
 import { accepted, acceptedNothing, preflight, rateLimited, rejected, unavailable } from "./http";
 import type { UsageCache } from "./limits";
 
@@ -27,6 +29,8 @@ export type IngestDeps = {
   allow: (publicKey: string) => Promise<boolean>;
   /** Stores an oversize payload and returns its key. */
   spill: (projectId: number, eventId: string, payload: string) => Promise<string>;
+  allowCheckIn: (publicKey: string) => Promise<boolean>;
+  recordCheckIn: (projectId: number, checkIn: MonitorCheckIn, now: number) => Promise<boolean>;
   send: (message: QueueMessage) => Promise<void>;
   now: () => number;
 };
@@ -37,6 +41,7 @@ type Route = { projectId: number; kind: "envelope" | "store" };
 type Parsed = {
   payload: string | null;
   /** Size of the event as sent, before decoding. */
+  checkIns: Uint8Array[];
   eventBytes: number;
   envelopeKey: string | null;
   envelopeEventId: string | null;
@@ -72,6 +77,7 @@ function parseBody(bytes: Uint8Array, kind: Route["kind"]): Parsed | null {
   if (kind === "store") {
     return {
       payload: decoder.decode(bytes),
+      checkIns: [],
       eventBytes: bytes.length,
       envelopeKey: null,
       envelopeEventId: null,
@@ -89,6 +95,9 @@ function parseBody(bytes: Uint8Array, kind: Route["kind"]): Parsed | null {
 
   return {
     payload: item === null ? null : decoder.decode(item.payload),
+    checkIns: envelope.items
+      .filter(({ header }) => header.type === "check_in")
+      .map(({ payload }) => payload),
     eventBytes: item?.payload.length ?? 0,
     envelopeKey: envelope.header.publicKey,
     envelopeEventId: envelope.header.eventId,
@@ -188,6 +197,27 @@ async function limitedFor(info: KeyInfo, deps: IngestDeps): Promise<Response | n
     : null;
 }
 
+async function receiveCheckIn(
+  parsed: Parsed,
+  auth: NonNullable<Awaited<ReturnType<typeof authenticate>>>,
+  deps: IngestDeps,
+): Promise<Response | undefined> {
+  if (parsed.checkIns.length > 1) {
+    return rejected(400, "one check-in per envelope");
+  }
+
+  const [checkIn] = parsed.checkIns;
+
+  if (checkIn === undefined) {
+    return undefined;
+  }
+
+  return acceptCheckIn(
+    { bytes: checkIn, projectId: auth.info.projectId, publicKey: auth.publicKey },
+    deps,
+  );
+}
+
 async function accept(request: Request, route: Route, deps: IngestDeps): Promise<Response> {
   const body = await readBody(
     request,
@@ -208,6 +238,16 @@ async function accept(request: Request, route: Route, deps: IngestDeps): Promise
 
   if (auth === null || auth.info.projectId !== route.projectId) {
     return rejected(401, "invalid sentry key");
+  }
+
+  const checkInError = await receiveCheckIn(parsed, auth, deps);
+
+  if (checkInError !== undefined) {
+    return checkInError;
+  }
+
+  if (parsed.payload === null) {
+    return acceptedNothing();
   }
 
   const limited = await limitedFor(auth.info, deps);

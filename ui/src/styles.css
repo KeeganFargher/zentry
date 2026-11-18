@@ -2818,3 +2818,78 @@ pre.raw-trace {
   display: flex;
   gap: 8px;
 }
+
+.monitor-content {
+  display: grid;
+  gap: 16px;
+  max-width: 1000px;
+}
+
+.monitor-form-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 14px;
+}
+
+.monitor-form-fields label {
+  display: grid;
+  gap: 5px;
+}
+
+.monitor-notify {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.monitor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(55px, 90px) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  color: inherit;
+}
+
+.monitor-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.monitor-row + .monitor-row,
+.monitor-observations li + li {
+  border-top: 1px solid var(--border);
+}
+
+.monitor-health {
+  font-size: 0.85em;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.monitor-health[data-health="healthy"] {
+  color: var(--green);
+}
+.monitor-health[data-health="failing"] {
+  color: var(--red);
+}
+
+.monitor-observations {
+  list-style: none;
+  padding: 0;
+}
+
+.monitor-observations li {
+  display: grid;
+  grid-template-columns: minmax(110px, 190px) minmax(55px, 100px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.monitor-observations code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

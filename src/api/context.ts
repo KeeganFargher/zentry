@@ -4,10 +4,13 @@ import type { EventBlobs } from "@/blobs/events";
 import type { DeviceRecord, DeviceStore } from "@/db/devices";
 import type { EventStore } from "@/db/events";
 import type { IssueStore } from "@/db/issues";
+import type { MonitorStore } from "@/db/monitors";
 import type { NotificationSettingsStore } from "@/db/notify-settings";
 import type { OrganizationStore } from "@/db/organizations";
 import type { ProjectStore } from "@/db/projects";
 import type { Membership, TenancyStore, UserRecord } from "@/db/tenancy";
+import type { ProbeResult } from "@/db/uptime-monitors";
+import type { UptimeSettings } from "@/shared/monitors";
 
 import type { AccessVerifier } from "./access";
 
@@ -17,6 +20,7 @@ export type ApiDeps = {
   organizations: OrganizationStore;
   projects: ProjectStore;
   issues: IssueStore;
+  monitors: MonitorStore;
   events: EventStore;
   blobs: EventBlobs;
   notificationSettings: NotificationSettingsStore;
@@ -32,6 +36,9 @@ export type ApiDeps = {
   ingestHost: string;
   /** The origin the mobile app calls, put in the pairing QR code. */
   mobileApiUrl: string;
+  uptimeOrigins: string;
+  allowMonitorPreview: (key: string) => Promise<boolean>;
+  previewUptime: (config: UptimeSettings) => Promise<ProbeResult>;
   now: () => number;
 };
 

@@ -234,6 +234,13 @@ export function planBatch(input: PlanInput): Plan {
     stored: storedEntries.map((entry) => entry.item),
     writes: {
       newGroups: buckets.flatMap(newGroupRow),
+      metricEvents: fresh.map(({ event }) => ({
+        project: event.projectId,
+        eventId: event.eventId,
+        received: event.receivedAt,
+        environment: event.environment,
+        level: event.level,
+      })),
       aggregates: buckets.flatMap(aggregateRow),
       events: buckets.flatMap((bucket) =>
         bucket.events.flatMap((entry) => (entry.stored ? [eventRow(bucket, entry)] : [])),
