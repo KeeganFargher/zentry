@@ -1618,7 +1618,7 @@ pre-commit:
 
 CI runs `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm check` and
 `pnpm e2e` on every pull request and every push to `main`. It does not deploy.
-Deploys are run by hand with `pnpm deploy`, which reads the git-ignored
+Deploys are run by hand with `pnpm run deploy`, which reads the git-ignored
 `wrangler.production.jsonc` holding the account's real IDs and hostnames
 (README "Deploy"); CI has neither. Deploying from CI can come once the
 hostnames in §15 are settled and the config can live in CI secrets.

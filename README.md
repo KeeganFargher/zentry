@@ -103,7 +103,7 @@ DESIGN.md §16.3 and `oxlint.config.ts` together.
 
 The steps, in order. `wrangler.jsonc` holds placeholders so that nothing about
 your account is committed; your real values go in `wrangler.production.jsonc`,
-which is git-ignored, and `pnpm deploy` and `pnpm migrate:remote` read that file.
+which is git-ignored, and `pnpm run deploy` and `pnpm migrate:remote` read that file.
 
 1. Create the resources:
 
@@ -145,8 +145,10 @@ which is git-ignored, and `pnpm deploy` and `pnpm migrate:remote` read that file
    ```
 
    ```bash
-   pnpm deploy
+   pnpm run deploy
    ```
+
+   Use `pnpm run deploy`: plain `pnpm deploy` is a built-in pnpm command and fails.
 
 6. Sign in, open Projects > Spend limits and set the monthly cap (see below),
    then add the account guards the Worker cannot set for itself, under
