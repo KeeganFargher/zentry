@@ -510,6 +510,9 @@ input[type="checkbox"]:checked {
 .platform {
   display: inline-grid;
   place-items: center;
+  /* A flex item in the topbar and issue rows: never squeezed below its text. */
+  flex: none;
+  white-space: nowrap;
   min-width: 16px;
   height: 14px;
   padding: 0 3px;
