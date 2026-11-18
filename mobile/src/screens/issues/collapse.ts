@@ -13,14 +13,9 @@ import {
   withTiming,
 } from "react-native-reanimated";
 import type { SharedValue } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 
 const SNAP = { duration: 180 };
-
-/** How far through collapsing the header is when the slim bar starts to show. */
-const BAR_FROM = 0.55;
-
-/** How far through collapsing the full header's contents are gone. */
-const FULL_UNTIL = 0.7;
 
 export type CollapsingHeader = {
   onScroll: ReturnType<typeof useAnimatedScrollHandler>;
@@ -32,6 +27,8 @@ export type CollapsingHeader = {
   measure: (collapsible: number) => void;
   /** Brings the full header back. */
   open: () => void;
+  /** Brings the full header back, then runs `then`: focusing search, say. */
+  openThen: (then: () => void) => void;
 };
 
 export function useCollapsingHeader(): CollapsingHeader {
@@ -75,7 +72,20 @@ export function useCollapsingHeader(): CollapsingHeader {
     hidden.set(withTiming(0, SNAP));
   }, [hidden]);
 
-  return { onScroll, hidden, range, measure, open };
+  const openThen = useCallback(
+    (then: () => void) => {
+      hidden.set(
+        withTiming(0, SNAP, (finished) => {
+          if (finished === true) {
+            scheduleOnRN(then);
+          }
+        }),
+      );
+    },
+    [hidden],
+  );
+
+  return { onScroll, hidden, range, measure, open, openThen };
 }
 
 /** Fully open or fully collapsed, whichever is nearer and the scroll allows. */
@@ -89,18 +99,22 @@ function snap(hidden: SharedValue<number>, full: number, y: number): void {
   }
 }
 
-/** The title, search and filters fade as they slide up under the bar. */
-export function fullOpacity(hidden: number, range: number): number {
+/** How far the header has collapsed, from 0 (open) to 1 (collapsed). */
+export function progressOf(hidden: number, range: number): number {
   "worklet";
 
-  return interpolate(hidden, [0, range * FULL_UNTIL], [1, 0], Extrapolation.CLAMP);
+  return range <= 0 ? 0 : Math.min(Math.max(hidden / range, 0), 1);
 }
 
-/** The slim bar fades in near the end of collapsing. */
-export function barOpacity(hidden: number, range: number): number {
+/**
+ * How far one element is through its own part of the collapse, from 0 to 1:
+ * each element moves within a window of the whole, so they move one after
+ * another rather than together.
+ */
+export function phase(progress: number, from: number, to: number): number {
   "worklet";
 
-  return interpolate(hidden, [range * BAR_FROM, range], [0, 1], Extrapolation.CLAMP);
+  return interpolate(progress, [from, to], [0, 1], Extrapolation.CLAMP);
 }
 
 /** The height of a laid-out view. */

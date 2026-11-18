@@ -5,7 +5,7 @@
 
 import type { ApiProject, Level } from "@contract";
 import { useState } from "react";
-import type { JSX } from "react";
+import type { ComponentRef, ComponentType, JSX, ReactNode, Ref } from "react";
 import { Modal, Pressable, ScrollView, TextInput, View } from "react-native";
 
 import { Button, ButtonBar, joinAt } from "~/components/button";
@@ -167,14 +167,15 @@ function Picker<T>(props: PickerProps<T>): JSX.Element {
   );
 }
 
-/** Searches when the keyboard's search key is pressed or the field is left. */
-function SearchField({
-  query,
-  onSearch,
-}: {
+type SearchFieldProps = {
   query: string;
   onSearch: (query: string) => void;
-}): JSX.Element {
+  /** So the collapsed header's search button can focus it. */
+  inputRef: Ref<ComponentRef<typeof TextInput>>;
+};
+
+/** Searches when the keyboard's search key is pressed or the field is left. */
+export function SearchField({ query, onSearch, inputRef }: SearchFieldProps): JSX.Element {
   const palette = usePalette();
   const [text, setText] = useState(query);
 
@@ -194,6 +195,7 @@ function SearchField({
     >
       <Icon name="search" />
       <TextInput
+        ref={inputRef}
         value={text}
         onChangeText={setText}
         onSubmitEditing={() => onSearch(text)}
@@ -214,37 +216,29 @@ function SearchField({
   );
 }
 
-type FilterBarProps = {
-  organization: string;
+type FilterButtonsProps = {
   filters: Filters;
   projects: ApiProject[];
   onChange: (filters: Filters) => void;
+  /** Wraps each dropdown, so the collapsing header can move them one by one. */
+  Item: ComponentType<{ index: number; children: ReactNode }>;
 };
 
-/** The page header: title, search, and the dropdown bar. */
-export function FilterBar({
-  organization,
+/** The joined project, status and level dropdowns. */
+export function FilterButtons({
   filters,
   projects,
   onChange,
-}: FilterBarProps): JSX.Element {
+  Item,
+}: FilterButtonsProps): JSX.Element {
   const projectChoices: Choice<number | null>[] = [
     { value: null, label: "All Projects" },
     ...projects.map((project) => ({ value: project.id, label: project.name })),
   ];
 
   return (
-    <View style={{ gap: SPACE.md, paddingHorizontal: SPACE.lg, paddingBottom: SPACE.md }}>
-      <View>
-        <Text size={12} tone="muted" lines={1}>
-          {organization}
-        </Text>
-        <Text size={24} weight="medium" tone="heading">
-          Issues
-        </Text>
-      </View>
-      <SearchField query={filters.query} onSearch={(query) => onChange({ ...filters, query })} />
-      <ButtonBar>
+    <ButtonBar>
+      <Item index={0}>
         <Picker
           title="Project"
           index={0}
@@ -253,6 +247,8 @@ export function FilterBar({
           choices={projectChoices}
           onChange={(project) => onChange({ ...filters, project })}
         />
+      </Item>
+      <Item index={1}>
         <Picker
           title="Status"
           index={1}
@@ -261,6 +257,8 @@ export function FilterBar({
           choices={STATUSES}
           onChange={(status) => onChange({ ...filters, status })}
         />
+      </Item>
+      <Item index={2}>
         <Picker
           title="Level"
           index={2}
@@ -269,8 +267,8 @@ export function FilterBar({
           choices={LEVELS}
           onChange={(level) => onChange({ ...filters, level })}
         />
-      </ButtonBar>
-    </View>
+      </Item>
+    </ButtonBar>
   );
 }
 
