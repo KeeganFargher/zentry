@@ -16,6 +16,19 @@ export const BINARY = "<binary data>";
 const UNPRINTABLE = /[\p{Cc}\p{Cs}\p{Co}\uFFFD]/gu;
 const UNPRINTABLE_RUN = /[\p{Cc}\p{Cs}\p{Co}\uFFFD]+/gu;
 
+const WORD = /[\p{L}\p{N}]/u;
+
+/**
+ * The line a value is summed up by: its first, unless that line has no
+ * letter or digit in it, as when the value is a JSON or XML body whose first
+ * line is "{" or "<html>"-less markup. Then the whole value on one line.
+ */
+function summaryLine(text: string): string {
+  const first = firstLine(text);
+
+  return WORD.test(first) ? first : text.replaceAll(/\s+/g, " ").trim();
+}
+
 /**
  * One line of a value, made fit to show as a title. Display only: grouping
  * and the stored event keep the value as it was sent. A line that is mostly
@@ -23,7 +36,7 @@ const UNPRINTABLE_RUN = /[\p{Cc}\p{Cs}\p{Co}\uFFFD]+/gu;
  * unprintable characters becomes one U+FFFD, so the rest stays readable.
  */
 export function displayLine(text: string): string {
-  const line = firstLine(text).replaceAll("\t", " ");
+  const line = summaryLine(text).replaceAll("\t", " ");
   const unprintable = line.match(UNPRINTABLE)?.length ?? 0;
 
   if (unprintable * 2 > line.length) {

@@ -289,3 +289,22 @@ describe("titles", () => {
     expect(event.exceptions[0]?.value).toBe("a\u0000b");
   });
 });
+
+describe("titles of structured values", () => {
+  it("uses the whole value on one line when its first line has no words, as a JSON body", () => {
+    const body =
+      '{\n   "errors" : [ {\n      "code" : "500",\n      "message" : "SQL search error"\n   } ]\n}';
+
+    const event = normalize({ exception: [{ type: "System.Exception", value: body }] });
+
+    expect(event.title).toBe(
+      'System.Exception: { "errors" : [ { "code" : "500", "message" : "SQL search error" } ] }',
+    );
+  });
+
+  it("still uses the first line when it says something", () => {
+    const event = normalize({ exception: [{ type: "Error", value: "bad total\n{ details }" }] });
+
+    expect(event.title).toBe("Error: bad total");
+  });
+});

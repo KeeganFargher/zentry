@@ -12,9 +12,8 @@ import { Tooltip } from "~/components/tooltip";
 import { eventJsonUrl } from "~/lib/api";
 import { useNow } from "~/lib/clock";
 import { dateTime, duration, longAgo } from "~/lib/format";
-import { issueTitle } from "~/lib/issue";
 import { getText } from "~/lib/json";
-import { rawTrace } from "~/lib/raw-trace";
+import { issueMarkdown } from "~/lib/markdown";
 import { navigate } from "~/lib/router";
 import { copyText } from "~/lib/toast";
 
@@ -35,26 +34,6 @@ function Step({ to, label, icon }: StepProps): JSX.Element {
         <Icon name={icon} size={12} />
       </button>
     </Tooltip>
-  );
-}
-
-function markdown(org: string, issue: ApiIssue, event: StoredEvent): string {
-  const link = `${window.location.origin}/${org}/issues/${issue.id}/`;
-
-  const trace =
-    event.exceptions.length === 0
-      ? ""
-      : `\n\n## Stack Trace\n\n\`\`\`\n${rawTrace(event.exceptions, event.platform)}\n\`\`\``;
-
-  return (
-    [
-      `# ${issueTitle(issue)}`,
-      "",
-      `**Issue:** [${issue.shortId}](${link})`,
-      `**Level:** ${issue.level} · **Events:** ${issue.timesSeen} · **First seen:** ${dateTime(issue.firstSeen)}`,
-      `**Event:** ${event.eventId} at ${dateTime(event.timestamp)}`,
-      `**Release:** ${event.release ?? "none"} · **Environment:** ${event.environment}`,
-    ].join("\n") + trace
   );
 }
 
@@ -104,7 +83,14 @@ export function EventNav({ org, issue, which, detail }: NavProps): JSX.Element {
           type="button"
           className="small"
           onClick={() =>
-            void copyText(markdown(org, issue, detail.event), "Copied the issue as Markdown")
+            void copyText(
+              issueMarkdown(
+                `${window.location.origin}/${org}/issues/${issue.id}/`,
+                issue,
+                detail.event,
+              ),
+              "Copied the issue as Markdown",
+            )
           }
         >
           Copy as Markdown

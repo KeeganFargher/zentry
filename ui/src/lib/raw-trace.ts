@@ -9,8 +9,14 @@ function heading(exception: StoredException): string {
   return exception.value === null ? type : `${type}: ${exception.value}`;
 }
 
-function where(frame: StoredFrame): string {
-  const file = frame.filename ?? frame.absPath ?? frame.module ?? "<unknown>";
+/** "file:line:col", or null when the SDK sent no file, as .NET without symbols. */
+function where(frame: StoredFrame): string | null {
+  const file = frame.filename ?? frame.absPath;
+
+  if (file === null) {
+    return null;
+  }
+
   const line = frame.lineno === null ? "" : `:${frame.lineno}`;
   const column = frame.colno === null ? "" : `:${frame.colno}`;
 
@@ -35,22 +41,43 @@ function pythonBlock(exception: StoredException): string {
   return lines.join("\n");
 }
 
-function managedFrame(frame: StoredFrame): string {
+/** As .NET prints it: "at Function in File:line 42". */
+function dotnetFrame(frame: StoredFrame): string {
+  const file = frame.filename ?? frame.absPath;
+  const line = frame.lineno === null ? "" : `:line ${frame.lineno}`;
+
+  return `   at ${frame.function ?? "<unknown>"}${file === null ? "" : ` in ${file}${line}`}`;
+}
+
+/** As the JVM prints it: "at pkg.Class.method(File.java:42)". */
+function jvmFrame(frame: StoredFrame): string {
   const owner = frame.module === null ? "" : `${frame.module}.`;
 
-  return `    at ${owner}${frame.function ?? "<unknown>"}(${where(frame)})`;
+  return `\tat ${owner}${frame.function ?? "<unknown>"}(${where(frame) ?? "Unknown Source"})`;
 }
 
 function scriptFrame(frame: StoredFrame): string {
-  return frame.function === null
-    ? `    at ${where(frame)}`
-    : `    at ${frame.function} (${where(frame)})`;
+  const location = where(frame);
+
+  if (frame.function === null) {
+    return `    at ${location ?? "<anonymous>"}`;
+  }
+
+  return location === null ? `    at ${frame.function}` : `    at ${frame.function} (${location})`;
 }
 
-const MANAGED = new Set(["java", "csharp", "kotlin", "scala", "groovy"]);
+const JVM = new Set(["java", "kotlin", "scala", "groovy"]);
+
+function frameFormat(platform: string): (frame: StoredFrame) => string {
+  if (platform === "csharp") {
+    return dotnetFrame;
+  }
+
+  return JVM.has(platform) ? jvmFrame : scriptFrame;
+}
 
 function frameBlock(exception: StoredException, platform: string): string {
-  const format = MANAGED.has(platform) ? managedFrame : scriptFrame;
+  const format = frameFormat(platform);
 
   return [heading(exception), ...exception.frames.toReversed().map(format)].join("\n");
 }
