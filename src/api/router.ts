@@ -69,8 +69,8 @@ import {
 /**
  * Who may call a route. A device token is a long-lived secret on a phone, on
  * a host Access does not guard, so it reaches only what the app needs:
- * reading and triaging issues, following them, notification settings, and
- * its own sign-out. Everything else stays behind Access, and a new route is
+ * reading and triaging issues, following them, notification settings,
+ * reading monitors (never changing them), and its own sign-out. Everything else stays behind Access, and a new route is
  * web-only until it is marked app() (DESIGN.md §19.1).
  */
 type Reach = "web" | "any";
@@ -96,13 +96,13 @@ const ROUTES: Route<Handler>[] = [
   app(route("GET", `/organizations/${ORG}/projects`, listProjects)),
   route("POST", `/organizations/${ORG}/projects`, createProject),
   route("POST", `/organizations/${ORG}/monitors`, createMonitor),
-  // The app reads monitors (and names their creators); it never changes them.
-  app(route("GET", `/organizations/${ORG}/monitor-members`, listMonitorMembers)),
+  route("GET", `/organizations/${ORG}/monitor-members`, listMonitorMembers),
   route("GET", `/organizations/${ORG}/monitor-alert-rules`, listMonitorRules),
   route("POST", `/organizations/${ORG}/monitor-alert-rules`, createMonitorRule),
   route("PUT", `/organizations/${ORG}/monitor-alert-rules/([0-9a-f-]+)`, updateMonitorRule),
   route("POST", `/organizations/${ORG}/monitor-previews`, previewMonitor),
   route("GET", `/organizations/${ORG}/monitor-previews/([0-9a-f-]+)`, getMonitorPreview),
+  // The app reads monitors; it never changes them.
   app(route("GET", `/organizations/${ORG}/monitors`, listMonitors)),
   route("GET", `/organizations/${ORG}/monitors/unrecognized-check-ins`, unrecognizedCheckIns),
   app(route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, getMonitor)),

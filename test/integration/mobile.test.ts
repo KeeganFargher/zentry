@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import { handleApi, Sessions } from "@/api/router";
-import type { ApiDeviceList, ApiMe, ApiPaired, ApiPairing, Json } from "@/shared/contract";
+import type {
+  ApiDeviceList,
+  ApiMe,
+  ApiMonitor,
+  ApiPaired,
+  ApiPairing,
+  Json,
+  MonitorDetail,
+} from "@/shared/contract";
 import { DAY, MINUTE } from "@/shared/time";
 
 import { api, apiDeps, claims, signToken, USER, verifier } from "./api-helpers";
-import { NOW } from "./helpers";
+import { createProject, NOW } from "./helpers";
 
 const INGEST = "https://ingest.zentry.test";
 
@@ -165,7 +173,6 @@ describe("device tokens", () => {
     expect((await app("/organizations/default/issues/", { token })).status).toBe(200);
     expect((await app("/organizations/default/notifications/", { token })).status).toBe(200);
     expect((await app("/organizations/default/monitors/", { token })).status).toBe(200);
-    expect((await app("/organizations/default/monitor-members/", { token })).status).toBe(200);
 
     const create = await app("/organizations/default/projects/", {
       method: "POST",
@@ -194,6 +201,10 @@ describe("device tokens", () => {
       ["PUT", `${monitor}/status/`, { status: "paused" }],
       ["PUT", `${monitor}/mute/`, { minutes: 60 }],
       ["GET", "/organizations/default/monitor-alert-rules/"],
+      ["GET", "/organizations/default/monitor-members/"],
+      ["GET", "/organizations/default/monitors/unrecognized-check-ins/"],
+      ["GET", `${monitor}/observations/`],
+      ["POST", "/organizations/default/monitor-previews/", { type: "cron" }],
     ];
 
     for (const [method, path, body] of webOnly) {
@@ -201,6 +212,37 @@ describe("device tokens", () => {
 
       expect([method, path, (await app(path, call)).status]).toEqual([method, path, 403]);
     }
+  });
+
+  it("read a monitor, its timeline and who created it, without the member list", async () => {
+    const { token } = await pairedPhone();
+    const { id: projectId } = await createProject();
+
+    const created = await api("/organizations/default/monitors/", {
+      method: "POST",
+      body: {
+        projectId,
+        type: "cron",
+        name: "Phone-visible",
+        config: {
+          slug: `phone-${crypto.randomUUID().slice(0, 8)}`,
+          schedule: { type: "crontab", crontab: "0 * * * *" },
+        },
+      },
+    });
+
+    expect(created.status).toBe(201);
+
+    const monitor = `/organizations/default/monitors/${(await created.json<ApiMonitor>()).id}`;
+    const detail = await app(`${monitor}/`, { token });
+
+    expect(detail.status).toBe(200);
+    // The phone names the creator from the detail, as it cannot list members.
+    expect((await detail.json<MonitorDetail>()).creatorEmail).toBe(USER);
+
+    const window = `since=${NOW - DAY}&until=${NOW}&buckets=48`;
+
+    expect((await app(`${monitor}/timeline/?${window}`, { token })).status).toBe(200);
   });
 
   it("stop working the moment the phone is signed out", async () => {

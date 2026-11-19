@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { nextCheckIn } from "@/core/cron-schedule";
 import type { CronReplan } from "@/db/monitors";
-import type { MonitorHistory } from "@/shared/contract";
+import type { ApiMonitor, MonitorHistory } from "@/shared/contract";
 import { CreateMonitor } from "@/shared/monitors";
 import type { CronSettings, NewMonitor } from "@/shared/monitors";
 import { DAY, MINUTE } from "@/shared/time";
@@ -214,8 +214,26 @@ export const getMonitor: Handler = async (context, args) => {
     incidents,
     deliveries,
     checkIns,
+    creatorEmail: await creatorEmail(context, monitor),
   });
 };
+
+/**
+ * The creating member's email, so a page can name them without the whole
+ * member list (which a paired phone is not given). Null for an SDK or a
+ * member who has since left.
+ */
+async function creatorEmail(context: ApiContext, monitor: ApiMonitor): Promise<string | null> {
+  const { creator } = monitor;
+
+  if (creator.kind !== "member") {
+    return null;
+  }
+
+  const members = await context.deps.notificationSettings.members(context.organizationId);
+
+  return members.find((member) => member.userId === creator.userId)?.email ?? null;
+}
 
 function changedCronScope(current: NewMonitor, edited: NewMonitor): boolean {
   if (current.type !== "cron" || edited.type !== "cron") {

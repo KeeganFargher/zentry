@@ -2,7 +2,7 @@
 // window is rounded to five minutes: with the clock's own millisecond as the
 // end, every minute's tick (useNow) would be a new query key and a refetch.
 
-import type { MonitorDetail, MonitorTimeline } from "@contract";
+import type { ApiMonitor, MonitorDetail, MonitorTimeline } from "@contract";
 import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 
@@ -14,11 +14,28 @@ const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const STEP = 5 * MINUTE;
 
+export function useMonitors(): UseQueryResult<ApiMonitor[]> {
+  const api = useApi();
+  const org = useOrg();
+
+  // Refetched as often as the timelines move on, so a row's health tag never
+  // trails a new red tick for long.
+  return useQuery({
+    queryKey: ["monitors", org],
+    queryFn: () => api.monitors(org),
+    refetchInterval: STEP,
+  });
+}
+
 export function useMonitorDetail(id: string): UseQueryResult<MonitorDetail> {
   const api = useApi();
   const org = useOrg();
 
-  return useQuery({ queryKey: ["monitor", org, id], queryFn: () => api.monitor(org, id) });
+  return useQuery({
+    queryKey: ["monitor", org, id],
+    queryFn: () => api.monitor(org, id),
+    refetchInterval: STEP,
+  });
 }
 
 /**

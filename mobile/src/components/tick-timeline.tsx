@@ -11,7 +11,8 @@ import { Pressable, View } from "react-native";
 import Svg, { Defs, Line, Pattern, Rect } from "react-native-svg";
 
 import { minuteTime, shortDateTime } from "~/lib/format";
-import { TICK_LABELS, TICK_PRECEDENCE } from "~/lib/monitor-text";
+import { TICK_PRECEDENCE, tickLabel } from "~/lib/monitor-text";
+import type { MonitorType } from "~/lib/monitor-text";
 import { usePalette } from "~/lib/preferences";
 import type { Palette } from "~/lib/theme";
 
@@ -89,6 +90,21 @@ export function scopesOf(timeline: MonitorTimeline): string[] {
   return scopes.length === 0 ? [""] : scopes;
 }
 
+/** "production: 1 Failed, 1 Okay", or that it has nothing in the period. */
+function rowLabel(type: MonitorType, scope: string, ticks: Tick[]): string {
+  const totals = new Map<TimelineStatus, number>();
+
+  for (const tick of ticks) {
+    tick.counts.forEach((count, status) => totals.set(status, (totals.get(status) ?? 0) + count));
+  }
+
+  const name = scope === "" ? "Timeline" : scope;
+
+  return totals.size === 0
+    ? `${name}: nothing in this period`
+    : `${name}: ${countsText(type, totals)}`;
+}
+
 function bucketCount(timeline: MonitorTimeline): number {
   return Math.ceil((timeline.until - timeline.since) / timeline.bucketMs);
 }
@@ -106,7 +122,8 @@ function Hatches({ palette }: { palette: Palette }): JSX.Element {
           patternUnits="userSpaceOnUse"
           patternTransform="rotate(45)"
         >
-          <Line x1={0} y1={0} x2={0} y2={4} stroke={palette[key]} strokeWidth={2} />
+          {/* At x=1, so the 2-point stroke sits wholly inside its 4-point tile. */}
+          <Line x1={1} y1={0} x2={1} y2={4} stroke={palette[key]} strokeWidth={2} />
         </Pattern>
       ))}
     </Defs>
@@ -116,12 +133,13 @@ function Hatches({ palette }: { palette: Palette }): JSX.Element {
 type RowProps = {
   timeline: MonitorTimeline;
   scope: string;
+  type: MonitorType;
   /** Called with the tapped tick; the row is not tappable without it. */
   onPick?: (tick: Tick) => void;
 };
 
 /** One environment's row of ticks, sized to the width it is given. */
-export function TickRow({ timeline, scope, onPick }: RowProps): JSX.Element {
+export function TickRow({ timeline, scope, type, onPick }: RowProps): JSX.Element {
   const palette = usePalette();
   const [width, setWidth] = useState(0);
   const slot = width / bucketCount(timeline);
@@ -129,6 +147,10 @@ export function TickRow({ timeline, scope, onPick }: RowProps): JSX.Element {
 
   return (
     <View
+      // What the ticks show, for TalkBack, which cannot see colours.
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={rowLabel(type, scope, ticks)}
       style={{ height: ROW_HEIGHT, backgroundColor: palette.raised, borderRadius: 2 }}
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
     >
@@ -159,8 +181,10 @@ export function TickRow({ timeline, scope, onPick }: RowProps): JSX.Element {
       )}
       {onPick !== undefined && width > 0 && (
         <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`${scope === "" ? "Timeline" : scope} ticks. Tap one for its counts`}
+          // Inside the row's one accessible element: TalkBack reads the row's
+          // totals, and a tap here picks a tick for sighted use. The row is
+          // 14 points tall, so the slop makes it a fair target for a finger.
+          hitSlop={{ top: 12, bottom: 12 }}
           style={{ position: "absolute", inset: 0 }}
           onPress={(event) => {
             const index = Math.floor(event.nativeEvent.locationX / slot);
@@ -177,19 +201,25 @@ export function TickRow({ timeline, scope, onPick }: RowProps): JSX.Element {
 }
 
 /** A tapped tick's span and counts: "02:00 – 02:30 · 1 Failed, 1 Okay". */
+/** "1 Failed, 1 Okay": what a tick, or a whole row, holds. */
+function countsText(type: MonitorType, counts: Map<TimelineStatus, number>): string {
+  return [...counts.entries()]
+    .map(([status, count]) => `${count} ${tickLabel(type, status)}`)
+    .join(", ");
+}
+
 export function TickSummary({
   tick,
   timeline,
+  type,
 }: {
   tick: Tick;
   timeline: MonitorTimeline;
+  type: MonitorType;
 }): JSX.Element {
   const from = timeline.since + tick.start * timeline.bucketMs;
   const to = timeline.since + tick.end * timeline.bucketMs;
-
-  const counts = [...tick.counts.entries()]
-    .map(([status, count]) => `${count} ${TICK_LABELS[status]}`)
-    .join(", ");
+  const counts = countsText(type, tick.counts);
 
   return (
     <Text size={12} tone="muted">

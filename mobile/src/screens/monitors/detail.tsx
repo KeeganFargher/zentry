@@ -2,7 +2,7 @@
 // timeline over a chosen period, then what is wrong now, the type's recent
 // results, and what it watches. Muting, pausing and editing stay on the web.
 
-import type { ApiMonitor, MonitorDetail } from "@contract";
+import type { ApiMonitor, MonitorDetail, MonitorTimeline } from "@contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
@@ -46,19 +46,24 @@ const DISABLED_TEXT: Record<ApiMonitor["type"], string> = {
 
 function Summary({ monitor }: { monitor: ApiMonitor }): JSX.Element {
   const now = useNow();
+  const paused = monitor.status === "paused";
   const muted = monitor.mutedUntil !== null && monitor.mutedUntil > now;
 
   return (
     <Panel>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACE.xs }}>
         <Tag label={TYPE_LABELS[monitor.type]} tone="accent" />
-        <Tag label={HEALTH_LABELS[monitor.health]} tone={HEALTH_TONES[monitor.health]} />
+        {paused ? (
+          <Tag label="Disabled" tone="neutral" />
+        ) : (
+          <Tag label={HEALTH_LABELS[monitor.health]} tone={HEALTH_TONES[monitor.health]} />
+        )}
         {muted && <Tag label="Muted" tone="neutral" />}
       </View>
       <Text size={13} tone="muted">
         {detailsOf(monitor).join(" · ")}
       </Text>
-      {monitor.status !== "active" && <Text tone="danger">{DISABLED_TEXT[monitor.type]}</Text>}
+      {paused && <Text tone="muted">{DISABLED_TEXT[monitor.type]}</Text>}
       {muted && monitor.mutedUntil !== null && (
         <Text size={13} tone="muted">
           Muted until {dateTime(monitor.mutedUntil)}
@@ -68,61 +73,89 @@ function Summary({ monitor }: { monitor: ApiMonitor }): JSX.Element {
   );
 }
 
-function Timeline({ monitor }: { monitor: ApiMonitor }): JSX.Element {
+/**
+ * The rows to draw: each scope with ticks, and for cron every environment
+ * the monitor knows, so one quiet in this period still has its (empty) row.
+ */
+function rowScopes(detail: MonitorDetail, timeline: MonitorTimeline): string[] {
+  if (detail.monitor.type !== "cron" || detail.scopes.length === 0) {
+    return scopesOf(timeline);
+  }
+
+  const ticked = timeline.buckets.map(({ scope }) => scope);
+
+  return [...new Set([...detail.scopes.map(({ environment }) => environment), ...ticked])].sort();
+}
+
+/** A tapped tick, with the timeline it was tapped on: a new period or window drops it. */
+type Picked = { tick: Tick; timeline: MonitorTimeline };
+
+type TicksProps = { detail: MonitorDetail; timeline: MonitorTimeline };
+
+function Ticks({ detail, timeline }: TicksProps): JSX.Element {
+  const [picked, setPicked] = useState<Picked | null>(null);
+  const type = detail.monitor.type;
+  const current = picked !== null && picked.timeline === timeline ? picked.tick : null;
+
+  return (
+    <View style={{ gap: SPACE.sm }}>
+      {rowScopes(detail, timeline).map((scope) => (
+        <View key={scope} style={{ gap: 2 }}>
+          {scope !== "" && (
+            <Text size={12} tone="muted">
+              {scope}
+            </Text>
+          )}
+          <TickRow
+            timeline={timeline}
+            scope={scope}
+            type={type}
+            onPick={(tick) => setPicked({ tick, timeline })}
+          />
+        </View>
+      ))}
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        <Text size={11} tone="muted">
+          {shortDate(timeline.since)}
+        </Text>
+        <Text size={11} tone="muted">
+          Now
+        </Text>
+      </View>
+      {current === null ? (
+        <Text size={12} tone="muted">
+          {timeline.buckets.length === 0
+            ? "Nothing in this period yet."
+            : "Tap a tick for its counts."}
+        </Text>
+      ) : (
+        <TickSummary tick={current} timeline={timeline} type={type} />
+      )}
+    </View>
+  );
+}
+
+function Timeline({ detail }: { detail: MonitorDetail }): JSX.Element {
   const [period, setPeriod] = useState<Period>("1");
-  const [picked, setPicked] = useState<Tick | null>(null);
-  const timeline = useTimeline(monitor.id, Number(period), DETAIL_BUCKETS);
-  const data = timeline.data;
+  const timeline = useTimeline(detail.monitor.id, Number(period), DETAIL_BUCKETS);
 
   return (
     <Panel>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
         <SectionTitle>Timeline</SectionTitle>
-        <Segmented
-          options={PERIODS}
-          value={period}
-          label="Period"
-          onChange={(next) => {
-            setPeriod(next);
-            setPicked(null);
-          }}
-        />
+        <Segmented options={PERIODS} value={period} label="Period" onChange={setPeriod} />
       </View>
-      {data === undefined ? (
+      {timeline.data === undefined ? (
         <Notice
           loading={timeline.isPending}
           error={timeline.error}
           onRetry={() => void timeline.refetch()}
         />
       ) : (
-        <View style={{ gap: SPACE.sm }}>
-          {scopesOf(data).map((scope) => (
-            <View key={scope} style={{ gap: 2 }}>
-              {scope !== "" && (
-                <Text size={12} tone="muted">
-                  {scope}
-                </Text>
-              )}
-              <TickRow timeline={data} scope={scope} onPick={setPicked} />
-            </View>
-          ))}
-          <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-            <Text size={11} tone="muted">
-              {shortDate(data.since)}
-            </Text>
-            <Text size={11} tone="muted">
-              Now
-            </Text>
-          </View>
-          {picked === null ? (
-            <Text size={12} tone="muted">
-              {data.buckets.length === 0
-                ? "Nothing in this period yet."
-                : "Tap a tick for its counts."}
-            </Text>
-          ) : (
-            <TickSummary tick={picked} timeline={data} />
-          )}
+        // The previous period's ticks stay while the new ones load, dimmed so
+        // they do not read as the new period's.
+        <View style={{ opacity: timeline.isPlaceholderData ? 0.4 : 1 }}>
+          <Ticks detail={detail} timeline={timeline.data} />
         </View>
       )}
     </Panel>
@@ -152,8 +185,7 @@ function TypeSections({ detail }: { detail: MonitorDetail }): JSX.Element | null
   return null;
 }
 
-export function MonitorScreen(): JSX.Element {
-  const { id } = useLocalSearchParams<{ id: string }>();
+function MonitorPage({ id }: { id: string }): JSX.Element {
   const palette = usePalette();
   const client = useQueryClient();
   const org = useOrg();
@@ -184,13 +216,21 @@ export function MonitorScreen(): JSX.Element {
         ) : (
           <>
             <Summary monitor={detail.data.monitor} />
-            <Timeline monitor={detail.data.monitor} />
+            <Timeline detail={detail.data} />
             <OngoingIssues detail={detail.data} />
             <TypeSections detail={detail.data} />
-            <About monitor={detail.data.monitor} />
+            <About detail={detail.data} />
           </>
         )}
       </ScrollView>
     </>
   );
+}
+
+export function MonitorScreen(): JSX.Element {
+  // Typed routes (app.json experiments.typedRoutes) give monitors/[id] one
+  // string id; a bad one comes back from the API as a 404 the screen shows.
+  const { id } = useLocalSearchParams<{ id: string }>();
+
+  return <MonitorPage id={id} />;
 }

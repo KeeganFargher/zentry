@@ -1,8 +1,9 @@
 // One monitor in the list, as Sentry's detector list row folded for a phone:
 // name and health, the details line (type, schedule or URL or threshold, and
-// project), the last day's ticks for cron and uptime, and the last issue.
+// project), the last day's ticks on the Crons and Uptime lists, and the last
+// issue.
 
-import type { ApiMonitor, ApiProject } from "@contract";
+import type { ApiMonitor } from "@contract";
 import type { JSX } from "react";
 import { Pressable, View } from "react-native";
 
@@ -12,7 +13,7 @@ import { Text } from "~/components/text";
 import { scopesOf, TickRow } from "~/components/tick-timeline";
 import { useNow } from "~/lib/clock";
 import { timeAgo } from "~/lib/format";
-import { detailsOf, HEALTH_LABELS, TYPE_LABELS } from "~/lib/monitor-text";
+import { HEALTH_LABELS } from "~/lib/monitor-text";
 import { usePalette } from "~/lib/preferences";
 import { SPACE } from "~/lib/theme";
 
@@ -51,7 +52,7 @@ function RowTimeline({ monitor }: { monitor: ApiMonitor }): JSX.Element {
               {scope}
             </Text>
           )}
-          <TickRow timeline={data} scope={scope} />
+          <TickRow timeline={data} scope={scope} type={monitor.type} />
         </View>
       ))}
     </View>
@@ -68,17 +69,19 @@ function LastIssue({ issue }: { issue: NonNullable<ApiMonitor["lastIssue"]> }): 
   );
 }
 
-type RowProps = { monitor: ApiMonitor; project: ApiProject | undefined; onPress: () => void };
+type RowProps = {
+  monitor: ApiMonitor;
+  /** The details line: type, what it watches, and the project once known. */
+  details: string[];
+  /** Whether to draw the last day's ticks; the "All" list leaves them out. */
+  withTimeline: boolean;
+  onPress: () => void;
+};
 
-export function MonitorRow({ monitor, project, onPress }: RowProps): JSX.Element {
+export function MonitorRow({ monitor, details, withTimeline, onPress }: RowProps): JSX.Element {
   const palette = usePalette();
-  const paused = monitor.status !== "active";
-  // Projects load separately; until they do, the row says only the type.
-  const details = [TYPE_LABELS[monitor.type], ...detailsOf(monitor)];
-
-  if (project !== undefined) {
-    details.push(project.slug);
-  }
+  // The list holds active and paused monitors only (archived ones are not listed).
+  const paused = monitor.status === "paused";
 
   return (
     <Pressable
@@ -100,7 +103,7 @@ export function MonitorRow({ monitor, project, onPress }: RowProps): JSX.Element
           {monitor.name}
         </Text>
         {paused ? (
-          <Tag label={monitor.status === "paused" ? "Disabled" : "Archived"} tone="neutral" />
+          <Tag label="Disabled" tone="neutral" />
         ) : (
           <Tag label={HEALTH_LABELS[monitor.health]} tone={HEALTH_TONES[monitor.health]} />
         )}
@@ -108,7 +111,7 @@ export function MonitorRow({ monitor, project, onPress }: RowProps): JSX.Element
       <Text size={12} tone="muted" lines={2}>
         {details.join(" · ")}
       </Text>
-      {monitor.type !== "metric" && <RowTimeline monitor={monitor} />}
+      {withTimeline && monitor.type !== "metric" && <RowTimeline monitor={monitor} />}
       {monitor.lastIssue !== null && <LastIssue issue={monitor.lastIssue} />}
     </Pressable>
   );

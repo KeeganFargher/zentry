@@ -2021,8 +2021,10 @@ Rules the router enforces (`src/api/router.ts`):
   phone out (deleting its row) takes effect at once. The user is read, never
   created: devices exist only for users who signed in through Access.
 - Device tokens reach only what the app needs: reading issues and changing
-  their status, following them, notification settings, listing the user's
-  phones, and signing the calling phone out. Creating, changing and deleting
+  their status, following them, notification settings, reading monitors
+  (their list, detail and timeline), listing the user's phones, and signing
+  the calling phone out. Creating, changing, muting and pausing monitors,
+  their alert rules and the member list are web-only. Creating, changing and deleting
   projects, DSN keys and limits, deleting issues, making pairing codes and
   signing out other phones are web-only (403 with a device token). A route is
   web-only unless it is marked `app()` in the router, so a new route never
@@ -2097,7 +2099,9 @@ Android each type has its own notification channel (`alerts`, `workflow`,
   copied rather than shared, so both word and show things alike:
   `lib/format.ts`, `lib/issue.ts`, `lib/clock.ts` and, under
   `components/event/`, `highlight.ts` and `raw-trace.ts` (with `lists.ts` and
-  `json.ts` adapted). A change to one belongs in the other. Sharing them
+  `json.ts` adapted), `lib/monitor-text.ts` (part of the web's), and
+  `components/tick-timeline.tsx` (adapted from `check-in-timeline.tsx`). A
+  change to one belongs in the other. Sharing them
   would mean Metro resolving outside `mobile/`, which the type-only rule
   avoids.
 - Hermes, React Native's engine here, has no `Array#toSorted`, so the app

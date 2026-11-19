@@ -137,10 +137,26 @@ export function RecentCheckIns({ detail }: { detail: MonitorDetail }): JSX.Eleme
   );
 }
 
+/** The outcomes an uptime check records (src/shared/uptime.ts), as the web labels them. */
 const UPTIME_OUTCOMES = new Map<string, readonly [TimelineStatus, string]>([
   ["ok", ["success", "Uptime"]],
   ["failed", ["failure", "Failure"]],
+  ["unknown", ["unknown", "Unknown"]],
 ]);
+
+/** A check's status and label; a check without a known outcome is a bug to hear about. */
+function outcomeOf(
+  evidence: MonitorDetail["observations"][number]["evidence"],
+): readonly [TimelineStatus, string] {
+  const outcome = getText(evidence, "outcome");
+  const known = outcome === null ? undefined : UPTIME_OUTCOMES.get(outcome);
+
+  if (known === undefined) {
+    throw new Error(`An uptime check with an outcome this app does not know: ${String(outcome)}`);
+  }
+
+  return known;
+}
 
 /** Why a check failed: the HTTP status when that was the reason, as the web UI. */
 function reasonText(evidence: MonitorDetail["observations"][number]["evidence"]): string {
@@ -162,9 +178,7 @@ export function RecentChecks({ detail }: { detail: MonitorDetail }): JSX.Element
       <SectionTitle>Recent Checks</SectionTitle>
       {detail.observations.length === 0 && <Text tone="muted">No uptime checks yet.</Text>}
       {detail.observations.slice(0, 20).map((observation) => {
-        const outcome = getText(observation.evidence, "outcome") ?? "unknown";
-        // Anything this app does not know reads as Unknown, as on the web.
-        const [status, label] = UPTIME_OUTCOMES.get(outcome) ?? ["unknown", "Unknown"];
+        const [status, label] = outcomeOf(observation.evidence);
         const durationMs = getText(observation.evidence, "durationMs");
 
         return (

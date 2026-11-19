@@ -278,6 +278,8 @@ export type MonitorDetail = {
   incidents: MonitorIncidentPeriod[];
   deliveries: MonitorDeliveryState[];
   checkIns: CronCheckInView[];
+  /** The creating member's email; null for an SDK or a member who has left. */
+  creatorEmail: string | null;
 };
 
 export type ApiIssueList = { issues: ApiIssue[]; nextCursor: string | null };

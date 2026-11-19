@@ -28,6 +28,7 @@ import { IssueActions } from "./actions";
 import { IssueActivity, IssueTags } from "./details";
 import { EventPanel } from "./event";
 import { BackCrumb, Crumbs, IssueHeader } from "./header";
+import { MonitorLink } from "./monitor-link";
 
 type Tab = "event" | "tags" | "activity";
 
@@ -247,7 +248,10 @@ export function IssueScreen(): JSX.Element {
         {issue.data.monitorId === undefined ? (
           <IssueEvents issue={issue.data} now={now} view={view} setView={setView} />
         ) : (
-          <ActivityTab issue={issue.data} />
+          <>
+            <MonitorLink monitorId={issue.data.monitorId} />
+            <ActivityTab issue={issue.data} />
+          </>
         )}
       </ScrollView>
     </View>

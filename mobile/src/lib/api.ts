@@ -19,7 +19,6 @@ import type {
   IssueStatus,
   Json,
   MonitorDetail,
-  MonitorMember,
   MonitorTimeline,
   NotificationProvider,
   NotificationScope,
@@ -165,11 +164,6 @@ export class Api {
 
   monitors(org: string): Promise<ApiMonitor[]> {
     return this.#get(`/organizations/${org}/monitors/`);
-  }
-
-  /** The organization's members, to name who created a monitor. */
-  monitorMembers(org: string): Promise<MonitorMember[]> {
-    return this.#get(`/organizations/${org}/monitor-members/`);
   }
 
   monitor(org: string, id: string): Promise<MonitorDetail> {
