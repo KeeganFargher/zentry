@@ -19,6 +19,7 @@ import type {
   ApiPairing,
   ApiProject,
   ApiTag,
+  CronUnrecognized,
   IssueStatus,
   Json,
   MonitorDetail,
@@ -26,6 +27,7 @@ import type {
   MonitorPreviewJob,
   MonitorMember,
   MonitorHistory,
+  MonitorTimeline,
   NotificationProvider,
   NotificationScope,
   NotificationType,
@@ -207,6 +209,16 @@ export const api = {
         status,
       }),
     ),
+  monitorTimeline: (
+    org: string,
+    id: string,
+    range: { since: number; until: number; buckets: number },
+  ): Promise<MonitorTimeline> =>
+    get(
+      `/organizations/${org}/monitors/${id}/timeline/?since=${range.since}&until=${range.until}&buckets=${range.buckets}`,
+    ),
+  unrecognizedCheckIns: (org: string): Promise<CronUnrecognized[]> =>
+    get(`/organizations/${org}/monitors/unrecognized-check-ins/`),
   projects: (org: string): Promise<ApiProject[]> => get(`/organizations/${org}/projects/`),
 
   project: (org: string, slug: string): Promise<ApiProject> => get(`/projects/${org}/${slug}/`),

@@ -210,6 +210,8 @@ import type { CronCheckInView } from "./cron";
 
 export type { CronCheckInView, CronUnrecognized } from "./cron";
 
+export type { MonitorTimeline, TimelineBucket, TimelineStatus } from "./monitor-views";
+
 export type MonitorHistory = { observations: MonitorObservation[]; nextCursor: string | null };
 
 export type MonitorMember = { userId: number; email: string };

@@ -12,7 +12,7 @@ import { useResource } from "~/lib/resource";
 import type { Resource } from "~/lib/resource";
 import { navigate } from "~/lib/router";
 import { toast } from "~/lib/toast";
-import { MonitorsRoute } from "~/pages/monitors";
+import { MonitorDetail } from "~/pages/monitors/detail";
 
 import { EventId, EventNav, EventSummary } from "./event-nav";
 import { EventSections, sectionList } from "./event-sections";
@@ -154,7 +154,7 @@ export function IssueDetail({ org, issueId, eventId }: DetailProps): JSX.Element
   }
 
   if (issue.data.monitorId !== undefined) {
-    return <MonitorsRoute route={{ org, id: issue.data.monitorId }} />;
+    return <MonitorDetail org={org} id={issue.data.monitorId} />;
   }
 
   return (

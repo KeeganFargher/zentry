@@ -16,7 +16,7 @@ import { IssueDetail } from "~/pages/issue-detail";
 import { IssueEvents } from "~/pages/issue-events";
 import { IssueList } from "~/pages/issue-list";
 import { MobileSettings } from "~/pages/mobile-settings";
-import { MonitorsRoute } from "~/pages/monitors";
+import { MonitorsRoute } from "~/pages/monitors/route";
 import { NotificationSettings } from "~/pages/notification-settings";
 import { OrganizationSettings } from "~/pages/organization-settings";
 import { ProjectSettings } from "~/pages/project-settings";
@@ -37,7 +37,7 @@ function Page({ route }: { route: Route }): JSX.Element {
     }
 
     case "monitors": {
-      return <MonitorsRoute route={route} />;
+      return <MonitorsRoute org={route.org} view={route.view} />;
     }
 
     case "projects": {
@@ -67,9 +67,11 @@ function Page({ route }: { route: Route }): JSX.Element {
 }
 
 function sectionOf(route: Route): Section {
-  return route.name === "issues" || route.name === "issue" || route.name === "events"
-    ? "issues"
-    : "projects";
+  if (route.name === "issues" || route.name === "issue" || route.name === "events") {
+    return "issues";
+  }
+
+  return route.name === "monitors" ? "monitors" : "projects";
 }
 
 type ShellProps = { org: string; route: Route; me: ApiMe; location: string };

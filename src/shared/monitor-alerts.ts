@@ -28,7 +28,12 @@ export const MonitorRule = z.strictObject({
 
 export type NewMonitorRule = z.output<typeof MonitorRule>;
 
-export type ApiMonitorRule = NewMonitorRule & { id: string; version: number };
+export type ApiMonitorRule = NewMonitorRule & {
+  id: string;
+  version: number;
+  /** When a delivery for this rule was last routed, not suppressed. */
+  lastTriggered: number | null;
+};
 
 export type MonitorTriggerName = z.output<typeof MonitorTrigger>;
 

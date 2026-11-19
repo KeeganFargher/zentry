@@ -37,6 +37,7 @@ import {
   listMonitorRules,
   updateMonitorRule,
 } from "./monitor-rules";
+import { monitorTimeline } from "./monitor-timeline";
 import {
   createMonitor,
   editMonitor,
@@ -108,6 +109,7 @@ const ROUTES: Route<Handler>[] = [
   route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)/status`, setMonitorStatus),
   route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)/mute`, muteMonitor),
   route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)/observations`, monitorHistory),
+  route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)/timeline`, monitorTimeline),
   app(route("GET", `/projects/${ORG}/${SLUG}`, getProject)),
   route("PUT", `/projects/${ORG}/${SLUG}`, updateProject),
   route("DELETE", `/projects/${ORG}/${SLUG}`, deleteProject),

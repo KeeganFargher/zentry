@@ -106,7 +106,8 @@ async function readSignalPreview(
   const occurrences: number[] = [];
   let time = context.now;
 
-  for (let index = 0; index < 5; index += 1) {
+  // Twenty, as the form's sample timeline draws twenty check-ins.
+  for (let index = 0; index < 20; index += 1) {
     time = nextCheckIn(body.config.schedule, body.config.timezone, time);
     occurrences.push(time);
   }

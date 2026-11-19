@@ -148,27 +148,25 @@ test("an uptime monitor runs a probe of an approved endpoint", async ({ request 
     .toMatchObject([{ type: "uptime", health: "healthy" }]);
 });
 
-test("the Monitors page creates and pauses a metric monitor", async ({ page, request }) => {
+test("the Monitors pages create, edit and disable a metric monitor", async ({ page, request }) => {
   const { project } = await newProject(request, "Monitor UI");
 
-  await page.goto(`/${ORG}/monitors/`);
-  await page
-    .getByRole("combobox", { name: "Project", exact: true })
-    .selectOption(String(project.id));
-  await page.getByLabel("Monitor name").fill("Checkout error count");
-  await page.getByLabel("Error count threshold").fill("4");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
-  await expect(page.getByText(/Processed errors in the window/)).toBeVisible();
-  await page.getByRole("button", { name: "Create monitor" }).click();
+  await page.goto(`/${ORG}/monitors/new/?project=${project.id}`);
+  await expect(page.getByRole("radio", { name: /Metric/ })).toBeChecked();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await page.getByRole("textbox", { name: "Monitor Name" }).fill("Checkout error count");
+  await page.getByLabel("High priority threshold").fill("4");
+  await page.getByRole("button", { name: "Create Monitor" }).click();
 
   await expect(page.getByRole("heading", { name: "Checkout error count" })).toBeVisible();
+  await expect(page.getByText("High: Above 4")).toBeVisible();
 
-  await page.getByRole("button", { name: "Edit monitor" }).click();
-  await page.getByLabel("Monitor name").fill("Checkout production errors");
-  await page.getByLabel("Error count threshold").fill("9");
-  await page.getByRole("button", { name: "Save settings" }).click();
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await page.getByRole("textbox", { name: "Monitor Name" }).fill("Checkout production errors");
+  await page.getByLabel("High priority threshold").fill("9");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Checkout production errors" })).toBeVisible();
-  await expect(page.getByText(/Open an issue at 9 errors/)).toBeVisible();
+  await expect(page.getByText("High: Above 9")).toBeVisible();
 
   const stale = await request.put(`/api/0/organizations${new URL(page.url()).pathname}`, {
     data: {
@@ -183,13 +181,40 @@ test("the Monitors page creates and pauses a metric monitor", async ({ page, req
   });
 
   expect(stale.status()).toBe(409);
-  await page.getByRole("button", { name: "Pause monitor" }).click();
-  await expect(page.getByRole("button", { name: "Resume monitor" })).toBeVisible();
-  await page.getByRole("button", { name: "Resume monitor" }).click();
-  await expect(page.getByRole("button", { name: "Pause monitor" })).toBeVisible();
-  await page.getByRole("link", { name: "All monitors" }).click();
-  await page.getByText("Monitoring operations", { exact: true }).click();
-  await expect(page.getByText("Last recorded evaluation", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
+  await expect(page.getByText("This monitor is disabled and not creating issues.")).toBeVisible();
+  await page.getByRole("button", { name: "Enable", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Disable", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Monitors", exact: true }).first().click();
+  await expect(page.getByRole("link", { name: "Checkout production errors" })).toBeVisible();
+});
+
+test("a cron monitor created in the form waits for its first check-in, then draws it", async ({
+  page,
+  request,
+}) => {
+  const fixture = await newProject(request, "Cron UI");
+
+  await page.goto(`/${ORG}/monitors/new/?type=cron&project=${fixture.project.id}`);
+  await expect(page.getByRole("radio", { name: /Cron/ })).toBeChecked();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await page.getByRole("textbox", { name: "Monitor Name" }).fill("Report Builder");
+  // The slug follows the name until it is edited, as Sentry's form.
+  await expect(page.getByRole("textbox", { name: "Monitor Slug" })).toHaveValue("report-builder");
+  await expect(page.getByLabel("Sample check-ins")).toBeVisible();
+  await page.getByRole("button", { name: "Create Monitor" }).click();
+
+  await expect(page.getByRole("heading", { name: "Report Builder" })).toBeVisible();
+  await expect(page.getByText(/Waiting for first check-in/i)).toBeVisible();
+
+  await checkIn(request, fixture, {
+    id: crypto.randomUUID(),
+    slug: "report-builder",
+    status: "ok",
+  });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Recent Check-Ins" })).toBeVisible();
+  await expect(page.getByText("Okay", { exact: true })).toBeVisible();
 });
 
 async function tick(request: APIRequestContext, time: number): Promise<void> {
@@ -533,38 +558,38 @@ test("real JavaScript and captured Python SDK envelopes record runs in their env
   });
 });
 
-test("an owner links a reusable rule, mutes alerts, and sees configuration and delivery history", async ({
+test("an owner links a reusable alert, mutes the monitor, and sees configuration and delivery history", async ({
   page,
   request,
 }) => {
   const fixture = await newProject(request, "Monitor routing");
+  const alert = `Cron email ${crypto.randomUUID().slice(0, 8)}`;
 
-  await page.goto(`/${ORG}/monitors/`);
-  await page.getByText("Manage alert rules", { exact: true }).click();
-  await page.getByLabel("Rule name").fill("Cron email rule");
-  await page.getByRole("button", { name: "Create alert rule" }).click();
-  await expect(page.getByRole("button", { name: "Save alert rule" })).toBeVisible();
-  await page
-    .getByRole("combobox", { name: "Project", exact: true })
-    .selectOption(String(fixture.project.id));
-  await page.getByLabel("Monitor type").selectOption("cron");
-  await page.getByLabel("Monitor name").fill("Muted cron");
-  await page.getByLabel("SDK monitor slug").fill("muted-cron");
-  await page.getByLabel("Description").fill("Monitors the nightly report");
-  await page.getByLabel("Monitor owner", { exact: true }).selectOption({ label: "e2e@localhost" });
-  await page.getByLabel("Linked alert rules").selectOption({ label: "Cron email rule" });
-  await page.getByRole("button", { name: "Create monitor" }).click();
+  await page.goto(`/${ORG}/monitors/alerts/new/`);
+  await page.getByRole("textbox", { name: "Alert Name" }).fill(alert);
+  await page.getByRole("button", { name: "Create Alert" }).click();
+  await expect(page.getByRole("link", { name: alert })).toBeVisible();
+
+  await page.goto(`/${ORG}/monitors/new/settings/?type=cron&project=${fixture.project.id}`);
+  await page.getByRole("textbox", { name: "Monitor Name" }).fill("Muted cron");
+  await page.getByLabel("Describe").fill("Monitors the nightly report");
+  await page.getByLabel("Assign").selectOption({ label: "e2e@localhost" });
+  await page.getByRole("button", { name: "Connect Existing Alerts" }).click();
+  await page.getByRole("checkbox", { name: alert }).check();
+  await page.getByRole("button", { name: "Create Monitor" }).click();
 
   await expect(page.getByRole("heading", { name: "Muted cron" })).toBeVisible();
-  await page.getByRole("button", { name: "Mute alerts" }).click();
-  await expect(page.getByText(/Muted until/)).toBeVisible();
+  await expect(page.getByRole("cell", { name: alert })).toBeVisible();
+  await page.getByRole("button", { name: "Mute", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Mute for 1 day" }).click();
+  await expect(page.getByRole("button", { name: "Mute", exact: true })).toHaveText("Muted");
 
   await checkIn(request, fixture, { id: crypto.randomUUID(), slug: "muted-cron", status: "error" });
   const detail = await request.get(`/api/0/organizations${new URL(page.url()).pathname}`);
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Alert deliveries" })).toBeVisible();
-  await expect(page.getByText(/failure · email · muted/)).toBeVisible();
+  await page.getByText("Alert deliveries (1)").click();
+  await expect(page.getByText(/failure · email · not sent: muted/)).toBeVisible();
   await expect(detail.json()).resolves.toMatchObject({
     monitor: {
       health: "failing",

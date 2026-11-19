@@ -7,13 +7,59 @@ export type Route =
   | { name: "issues"; org: string }
   | { name: "issue"; org: string; issueId: string; eventId: string | null }
   | { name: "events"; org: string; issueId: string }
-  | { name: "monitors"; org: string; id: string | undefined }
+  | { name: "monitors"; org: string; view: MonitorView }
   | { name: "projects"; org: string }
   | { name: "settings"; org: string; project: string }
   | { name: "organizationSettings"; org: string }
   | { name: "notificationSettings"; org: string }
   | { name: "mobileSettings"; org: string }
   | { name: "missing" };
+
+/** The pages under /:org/monitors/, laid out as Sentry's Monitors area. */
+export type MonitorView =
+  | { page: "list"; kind: MonitorListKind }
+  | { page: "new" }
+  | { page: "create" }
+  | { page: "detail"; id: string }
+  | { page: "edit"; id: string }
+  | { page: "alerts" }
+  | { page: "alert"; id: string | null };
+
+export type MonitorListKind = "all" | "mine" | "cron" | "uptime" | "metric";
+
+// Sentry's per-type list paths (views/detectors/utils/detectorTypeConfig.tsx).
+const LIST_PATHS = new Map<string, MonitorListKind>([
+  ["mine", "mine"],
+  ["crons", "cron"],
+  ["uptime", "uptime"],
+  ["metrics", "metric"],
+]);
+
+function monitorView(rest: string[]): MonitorView {
+  const [first, second] = rest;
+
+  if (first === undefined) {
+    return { page: "list", kind: "all" };
+  }
+
+  const kind = LIST_PATHS.get(first);
+
+  if (kind !== undefined) {
+    return { page: "list", kind };
+  }
+
+  if (first === "new") {
+    return second === "settings" ? { page: "create" } : { page: "new" };
+  }
+
+  if (first === "alerts") {
+    return second === undefined
+      ? { page: "alerts" }
+      : { page: "alert", id: second === "new" ? null : second };
+  }
+
+  return second === "edit" ? { page: "edit", id: first } : { page: "detail", id: first };
+}
 
 const NAVIGATE = "zentry:navigate";
 
@@ -80,9 +126,7 @@ export function matchRoute(pathname: string): Route {
   }
 
   if (section === "monitors") {
-    const [id] = rest;
-
-    return { name: "monitors", org, id };
+    return { name: "monitors", org, view: monitorView(rest) };
   }
 
   if (section === "projects" && rest.length === 0) {

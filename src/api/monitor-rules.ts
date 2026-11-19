@@ -23,13 +23,12 @@ async function membersAreValid(context: ApiContext, rule: NewMonitorRule): Promi
 export const listMonitorRules: Handler = async (context) =>
   Response.json(await context.deps.monitorRules.list(context.organizationId));
 
-export const listMonitorMembers: Handler = async (context) => {
-  if (context.role !== "owner") {
-    return forbidden("only an owner can select monitor recipients");
-  }
-
-  return Response.json(await context.deps.notificationSettings.members(context.organizationId));
-};
+/**
+ * The organization's members, which every member can see: the monitor pages
+ * name each monitor's assignee. Only owners can change routing or ownership.
+ */
+export const listMonitorMembers: Handler = async (context) =>
+  Response.json(await context.deps.notificationSettings.members(context.organizationId));
 
 export const createMonitorRule: Handler = async (context) => {
   if (context.role !== "owner") {

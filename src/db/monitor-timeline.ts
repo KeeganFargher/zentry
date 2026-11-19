@@ -11,6 +11,32 @@ import type {
   MonitorScope,
 } from "@/shared/contract";
 import { jsonText } from "@/shared/json";
+import type { MonitorTimeline as TimelineView, TimelineBucket } from "@/shared/monitor-views";
+import type { ApiMonitor } from "@/shared/monitors";
+
+// One row per bucket, scope and status. ?1 monitor, ?2 since, ?3 until, ?4 bucket width.
+const BUCKET_SQL: Record<ApiMonitor["type"], string> = {
+  cron: `SELECT CAST((date_added - ?2) / ?4 AS INTEGER) AS "index", environment AS scope,
+      status, COUNT(*) AS count, NULL AS value
+    FROM cron_checkins WHERE monitor_id = ?1 AND date_added >= ?2 AND date_added < ?3
+    GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+  // A failure while the scope is failing is downtime, as Sentry's
+  // failure_incident; a failure before the threshold is just a failure.
+  uptime: `SELECT CAST((evaluated_at - ?2) / ?4 AS INTEGER) AS "index", scope,
+      CASE json_extract(evidence, '$.outcome')
+        WHEN 'ok' THEN 'success'
+        WHEN 'failed' THEN CASE health WHEN 'failing' THEN 'downtime' ELSE 'failure' END
+        ELSE 'unknown' END AS status,
+      COUNT(*) AS count, NULL AS value
+    FROM monitor_observations WHERE monitor_id = ?1 AND evaluated_at >= ?2 AND evaluated_at < ?3
+    GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+  metric: `SELECT CAST((evaluated_at - ?2) / ?4 AS INTEGER) AS "index", scope,
+      CASE WHEN health IN ('unknown', 'awaiting_data') THEN 'unknown'
+        ELSE COALESCE(severity, 'ok') END AS status,
+      COUNT(*) AS count, MAX(json_extract(evidence, '$.count')) AS value
+    FROM monitor_observations WHERE monitor_id = ?1 AND evaluated_at >= ?2 AND evaluated_at < ?3
+    GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+};
 
 export class MonitorTimeline {
   readonly #db: D1Database;
@@ -125,5 +151,18 @@ export class MonitorTimeline {
       .all<MonitorIncidentPeriod>();
 
     return results;
+  }
+
+  /** Ticks for the monitor's timeline over [since, until), in `bucketMs` steps. */
+  async timeline(
+    monitor: Pick<ApiMonitor, "id" | "type">,
+    range: Omit<TimelineView, "buckets">,
+  ): Promise<TimelineView> {
+    const { results } = await this.#db
+      .prepare(BUCKET_SQL[monitor.type])
+      .bind(monitor.id, range.since, range.until, range.bucketMs)
+      .all<TimelineBucket>();
+
+    return { ...range, buckets: results };
   }
 }

@@ -163,6 +163,14 @@ export const CreateMonitor = z.discriminatedUnion("type", [
   UptimeMonitor,
 ]);
 
+export const LastIssue = z.object({
+  id: z.int(),
+  shortId: z.string(),
+  title: z.string(),
+  status: z.enum(["unresolved", "resolved", "ignored"]),
+  lastSeen: z.int(),
+});
+
 export const MonitorFields = z.object({
   id: z.uuid(),
   status: z.enum(["active", "paused", "archived"]),
@@ -172,6 +180,7 @@ export const MonitorFields = z.object({
   mutedUntil: z.int().nullable(),
   severity: z.enum(["medium", "high"]).nullable(),
   issueId: z.int().nullable(),
+  lastIssue: LastIssue.nullable(),
   createdAt: z.int(),
 });
 
