@@ -210,7 +210,6 @@ function apiDeps(env: Env): ApiDeps {
     devices: new DeviceStore(env.DB),
     notify: () => wakeNotify(env),
     emailEnabled: mailConfig(env) !== null,
-    uptimeOrigins: env.UPTIME_ORIGINS,
     uptimeFixtureOrigin: env.UPTIME_FIXTURE_ORIGIN,
     allowMonitorPreview: async (key) => (await env.MONITOR_PREVIEW_RL.limit({ key })).success,
     monitorPreviews: new MonitorPreviews(env.DB),

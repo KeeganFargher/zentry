@@ -93,7 +93,10 @@ export function UptimeDetection(props: SectionProps<UptimeDraft> & { step: numbe
         set={(intervalMinutes) => update({ intervalMinutes })}
       />
       <TimeoutField ms={config.timeoutMs} set={(timeoutMs) => update({ timeoutMs })} />
-      <Field label="URL" help="An HTTPS origin an operator has approved for this organization.">
+      <Field
+        label="URL"
+        help="Any public https:// URL. No credentials in it, and not Zentry itself."
+      >
         <input
           type="url"
           className="mono"

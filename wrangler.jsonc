@@ -100,7 +100,6 @@
   // bounding that second cost. Raise it while debugging.
   "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   "vars": {
-    "UPTIME_ORIGINS": "",
     // Only the end-to-end suite sets this, to its loopback shop fixture.
     "UPTIME_FIXTURE_ORIGIN": "",
     "INGEST_HOST": "ingest.zentry.example.com",

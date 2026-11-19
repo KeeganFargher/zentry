@@ -132,7 +132,7 @@ queue and expire after two minutes.
   Crontab schedules use the configured IANA timezone, skip nonexistent times
   and use the earlier occurrence when a local time repeats. Minute and hour
   intervals use elapsed time; day and longer intervals keep the wall clock.
-- **Uptime** sends GET or HEAD to operator-approved HTTPS origins from a
+- **Uptime** sends GET or HEAD to any public HTTPS URL from a
   separate Worker. Checks use a timeout, configurable success codes, and
   never follow redirects. Unknown coverage breaks confirmation streaks.
 
@@ -144,13 +144,10 @@ are in the [monitoring plan](docs/sentry-monitoring-workers-plan.md).
 
 1. Create the `zentry-uptime` and `zentry-uptime-dlq` Queues.
 2. Prepare a private deployment configuration from `wrangler.probe.jsonc`.
-   Set `UPTIME_ORIGINS` to comma-separated registrations such as
-   `42=https://status.example.com/health`. The number is the organization ID.
-   Register an origin without a trailing slash to authorize all its paths.
    Set `UPTIME_BLOCKED_HOSTS` to the application, ingest, and other control
    hostnames and keep `FIXTURE_ORIGIN` empty. Deploy the probe Worker first.
-3. Update the main production config with the binding, queues, limiters,
-   minute trigger and the same approved origins from `wrangler.jsonc`.
+3. Update the main production config with the binding, queues, limiters and
+   minute trigger from `wrangler.jsonc`.
    Apply D1 migrations before enabling the scheduler. Verify the controlled
    public HTTPS target, queue redelivery, and paired device in staging.
 4. Set `UPTIME_PROBES_PAUSED=1` on the probe Worker to stop outbound checks

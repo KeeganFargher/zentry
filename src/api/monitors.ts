@@ -6,7 +6,7 @@ import type { ApiMonitor, MonitorHistory } from "@/shared/contract";
 import { CreateMonitor } from "@/shared/monitors";
 import type { CronSettings, NewMonitor } from "@/shared/monitors";
 import { DAY, MINUTE } from "@/shared/time";
-import { approvedUptimeTarget, fixtureTarget, productionUptimeTarget } from "@/shared/uptime";
+import { fixtureTarget, productionUptimeTarget, secretFreeUptimeTarget } from "@/shared/uptime";
 
 import type { ApiContext, Handler } from "./context";
 import {
@@ -46,10 +46,10 @@ export function validateMonitor(context: ApiContext, monitor: NewMonitor): strin
     if (
       target.hostname === context.deps.ingestHost ||
       applicationTarget(target, context, localFixture) ||
-      !approvedUptimeTarget(target, context.organizationId, context.deps.uptimeOrigins) ||
+      !secretFreeUptimeTarget(target) ||
       (!productionUptimeTarget(target) && !localFixture)
     ) {
-      return "uptime URL must use an approved origin";
+      return "uptime URL must be a public https:// address on the default port, without credentials or a #fragment, and not Zentry itself";
     }
 
     monitor.config.url = target.href;

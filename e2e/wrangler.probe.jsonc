@@ -9,7 +9,6 @@
     { "name": "DESTINATION_RL", "namespace_id": "1005", "simple": { "limit": 60, "period": 60 } },
   ],
   "vars": {
-    "UPTIME_ORIGINS": "1=http://localhost:5199",
     "UPTIME_PROBES_PAUSED": "0",
     "UPTIME_BLOCKED_HOSTS": "zentry.example.com,ingest.example.com",
     "FIXTURE_ORIGIN": "http://localhost:5199",

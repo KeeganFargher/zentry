@@ -119,7 +119,7 @@ test("an SDK check-in changes the health of its configured cron monitor", async 
   await expect(list.json()).resolves.toMatchObject([{ type: "cron", health: "healthy" }]);
 });
 
-test("an uptime monitor runs a probe of an approved endpoint", async ({ request }) => {
+test("an uptime monitor runs a probe of a public endpoint", async ({ request }) => {
   const { project } = await newProject(request, "Uptime checks");
 
   const input = {

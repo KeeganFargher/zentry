@@ -10,11 +10,10 @@
     { "name": "DESTINATION_RL", "namespace_id": "1005", "simple": { "limit": 60, "period": 60 } },
   ],
   "vars": {
-    "UPTIME_ORIGINS": "",
     "FIXTURE_ORIGIN": "",
     "UPTIME_PROBES_PAUSED": "0",
-    // Zentry's own UI and ingest hosts, which no probe may call even if an
-    // approval names them. Replace with your hosts, as in wrangler.jsonc.
+    // Zentry's own UI and ingest hosts, which no probe may call. Replace
+    // with your hosts, as in wrangler.jsonc.
     "UPTIME_BLOCKED_HOSTS": "zentry.example.com,ingest.zentry.example.com",
   },
 }

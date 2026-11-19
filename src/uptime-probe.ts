@@ -1,10 +1,9 @@
 import { z } from "zod";
 
 import { jsonText } from "@/shared/json";
-import { approvedUptimeTarget, fixtureTarget, productionUptimeTarget } from "@/shared/uptime";
+import { fixtureTarget, productionUptimeTarget, secretFreeUptimeTarget } from "@/shared/uptime";
 
 type ProbeEnv = {
-  UPTIME_ORIGINS: string;
   FIXTURE_ORIGIN: string;
   DESTINATION_RL: RateLimit;
   UPTIME_PROBES_PAUSED: string;
@@ -12,7 +11,6 @@ type ProbeEnv = {
 };
 
 const ProbeInput = z.strictObject({
-  organizationId: z.int().positive(),
   url: z.url().max(512),
   method: z.enum(["GET", "HEAD"]),
   timeoutMs: z.int().min(1000).max(15000),
@@ -29,8 +27,7 @@ export default {
       return Response.json({ outcome: "unknown", reason: "policy" });
     }
 
-    const { url, organizationId } = input.data;
-    const target = new URL(url);
+    const target = new URL(input.data.url);
 
     const fixture = fixtureTarget(target, env.FIXTURE_ORIGIN);
 
@@ -40,7 +37,7 @@ export default {
 
     if (
       env.UPTIME_BLOCKED_HOSTS.split(",").includes(target.hostname) ||
-      !approvedUptimeTarget(target, organizationId, env.UPTIME_ORIGINS) ||
+      !secretFreeUptimeTarget(target) ||
       (!fixture && !productionUptimeTarget(target))
     ) {
       return Response.json({ outcome: "unknown", reason: "policy" });

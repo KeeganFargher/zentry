@@ -44,8 +44,12 @@ export const previewMonitor: Handler = async (context) => {
     const expiresAt = context.now + 2 * MINUTE;
     await context.deps.monitorPreviews.create(
       id,
-      { config: body.config, organizationId: context.organizationId },
-      { expiresAt, now: context.now, actorId: context.user.id },
+      { organizationId: context.organizationId, config: body.config },
+      {
+        expiresAt,
+        now: context.now,
+        actorId: context.user.id,
+      },
     );
     await context.deps.enqueueMonitorPreview(id);
     const job: MonitorPreviewJob = { type: "uptime_job", id, expiresAt, status: "pending" };

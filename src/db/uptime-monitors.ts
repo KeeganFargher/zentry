@@ -26,8 +26,6 @@ export type ProbeResult = {
     | undefined;
 };
 
-export type ProbeRequest = { config: UptimeSettings; organizationId: number };
-
 const Config = jsonText(UptimeConfig);
 
 const FinishingRow = z.object({
@@ -147,18 +145,16 @@ export class UptimeMonitorStore {
     ]);
   }
 
-  async start(job: ScheduledUptimeJob, now: number): Promise<ProbeRequest | null> {
+  async start(job: ScheduledUptimeJob, now: number): Promise<UptimeSettings | null> {
     const row = await this.#db
       .prepare(`
       UPDATE monitors SET probe_started = 1
       WHERE id = ?1 AND lease_token = ?2 AND lease_expires > ?3 AND status = 'active' AND probe_started = 0
-      RETURNING config, (SELECT organization_id FROM projects WHERE id = monitors.project_id) AS organizationId`)
+      RETURNING config`)
       .bind(job.id, job.token, now)
-      .first<{ config: string; organizationId: number }>();
+      .first<{ config: string }>();
 
-    return row === null
-      ? null
-      : { config: Config.parse(row.config), organizationId: row.organizationId };
+    return row === null ? null : Config.parse(row.config);
   }
 
   /** The leased monitor's streaks and issue, or null when the lease is no longer this job's. */

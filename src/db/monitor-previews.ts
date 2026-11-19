@@ -1,7 +1,8 @@
 import { jsonText } from "@/shared/json";
 import { UptimeConfig } from "@/shared/monitors";
+import type { UptimeSettings } from "@/shared/monitors";
 
-import type { ProbeRequest, ProbeResult } from "./uptime-monitors";
+import type { ProbeResult } from "./uptime-monitors";
 
 const Config = jsonText(UptimeConfig);
 
@@ -14,7 +15,7 @@ export class MonitorPreviews {
 
   async create(
     id: string,
-    input: ProbeRequest,
+    { organizationId, config }: { organizationId: number; config: UptimeSettings },
     { expiresAt, now, actorId }: { expiresAt: number; now: number; actorId: number },
   ): Promise<void> {
     await this.#db.batch([
@@ -23,7 +24,7 @@ export class MonitorPreviews {
         .prepare(
           "INSERT INTO monitor_previews (id, organization_id, config, expires_at, actor_id) VALUES (?1, ?2, ?3, ?4, ?5)",
         )
-        .bind(id, input.organizationId, JSON.stringify(input.config), expiresAt, actorId),
+        .bind(id, organizationId, JSON.stringify(config), expiresAt, actorId),
     ]);
   }
 
@@ -39,7 +40,7 @@ export class MonitorPreviews {
       .first();
   }
 
-  async start(id: string, now: number): Promise<ProbeRequest | null> {
+  async start(id: string, now: number): Promise<UptimeSettings | null> {
     // The claim is permanent so redelivery cannot run a second request.
     const row = await this.#db
       .prepare(`UPDATE monitor_previews SET started_at = ?2
@@ -47,13 +48,11 @@ export class MonitorPreviews {
       AND EXISTS (SELECT 1 FROM organization_members member
         WHERE member.organization_id = monitor_previews.organization_id
           AND member.user_id = monitor_previews.actor_id AND member.role = 'owner')
-      RETURNING organization_id AS organizationId, config`)
+      RETURNING config`)
       .bind(id, now)
-      .first<{ organizationId: number; config: string }>();
+      .first<{ config: string }>();
 
-    return row === null
-      ? null
-      : { organizationId: row.organizationId, config: Config.parse(row.config) };
+    return row === null ? null : Config.parse(row.config);
   }
 
   async finish(id: string, result: ProbeResult, now: number): Promise<void> {

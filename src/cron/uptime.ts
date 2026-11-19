@@ -3,9 +3,9 @@ import { z } from "zod";
 import { planIssues } from "@/core/monitor-issues";
 import { uptimeResult, uptimeSignal } from "@/core/uptime-results";
 import type { MonitorPreviews } from "@/db/monitor-previews";
-import type { ProbeRequest, ProbeResult, UptimeMonitorStore } from "@/db/uptime-monitors";
+import type { ProbeResult, UptimeMonitorStore } from "@/db/uptime-monitors";
 import { errorText, logError } from "@/shared/log";
-import type { ScheduledUptimeJob, UptimeJob } from "@/shared/monitors";
+import type { ScheduledUptimeJob, UptimeJob, UptimeSettings } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
 import { ProbeResponse } from "@/shared/uptime";
@@ -113,10 +113,10 @@ async function saveCheck(
  */
 async function probeOrUnknown(
   binding: Pick<Fetcher, "fetch">,
-  input: ProbeRequest,
+  config: UptimeSettings,
 ): Promise<ProbeResult> {
   try {
-    return await requestProbe(binding, input);
+    return await requestProbe(binding, config);
   } catch (cause) {
     logError("uptime probe service failed", { error: errorText(cause) });
 
@@ -140,9 +140,9 @@ async function runPreview(
 
 async function requestProbe(
   binding: Pick<Fetcher, "fetch">,
-  input: ProbeRequest,
+  config: UptimeSettings,
 ): Promise<ProbeResult> {
-  const { url, method, timeoutMs, successCodes } = input.config;
+  const { url, method, timeoutMs, successCodes } = config;
 
   const response = await binding.fetch("https://uptime-probe.internal/", {
     method: "POST",
@@ -151,7 +151,6 @@ async function requestProbe(
       method,
       timeoutMs,
       successCodes,
-      organizationId: input.organizationId,
     }),
   });
 

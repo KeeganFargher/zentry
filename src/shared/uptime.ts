@@ -19,28 +19,16 @@ function credentialFree(target: URL): boolean {
 }
 
 /**
- * Registrations authorize a canonical origin (any path and query on it) or
- * one exact URL, by organization.
+ * Any URL a member types is accepted, without an operator allowlist: an
+ * allowlist in deploy config made every new endpoint a redeploy. What keeps a
+ * probe from becoming a way into Zentry or a leak instead is that the target
+ * must be public HTTPS (productionUptimeTarget), never one of Zentry's own
+ * hosts (checked by the callers), and carry no secrets, because the URL is
+ * stored in the monitor's settings and shown in the UI.
  */
-export function approvedUptimeTarget(
-  target: URL,
-  organizationId: number,
-  approvedOrigins: string,
-): boolean {
-  if (
-    target.username !== "" ||
-    target.password !== "" ||
-    target.hash !== "" ||
-    !credentialFree(target)
-  ) {
-    return false;
-  }
-
-  const allowed = approvedOrigins.split(",");
-
+export function secretFreeUptimeTarget(target: URL): boolean {
   return (
-    allowed.includes(`${organizationId}=${target.origin}`) ||
-    allowed.includes(`${organizationId}=${target.href}`)
+    target.username === "" && target.password === "" && target.hash === "" && credentialFree(target)
   );
 }
 

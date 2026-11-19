@@ -440,3 +440,34 @@ describe("routing a monitor's transitions", () => {
     ]);
   });
 });
+
+describe("creating an uptime monitor", () => {
+  async function createUptime(url: string): Promise<Response> {
+    const { id: projectId } = await createProject();
+
+    return api("/organizations/default/monitors/", {
+      method: "POST",
+      body: { projectId, type: "uptime", name: "Status page", config: { url, intervalMinutes: 1 } },
+    });
+  }
+
+  // Members add endpoints themselves; no operator registration is needed.
+  it("accepts any public HTTPS URL without an operator allowlist", async () => {
+    expect((await createUptime("https://status.brand-new-site.example/health")).status).toBe(201);
+  });
+
+  it("refuses Zentry's own ingest host and plain HTTP", async () => {
+    expect((await createUptime("https://ingest.zentry.test/")).status).toBe(400);
+    expect((await createUptime("http://status.example.com/")).status).toBe(400);
+  });
+
+  it("refuses Zentry's application host", async () => {
+    // api() calls the API on this host, so it is the application's own.
+    expect((await createUptime("https://zentry.test/health")).status).toBe(400);
+  });
+
+  it("refuses a URL that would store a secret", async () => {
+    expect((await createUptime("https://user:pass@status.example.com/")).status).toBe(400);
+    expect((await createUptime("https://status.example.com/health?token=secret")).status).toBe(400);
+  });
+});

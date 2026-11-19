@@ -108,11 +108,6 @@ export function NewMonitor({ org }: { org: string }): JSX.Element {
             </label>
           ))}
         </div>
-        {type === "uptime" && (
-          <div className="alert-banner warning">
-            Uptime checks reach only origins an operator has approved for this organization.
-          </div>
-        )}
         <p>
           Want to just alert on an existing monitor?{" "}
           <Link to={`/${org}/monitors/alerts/new/`}>Create an alert</Link>.
