@@ -3,14 +3,21 @@
 
 import type { JSX } from "react";
 
-import { intOf } from "./form-common";
+import { COMPARATOR_TEXT, defaultResolveText, resolveDirection } from "~/lib/monitor-text";
+
 import type { SectionProps } from "./form-common";
+import { WholeNumberInput } from "./form-inputs";
 import type { MetricDraft } from "./form-state";
 import { Field, FormSection, PriorityDot } from "./parts";
 
 const WINDOWS = [300, 900, 3600] as const;
 
-const COMPARATORS = ["gt", "lt"] as const;
+const COMPARATORS = ["gt", "gte", "lt", "lte"] as const;
+
+type Comparator = (typeof COMPARATORS)[number];
+
+// Counts are whole numbers; no window holds more than this many errors.
+const MAX_COUNT = Number.MAX_SAFE_INTEGER;
 
 type MetricConfig = MetricDraft["config"];
 
@@ -29,7 +36,7 @@ function windowOf(value: string): MetricConfig["windowSeconds"] {
   return seconds;
 }
 
-function comparatorOf(value: string): (typeof COMPARATORS)[number] {
+function comparatorOf(value: string): Comparator {
   const comparator = COMPARATORS.find((entry) => entry === value);
 
   if (comparator === undefined) {
@@ -107,28 +114,20 @@ function Threshold({
   label,
   priority,
   comparator,
-  value,
-  set,
+  children,
 }: {
   label: string;
   priority: "high" | "medium";
-  comparator: MetricConfig["comparator"];
-  value: number | undefined;
-  set: (value: number | undefined) => void;
+  comparator: Comparator;
+  children: JSX.Element;
 }): JSX.Element {
   return (
     <div className="threshold-row">
       <span>
         <PriorityDot priority={priority} /> {label}
       </span>
-      <span className="muted">{comparator.startsWith("gt") ? "Above" : "Below"}</span>
-      <input
-        type="number"
-        min={0}
-        aria-label={`${label} threshold`}
-        value={value ?? ""}
-        onChange={(event) => set(event.target.value === "" ? undefined : intOf(event.target.value))}
-      />
+      <span className="muted">{COMPARATOR_TEXT[comparator]}</span>
+      {children}
     </div>
   );
 }
@@ -156,69 +155,95 @@ export function MetricDetection(props: SectionProps<MetricDraft> & { step: numbe
           value={config.comparator}
           onChange={(event) => update({ comparator: comparatorOf(event.target.value) })}
         >
-          <option value="gt">Above</option>
-          <option value="lt">Below</option>
+          {COMPARATORS.map((comparator) => (
+            <option key={comparator} value={comparator}>
+              {COMPARATOR_TEXT[comparator]}
+            </option>
+          ))}
         </select>
       </Field>
-      <Threshold
-        label="High priority"
-        priority="high"
-        comparator={config.comparator}
-        value={config.threshold}
-        set={(threshold) => update({ threshold: threshold ?? 0 })}
-      />
-      <Threshold
-        label="Medium priority"
-        priority="medium"
-        comparator={config.comparator}
-        value={config.warningThreshold}
-        set={(warningThreshold) => update({ warningThreshold })}
-      />
+      <Threshold label="High priority" priority="high" comparator={config.comparator}>
+        <WholeNumberInput
+          label="High priority threshold"
+          min={0}
+          max={MAX_COUNT}
+          value={config.threshold}
+          set={(threshold) => update({ threshold })}
+        />
+      </Threshold>
+      <Threshold label="Medium priority" priority="medium" comparator={config.comparator}>
+        <WholeNumberInput
+          label="Medium priority threshold"
+          optional
+          min={0}
+          max={MAX_COUNT}
+          value={config.warningThreshold}
+          set={(warningThreshold) => update({ warningThreshold })}
+        />
+      </Threshold>
       <MetricResolve config={config} update={update} />
     </FormSection>
   );
 }
 
+/**
+ * The custom value that resolves where the default does, so choosing Custom
+ * changes nothing until the number is edited. "Below 10" as an inclusive
+ * value is 9, and "above 10" is 11; a count cannot go below 0.
+ */
+function equivalentRecovery(config: MetricConfig): number {
+  const base = config.warningThreshold ?? config.threshold;
+
+  const values: Record<Comparator, number> = {
+    gt: base,
+    gte: Math.max(0, base - 1),
+    lt: base,
+    lte: base + 1,
+  };
+
+  return values[config.comparator];
+}
+
 /** Resolve at the detection threshold by default, as Sentry's, or at a custom value. */
 function MetricResolve({ config, update }: { config: MetricConfig; update: Update }): JSX.Element {
-  const above = config.comparator.startsWith("gt");
-
   return (
     <>
       <h5>Resolve</h5>
       <label className="check-label">
         <input
           type="radio"
+          name="metric-resolve"
           checked={config.recoveryThreshold === undefined}
           onChange={() => update({ recoveryThreshold: undefined })}
         />{" "}
         Default
         <span className="muted small">
           {" "}
-          Issue will be resolved when the query value is{" "}
-          {above ? "below or equal to" : "above or equal to"}{" "}
-          {config.warningThreshold ?? config.threshold}.
+          Issue will be resolved when the query value is {defaultResolveText(config)}.
         </span>
       </label>
       <label className="check-label">
         <input
           type="radio"
+          name="metric-resolve"
           checked={config.recoveryThreshold !== undefined}
-          onChange={() =>
-            update({ recoveryThreshold: config.warningThreshold ?? config.threshold })
-          }
+          onChange={() => update({ recoveryThreshold: equivalentRecovery(config) })}
         />{" "}
         Custom
-        {config.recoveryThreshold !== undefined && (
-          <input
-            type="number"
-            min={0}
-            aria-label="Resolve threshold"
-            value={config.recoveryThreshold}
-            onChange={(event) => update({ recoveryThreshold: intOf(event.target.value) })}
-          />
-        )}
       </label>
+      {config.recoveryThreshold !== undefined && (
+        <div className="threshold-row">
+          <span className="muted">Resolve when the query value is</span>
+          <span className="muted">{resolveDirection(config)}</span>
+          <WholeNumberInput
+            label="Resolve threshold"
+            min={0}
+            max={MAX_COUNT}
+            value={config.recoveryThreshold}
+            set={(recoveryThreshold) => update({ recoveryThreshold })}
+          />
+        </div>
+      )}
     </>
   );
 }

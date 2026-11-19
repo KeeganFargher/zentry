@@ -18,6 +18,7 @@ import { CHECK_IN_LABELS } from "~/lib/monitor-text";
 
 import { DetailSection } from "./parts";
 import { SdkGuide } from "./sdk-guide";
+import type { DsnState } from "./sdk-guide";
 
 const HEALTH_ICONS = {
   healthy: (
@@ -150,9 +151,7 @@ export function RecentCheckIns({ detail }: { detail: Detail }): JSX.Element {
   return (
     <DetailSection title="Recent Check-Ins">
       {detail.checkIns.length === 0 ? (
-        <div className="panel empty-state muted">
-          No check-ins have been recorded for this time period.
-        </div>
+        <div className="panel empty-state muted">No check-ins have been recorded yet.</div>
       ) : (
         <table className="rows panel">
           <thead>
@@ -185,7 +184,7 @@ export function CronOnboarding({
   dsn,
 }: {
   monitor: CronMonitor;
-  dsn: string | null;
+  dsn: DsnState;
 }): JSX.Element {
   return (
     <div className="panel onboarding">

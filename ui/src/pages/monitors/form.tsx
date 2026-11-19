@@ -2,7 +2,7 @@
 // layout with an editable title in the top bar, a sticky preview, numbered
 // sections and a footer of actions.
 
-import type { ApiProject, NewMonitor } from "@contract";
+import type { NewMonitor } from "@contract";
 import { useState } from "react";
 import type { JSX } from "react";
 
@@ -24,6 +24,7 @@ import type { SectionProps } from "./form-common";
 import { CronDetection, CronResolution, Instrumentation } from "./form-cron";
 import { FormFooter } from "./form-footer";
 import type { Mode } from "./form-footer";
+import { useProblems, ValidityProvider } from "./form-inputs";
 import { MetricChoice, MetricDetection } from "./form-metric";
 import { MetricPreview, SchedulePreview } from "./form-preview";
 import { bodyOf, draftOf, newDraft } from "./form-state";
@@ -32,6 +33,8 @@ import type { MonitorType } from "./form-state";
 import { UptimeDetection, UptimeResolution, UptimeVerification } from "./form-uptime";
 import { Field, TopBar, useMonitorContext } from "./parts";
 import type { MonitorContext } from "./parts";
+import { dsnStateOf } from "./sdk-guide";
+import type { DsnState } from "./sdk-guide";
 
 type FormProps = { org: string; context: MonitorContext; mode: Mode; initial: NewMonitor };
 
@@ -99,15 +102,11 @@ function SlugField({
   );
 }
 
-/** The project's active DSN, for the instrumentation snippets; null until it has one. */
-function useDsn(org: string, project: ApiProject | undefined): string | null {
-  const slug = project?.slug ?? "";
+/** The project's active DSN for the instrumentation snippets, or why there is none yet. */
+function useDsn(org: string, slug: string): DsnState {
+  const keys = useResource(`keys:${org}:${slug}`, () => api.keys(org, slug));
 
-  const keys = useResource(`keys:${org}:${slug}`, () =>
-    slug === "" ? Promise.resolve([]) : api.keys(org, slug),
-  );
-
-  return keys.data?.find(({ status }) => status === "active")?.dsn ?? null;
+  return dsnStateOf(keys);
 }
 
 function TitleBar({
@@ -179,18 +178,27 @@ function useSave(org: string, mode: Mode, draft: NewMonitor): Saving {
 function Form({ org, context, mode, initial }: FormProps): JSX.Element {
   const [draft, setDraft] = useState<NewMonitor>(initial);
   const [guided, setGuided] = useState(false);
+  const [problems, report] = useProblems();
   const editing = mode.kind === "edit";
   const project = context.projects.find(({ id }) => id === draft.projectId);
-  const dsn = useDsn(org, project);
+
+  // The project select offers only these projects, and a stale one is
+  // refused before the form opens, so a miss here is a bug.
+  if (project === undefined) {
+    throw new Error(`Project ${draft.projectId} is not in the organization's projects`);
+  }
+
+  const dsn = useDsn(org, project.slug);
 
   const { save, saving, error } = useSave(org, mode, draft);
+  const problem = Object.values(problems)[0] ?? null;
 
   const props = { draft, set: setDraft, context, editing, org };
   // With the cron guide open the SDK creates the monitor, so the form hides.
   const hideRest = draft.type === "cron" && guided;
 
   return (
-    <>
+    <ValidityProvider value={report}>
       <TitleBar
         org={org}
         draft={draft}
@@ -229,9 +237,10 @@ function Form({ org, context, mode, initial }: FormProps): JSX.Element {
         draft={draft}
         saving={saving}
         guided={hideRest}
+        problem={problem}
         save={save}
       />
-    </>
+    </ValidityProvider>
   );
 }
 
@@ -246,7 +255,7 @@ export function CreateMonitor({ org }: { org: string }): JSX.Element {
   const context = useMonitorContext(org);
   // Step 1 always names a type; arriving here without one is a stale or hand-typed URL.
   const requested = url.searchParams.get("type") ?? "";
-  const projectParam = Number(url.searchParams.get("project"));
+  const projectParam = url.searchParams.get("project");
 
   if (!isType(requested)) {
     return <Notice loading={false} error="Choose a monitor type first." />;
@@ -256,11 +265,20 @@ export function CreateMonitor({ org }: { org: string }): JSX.Element {
     return <Notice loading={context.loading} error={context.error} />;
   }
 
+  const { projects } = context.data;
+
+  if (projects.length === 0) {
+    return <Notice loading={false} error="Create a project before adding monitors." />;
+  }
+
+  // With no ?project= (the list's Create Monitor), start on the first project,
+  // as Sentry's form does; the select changes it. A ?project= that names no
+  // project is a stale link, and says so rather than silently using another.
   const project =
-    context.data.projects.find(({ id }) => id === projectParam) ?? context.data.projects[0];
+    projectParam === null ? projects[0] : projects.find(({ id }) => String(id) === projectParam);
 
   if (project === undefined) {
-    return <Notice loading={false} error="Create a project before adding monitors." />;
+    return <Notice loading={false} error="That project does not exist." />;
   }
 
   return (

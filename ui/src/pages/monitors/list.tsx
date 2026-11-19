@@ -8,7 +8,6 @@ import type { JSX } from "react";
 import { Link, Notice } from "~/components/basics";
 import { Icon } from "~/components/icons";
 import { api } from "~/lib/api";
-import { useNow } from "~/lib/clock";
 import { useResource } from "~/lib/resource";
 import type { Resource } from "~/lib/resource";
 import { navigate, replaceQuery, useUrl } from "~/lib/router";
@@ -86,6 +85,7 @@ function Toolbar(props: {
         <Icon name="search" />
         <input
           type="search"
+          aria-label="Search for monitors"
           placeholder="Search for monitors"
           value={query.get("query") ?? ""}
           onChange={(event) => set("query", event.target.value)}
@@ -100,6 +100,20 @@ function Toolbar(props: {
       </button>
     </div>
   );
+}
+
+/** Only the cron list asks, so the other lists make no request for it. */
+function CronUnrecognized({ org }: { org: string }): JSX.Element | null {
+  const unrecognized = useResource(`unrecognized:${org}`, () => api.unrecognizedCheckIns(org));
+
+  if (unrecognized.data === null) {
+    // Loading shows nothing, as the banner is optional; a failure says so.
+    return unrecognized.error === null ? null : (
+      <Notice loading={false} error={unrecognized.error} onRetry={unrecognized.reload} />
+    );
+  }
+
+  return <Unrecognized entries={unrecognized.data} />;
 }
 
 function Unrecognized({ entries }: { entries: CronUnrecognized[] }): JSX.Element | null {
@@ -175,7 +189,9 @@ function MonitorTable({ org, monitors, context, timelines, reload }: TableProps)
   const url = useUrl();
   const page = Number(url.searchParams.get("page") ?? "0");
   const shown = monitors.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const until = Math.ceil(useNow() / 60_000) * 60_000;
+  // One window for the page's life: deriving it from the clock would change
+  // every row's timeline key each minute, blanking and refetching all of them.
+  const [until] = useState(() => Math.ceil(Date.now() / 60_000) * 60_000);
   const window = timelines ? { since: until - DAY, until } : null;
   const picked = monitors.filter(({ id }) => selected.has(id));
   const all = shown.length > 0 && shown.every(({ id }) => selected.has(id));
@@ -191,11 +207,8 @@ function MonitorTable({ org, monitors, context, timelines, reload }: TableProps)
 
   return (
     <>
-      <div
-        className={timelines ? "panel monitor-table with-timeline" : "panel monitor-table"}
-        role="table"
-      >
-        <div className="monitor-row head" role="row">
+      <div className={timelines ? "panel monitor-table with-timeline" : "panel monitor-table"}>
+        <div className="monitor-row head">
           <input
             type="checkbox"
             aria-label="Select all"
@@ -249,7 +262,12 @@ function useListData(org: string): Resource<ListData> {
     data,
     loading: context.loading || monitors.loading || me.loading,
     error: context.error ?? monitors.error ?? me.error,
-    reload: monitors.reload,
+    // Retry whichever of the three failed.
+    reload: () => {
+      context.reload();
+      monitors.reload();
+      me.reload();
+    },
   };
 }
 
@@ -279,7 +297,6 @@ function ListBody({ org, kind, data, reload }: BodyProps): JSX.Element {
 
 export function MonitorList({ org, kind }: { org: string; kind: MonitorListKind }): JSX.Element {
   const list = useListData(org);
-  const unrecognized = useResource(`unrecognized:${org}`, () => api.unrecognizedCheckIns(org));
   const data = list.data;
 
   return (
@@ -287,7 +304,7 @@ export function MonitorList({ org, kind }: { org: string; kind: MonitorListKind 
       <TopBar crumbs={[{ label: TITLES[kind] }]} />
       <div className="content monitor-page">
         {data !== null && <Toolbar kind={kind} context={data.context} org={org} />}
-        {kind === "cron" && <Unrecognized entries={unrecognized.data ?? []} />}
+        {kind === "cron" && <CronUnrecognized org={org} />}
         {data === null ? (
           <Notice loading={list.loading} error={list.error} onRetry={list.reload} />
         ) : (

@@ -8,7 +8,14 @@ import { TimeSince } from "~/components/basics";
 import { StatusSwatch } from "~/components/check-in-timeline";
 import { CopyButton } from "~/components/overlays";
 import { dateTime } from "~/lib/format";
-import { everyMinutes, pluralize, scheduleText } from "~/lib/monitor-text";
+import {
+  COMPARATOR_TEXT,
+  customResolveText,
+  defaultResolveText,
+  everyMinutes,
+  pluralize,
+  scheduleText,
+} from "~/lib/monitor-text";
 
 import { memberEmail, PriorityDot } from "./parts";
 import type { MonitorContext } from "./parts";
@@ -55,8 +62,7 @@ function Detect({ monitor }: { monitor: ApiMonitor }): JSX.Element {
   const { comparator, threshold, warningThreshold, windowSeconds, level, environment } =
     monitor.config;
 
-  const direction = comparator.startsWith("gt") ? "Above" : "Below";
-  const inclusive = comparator.endsWith("e") ? " or equal to" : "";
+  const direction = COMPARATOR_TEXT[comparator];
 
   return (
     <dl className="detect-list">
@@ -69,13 +75,11 @@ function Detect({ monitor }: { monitor: ApiMonitor }): JSX.Element {
       <dt>Threshold:</dt>
       <dd>
         <div>
-          <PriorityDot priority="high" /> High: {direction}
-          {inclusive} {threshold}
+          <PriorityDot priority="high" /> High: {direction} {threshold}
         </div>
         {warningThreshold !== undefined && (
           <div>
-            <PriorityDot priority="medium" /> Medium: {direction}
-            {inclusive} {warningThreshold}
+            <PriorityDot priority="medium" /> Medium: {direction} {warningThreshold}
           </div>
         )}
       </dd>
@@ -100,38 +104,44 @@ function resolveText(monitor: ApiMonitor): string {
     );
   }
 
-  const { recoveryThreshold, warningThreshold, threshold, comparator } = monitor.config;
-  const at = recoveryThreshold ?? warningThreshold ?? threshold;
+  const { recoveryThreshold } = monitor.config;
 
-  return `Resolved when the count is ${comparator.startsWith("gt") ? "at or below" : "at or above"} ${at}.`;
+  const when =
+    recoveryThreshold === undefined
+      ? defaultResolveText(monitor.config)
+      : customResolveText(monitor.config, recoveryThreshold);
+
+  return `Resolved when the count is ${when}.`;
 }
 
-const LEGEND: Record<ApiMonitor["type"], [TimelineStatus, (monitor: ApiMonitor) => string][]> = {
-  cron: [
-    [
-      "missed",
-      (monitor) =>
-        `Check-in missed after ${monitor.type === "cron" ? monitor.config.graceMinutes : 1} min`,
-    ],
-    ["error", () => "Check-in reported as failed"],
-    [
-      "timeout",
-      (monitor) =>
-        `Check-in timed out after ${monitor.type === "cron" ? monitor.config.maxRuntimeMinutes : 30} min`,
-    ],
-  ],
-  uptime: [
-    ["success", () => "Uptime"],
-    ["failure", () => "Failure"],
-    ["downtime", () => "Downtime"],
-    ["unknown", () => "Unknown"],
-  ],
-  metric: [
-    ["high", () => "High priority"],
-    ["medium", () => "Medium priority"],
-    ["ok", () => "Resolved"],
-  ],
-};
+/**
+ * The legend for the type's ticks. Narrowing on the monitor itself gives the
+ * cron lines their configured margins, with no branch for other types.
+ */
+function legendOf(monitor: ApiMonitor): [TimelineStatus, string][] {
+  if (monitor.type === "cron") {
+    return [
+      ["missed", `Check-in missed after ${monitor.config.graceMinutes} min`],
+      ["error", "Check-in reported as failed"],
+      ["timeout", `Check-in timed out after ${monitor.config.maxRuntimeMinutes} min`],
+    ];
+  }
+
+  if (monitor.type === "uptime") {
+    return [
+      ["success", "Uptime"],
+      ["failure", "Failure"],
+      ["downtime", "Downtime"],
+      ["unknown", "Unknown"],
+    ];
+  }
+
+  return [
+    ["high", "High priority"],
+    ["medium", "Medium priority"],
+    ["ok", "Resolved"],
+  ];
+}
 
 type DetailRow = [label: string, value: ReactNode];
 
@@ -189,17 +199,17 @@ function typeRows(detail: Detail): DetailRow[] {
 
 /** Who created the monitor: a member, an SDK check-in's monitor_config, or a member who left. */
 function creatorOf(detail: Detail, context: MonitorContext): string {
-  const created = detail.audit.at(-1);
+  const { creator } = detail.monitor;
 
-  if (created === undefined) {
-    return "-";
-  }
-
-  if (created.actorId === null) {
+  if (creator.kind === "sdk") {
     return "SDK check-in";
   }
 
-  return memberEmail(context.members, created.actorId) ?? "-";
+  if (creator.kind === "former_member") {
+    return "A former member";
+  }
+
+  return memberEmail(context.members, creator.userId) ?? "A former member";
 }
 
 function detailRows(detail: Detail, context: MonitorContext): DetailRow[] {
@@ -254,10 +264,10 @@ export function DetailSidebar({
       {detail.coverage !== null && <Uptime coverage={detail.coverage} />}
       <Block title="Legend">
         <ul className="legend">
-          {LEGEND[monitor.type].map(([status, text]) => (
+          {legendOf(monitor).map(([status, text]) => (
             <li key={status}>
               <StatusSwatch status={status} />
-              {text(monitor)}
+              {text}
             </li>
           ))}
         </ul>

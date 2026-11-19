@@ -110,7 +110,7 @@ function configOf(draft: NewMonitor): Json {
     return {
       ...rest,
       slug: slug === "" ? slugify(nameOf(draft)) : slug,
-      schedule: schedule.type === "crontab" ? { ...schedule } : { ...schedule },
+      schedule: { ...schedule },
     };
   }
 

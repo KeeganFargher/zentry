@@ -3,13 +3,15 @@ import { describe, expect, it } from "vitest";
 
 import { evaluateCronDeadlines } from "@/cron/cron-deadlines";
 import { CronStore } from "@/db/cron-store";
+import { MonitorStore } from "@/db/monitors";
 import { receiveCheckIn } from "@/ingest/cron-receive";
-import type { ApiMonitor, ApiMonitorRule, MonitorTimeline } from "@/shared/contract";
-import { CheckIn } from "@/shared/monitors";
+import type { ApiMonitor, ApiMonitorRule, Json, MonitorTimeline } from "@/shared/contract";
+import { CheckIn, CreateMonitor } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 
 import { api } from "./api-helpers";
 import { createProject, NOW } from "./helpers";
+import { addMember } from "./notify-helpers";
 
 // The API answers at NOW (10:30); an hourly monitor next expects 11:00.
 const HOUR = Math.floor(NOW / (60 * MINUTE)) * 60 * MINUTE;
@@ -168,6 +170,7 @@ describe("the monitor list and alerts", () => {
   it("shows a monitor's last issue and when its alert last routed", async () => {
     const fixture = await hourlyMonitorWithAlert();
 
+    expect(fixture.monitor.creator).toMatchObject({ kind: "member" });
     expect((await listed(fixture.monitor.id)).lastIssue).toBeNull();
     expect((await ruleOf(fixture.rule.id)).lastTriggered).toBeNull();
 
@@ -205,5 +208,119 @@ describe("the monitor list and alerts", () => {
 
     expect(suppressed.results).toEqual([{ suppression: "muted" }]);
     expect((await ruleOf(fixture.rule.id)).lastTriggered).toBeNull();
+  });
+});
+
+type Observation = { at: number; health: string; evidence: Json; severity: string | null };
+
+async function signalMonitor(input: Json): Promise<ApiMonitor> {
+  const { id: projectId } = await createProject();
+  const { id: userId } = await addMember(1);
+
+  const monitor = await new MonitorStore(env.DB).create(
+    1,
+    CreateMonitor.parse({ projectId, name: "Signal", ...Object(input) }),
+    { userId, time: HOUR, requestKey: null },
+  );
+
+  if (monitor === null) {
+    throw new Error("monitor was not created");
+  }
+
+  return monitor;
+}
+
+/** Observations as the uptime and metric evaluators record them. */
+async function observe(monitor: ApiMonitor, observations: Observation[]): Promise<void> {
+  await env.DB.batch(
+    observations.map(({ at, health, evidence, severity }) =>
+      env.DB.prepare(
+        `INSERT INTO monitor_observations (monitor_id, evaluated_at, health, evidence, severity, generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, (SELECT generation FROM monitors WHERE id = ?1))`,
+      ).bind(monitor.id, at, health, JSON.stringify(evidence), severity),
+    ),
+  );
+}
+
+describe("the timeline for uptime and metric monitors", () => {
+  it("reads an uptime failure while failing as downtime, before it as a failure, and a skip as unknown", async () => {
+    const monitor = await signalMonitor({
+      type: "uptime",
+      config: { url: "https://status.zentry.test/", intervalMinutes: 1 },
+    });
+
+    await observe(monitor, [
+      { at: HOUR, health: "healthy", evidence: { outcome: "ok" }, severity: null },
+      { at: HOUR + MINUTE, health: "degraded", evidence: { outcome: "failed" }, severity: null },
+      { at: HOUR + 2 * MINUTE, health: "failing", evidence: { outcome: "failed" }, severity: null },
+      {
+        at: HOUR + 3 * MINUTE,
+        health: "failing",
+        evidence: { outcome: "unknown" },
+        severity: null,
+      },
+    ]);
+
+    const timeline = await (
+      await api(timelineUrl(monitor.id, { since: HOUR, until: HOUR + 10 * MINUTE, buckets: 10 }))
+    ).json<MonitorTimeline>();
+
+    expect(timeline.buckets.map(({ index, status }) => [index, status])).toEqual([
+      [0, "success"],
+      [1, "failure"],
+      [2, "downtime"],
+      [3, "unknown"],
+    ]);
+  });
+
+  it("reads a metric window's severity and its error count", async () => {
+    const monitor = await signalMonitor({
+      type: "metric",
+      config: { windowSeconds: 300, threshold: 10, warningThreshold: 5 },
+    });
+
+    await observe(monitor, [
+      { at: HOUR, health: "awaiting_data", evidence: {}, severity: null },
+      { at: HOUR + MINUTE, health: "healthy", evidence: { count: 2 }, severity: null },
+      { at: HOUR + 2 * MINUTE, health: "failing", evidence: { count: 7 }, severity: "medium" },
+      { at: HOUR + 3 * MINUTE, health: "failing", evidence: { count: 12 }, severity: "high" },
+    ]);
+
+    const timeline = await (
+      await api(timelineUrl(monitor.id, { since: HOUR, until: HOUR + 10 * MINUTE, buckets: 10 }))
+    ).json<MonitorTimeline>();
+
+    expect(timeline.buckets.map(({ status, value }) => [status, value])).toEqual([
+      ["unknown", null],
+      ["ok", 2],
+      ["medium", 7],
+      ["high", 12],
+    ]);
+  });
+
+  it("refuses more than 500 buckets", async () => {
+    const monitor = await signalMonitor({
+      type: "metric",
+      config: { windowSeconds: 300, threshold: 10 },
+    });
+
+    const response = await api(
+      timelineUrl(monitor.id, { since: HOUR, until: HOUR + 600 * MINUTE, buckets: 501 }),
+    );
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("monitor members", () => {
+  it("lists the organization's members to a member who is not an owner, for assignee names", async () => {
+    const member = await addMember(1);
+
+    const response = await api("/organizations/default/monitor-members/", { email: member.email });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ userId: member.id, email: member.email })]),
+    );
   });
 });

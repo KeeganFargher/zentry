@@ -21,11 +21,6 @@ export type SectionProps<T extends NewMonitor = NewMonitor> = {
   editing: boolean;
 };
 
-/** A whole, non-negative number from a number input; the server range-checks it. */
-export function intOf(value: string): number {
-  return Math.max(0, Math.trunc(Number(value)));
-}
-
 export function ProjectSection({
   step,
   draft,

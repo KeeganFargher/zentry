@@ -9,7 +9,7 @@ import type { JSX } from "react";
 import { Notice } from "~/components/basics";
 import { Icon } from "~/components/icons";
 import { Menu } from "~/components/overlays";
-import { api } from "~/lib/api";
+import { api, ApiFailure } from "~/lib/api";
 import { useNow } from "~/lib/clock";
 import { TYPE_LABELS, TYPE_PATHS } from "~/lib/monitor-text";
 import { useResource } from "~/lib/resource";
@@ -22,6 +22,7 @@ import { DetailSidebar } from "./detail-sidebar";
 import { MetricChart, RecentChecks, UptimeTimeline } from "./detail-signals";
 import { projectOf, TopBar, useMonitorContext } from "./parts";
 import type { MonitorContext } from "./parts";
+import { dsnStateOf } from "./sdk-guide";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -83,6 +84,30 @@ function MuteMenu({
   );
 }
 
+/**
+ * Runs a toolbar action. An API refusal (a member's 403, a stale version's
+ * 409) is shown as a toast, and the page reloads so it shows what is stored;
+ * any other error is a bug and is rethrown.
+ */
+async function perform(
+  action: () => Promise<ApiMonitor>,
+  message: string,
+  reload: () => void,
+): Promise<void> {
+  try {
+    await action();
+    toast(message);
+  } catch (cause) {
+    if (!(cause instanceof ApiFailure)) {
+      throw cause;
+    }
+
+    toast(`Could not update the monitor: ${cause.message}`);
+  }
+
+  reload();
+}
+
 function Toolbar({
   org,
   detail,
@@ -93,13 +118,7 @@ function Toolbar({
   const { monitor } = detail;
   const paused = monitor.status === "paused";
 
-  const run: Run = (action, message) =>
-    void action().then(() => {
-      toast(message);
-      reload();
-
-      return undefined;
-    });
+  const run: Run = (action, message) => void perform(action, message, reload);
 
   return (
     <div className="detail-toolbar">
@@ -149,18 +168,12 @@ function CronSetup({
 }: {
   org: string;
   monitor: CronMonitor;
-  project: ApiProject | undefined;
+  project: ApiProject;
 }): JSX.Element {
-  const keys = useResource(`keys:${org}:${project?.slug ?? ""}`, () =>
-    project === undefined ? Promise.resolve([]) : api.keys(org, project.slug),
-  );
+  const keys = useResource(`keys:${org}:${project.slug}`, () => api.keys(org, project.slug));
 
-  return (
-    <CronOnboarding
-      monitor={monitor}
-      dsn={keys.data?.find(({ status }) => status === "active")?.dsn ?? null}
-    />
-  );
+  // The guide tells loading, a failed load and a project with no active key apart.
+  return <CronOnboarding monitor={monitor} dsn={dsnStateOf(keys)} />;
 }
 
 /** The type's chart over the chosen period: cron and uptime ticks, or the metric area. */
@@ -215,7 +228,12 @@ function Signal({
 
   // Sentry shows the setup guide in place of the timeline until the first check-in.
   if (monitor.type === "cron" && detail.scopes.every(({ lastCheckIn }) => lastCheckIn === null)) {
-    return <CronSetup org={org} monitor={monitor} project={project} />;
+    // The guide needs the project's DSN; a monitor whose project is gone has none to show.
+    return project === undefined ? (
+      <Notice loading={false} error="This monitor's project is no longer in this organization." />
+    ) : (
+      <CronSetup org={org} monitor={monitor} project={project} />
+    );
   }
 
   return <TimelineSignal org={org} detail={detail} days={days} />;
@@ -273,7 +291,11 @@ export function MonitorDetail({ org, id }: { org: string; id: string }): JSX.Ele
           <Notice
             loading={detail.loading || context.loading}
             error={detail.error ?? context.error}
-            onRetry={detail.reload}
+            onRetry={() => {
+              // Retry whichever failed: the monitor, or the projects, members and rules.
+              detail.reload();
+              context.reload();
+            }}
           />
         </div>
       </>

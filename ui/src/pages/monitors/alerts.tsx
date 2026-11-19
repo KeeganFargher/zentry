@@ -37,7 +37,7 @@ function RuleRow({
   );
 
   return (
-    <div className="rule-row" role="row">
+    <div className="rule-row">
       <span>
         <Link to={`/${org}/monitors/alerts/${rule.id}/`}>
           <strong>{rule.name}</strong>
@@ -66,7 +66,7 @@ function RuleRow({
         {linked.length === 0 ? (
           <span className="muted">—</span>
         ) : (
-          <span className="dotted">{pluralize(linked.length, "1 monitor", "monitors")}</span>
+          pluralize(linked.length, "1 monitor", "monitors")
         )}
       </span>
     </div>
@@ -115,6 +115,7 @@ function AlertToolbar({
         <Icon name="search" />
         <input
           type="search"
+          aria-label="Search for alerts"
           placeholder="Search for alerts"
           value={search}
           onChange={(event) => setQuery("query", event.target.value)}
@@ -162,8 +163,8 @@ function RuleTable({ org, search, project, monitors, context }: TableProps): JSX
   }
 
   return (
-    <div className="panel rule-table" role="table">
-      <div className="rule-row head" role="row">
+    <div className="panel rule-table">
+      <div className="rule-row head">
         <span>Name</span>
         <span>Last Triggered ↓</span>
         <span>Actions</span>

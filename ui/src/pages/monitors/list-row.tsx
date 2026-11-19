@@ -9,7 +9,13 @@ import { Ago, Link } from "~/components/basics";
 import { TimelineRow } from "~/components/check-in-timeline";
 import { Clipped } from "~/components/tooltip";
 import { api } from "~/lib/api";
-import { everyMinutes, pluralize, scheduleText, TYPE_LABELS } from "~/lib/monitor-text";
+import {
+  COMPARATOR_SIGNS,
+  everyMinutes,
+  pluralize,
+  scheduleText,
+  TYPE_LABELS,
+} from "~/lib/monitor-text";
 import { useResource } from "~/lib/resource";
 
 import { memberEmail, ProjectBadge, projectOf } from "./parts";
@@ -26,7 +32,7 @@ function details(monitor: ApiMonitor): string[] {
   }
 
   const { comparator, threshold, windowSeconds, environment } = monitor.config;
-  const sign = comparator.startsWith("gt") ? ">" : "<";
+  const sign = COMPARATOR_SIGNS[comparator];
 
   return [
     environment ?? "All environments",
@@ -98,7 +104,16 @@ function RowTimeline({
   const data = timeline.data;
 
   if (data === null) {
-    return <div className="tick-row placeholder" />;
+    return timeline.error === null ? (
+      <div className="tick-row placeholder" />
+    ) : (
+      <span className="muted small">
+        Timeline failed to load: {timeline.error}{" "}
+        <button type="button" className="plain small" onClick={timeline.reload}>
+          Retry
+        </button>
+      </span>
+    );
   }
 
   const scopes = [...new Set(data.buckets.map(({ scope }) => scope))].toSorted();
@@ -121,7 +136,7 @@ export function MonitorRow(props: RowProps): JSX.Element {
   const alerts = monitor.alertRuleIds.length;
 
   return (
-    <div className={monitor.status === "paused" ? "monitor-row faded" : "monitor-row"} role="row">
+    <div className={monitor.status === "paused" ? "monitor-row faded" : "monitor-row"}>
       <input
         type="checkbox"
         aria-label={`Select ${monitor.name}`}
@@ -135,11 +150,7 @@ export function MonitorRow(props: RowProps): JSX.Element {
         {assignee === null ? <span className="muted">—</span> : <Clipped text={assignee} />}
       </span>
       <span className="cell-alerts">
-        {alerts === 0 ? (
-          <span className="muted">—</span>
-        ) : (
-          <span className="dotted">{pluralize(alerts, "1 alert", "alerts")}</span>
-        )}
+        {alerts === 0 ? <span className="muted">—</span> : pluralize(alerts, "1 alert", "alerts")}
       </span>
       {window !== null && <RowTimeline org={org} monitor={monitor} window={window} />}
     </div>

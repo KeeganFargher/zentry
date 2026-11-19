@@ -75,17 +75,50 @@ function Filters({ draft, set }: DraftProps): JSX.Element {
   );
 }
 
-/** A select value for the audience: one named member is "member:<id>". */
-function audienceValue(audience: Draft["audience"]): string {
-  return audience.kind === "members" ? `member:${audience.userIds[0] ?? ""}` : audience.kind;
+type AudienceKind = Draft["audience"]["kind"];
+
+function isAudienceKind(value: string): value is AudienceKind {
+  return value === "owner" || value === "project" || value === "members";
 }
 
-function audienceOf(value: string): Draft["audience"] {
-  if (value.startsWith("member:")) {
-    return { kind: "members", userIds: [Number(value.slice("member:".length))] };
+/**
+ * A new audience of this kind. Choosing "specific members" starts with none
+ * picked; the API refuses an empty list, so the save says so.
+ */
+function audienceOf(kind: string): Draft["audience"] {
+  if (!isAudienceKind(kind)) {
+    throw new Error(`unknown alert audience ${kind}`);
   }
 
-  return { kind: value === "project" ? "project" : "owner" };
+  return kind === "members" ? { kind, userIds: [] } : { kind };
+}
+
+/** A checkbox per member, so a rule can notify several, as the API allows. */
+function MemberChoices({
+  userIds,
+  set,
+  context,
+}: {
+  userIds: number[];
+  set: (userIds: number[]) => void;
+  context: MonitorContext;
+}): JSX.Element {
+  return (
+    <ul className="rule-choices" aria-label="Members to notify">
+      {context.members.map((member) => (
+        <li key={member.userId}>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={userIds.includes(member.userId)}
+              onChange={(event) => set(toggled(userIds, member.userId, event.target.checked))}
+            />{" "}
+            {member.email}
+          </label>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function Actions({ draft, set, context }: DraftProps & { context: MonitorContext }): JSX.Element {
@@ -110,18 +143,21 @@ function Actions({ draft, set, context }: DraftProps & { context: MonitorContext
         ))}
         <select
           aria-label="Recipients"
-          value={audienceValue(draft.audience)}
+          value={draft.audience.kind}
           onChange={(event) => set({ ...draft, audience: audienceOf(event.target.value) })}
         >
           <option value="owner">to the monitor&apos;s assignee</option>
           <option value="project">to members following the project</option>
-          {context.members.map((member) => (
-            <option key={member.userId} value={`member:${member.userId}`}>
-              to {member.email}
-            </option>
-          ))}
+          <option value="members">to specific members</option>
         </select>
       </div>
+      {draft.audience.kind === "members" && (
+        <MemberChoices
+          userIds={draft.audience.userIds}
+          set={(userIds) => set({ ...draft, audience: { kind: "members", userIds } })}
+          context={context}
+        />
+      )}
     </>
   );
 }

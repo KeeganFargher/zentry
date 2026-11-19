@@ -45,7 +45,12 @@ function TestButton({ org, draft }: { org: string; draft: NewMonitor }): JSX.Ele
     try {
       const preview = await api.previewMonitor(org, bodyOf(draft));
 
-      setResult(preview.type === "uptime" ? testText(preview) : "Done");
+      // Only uptime drafts show this button, and an uptime draft previews as uptime.
+      if (preview.type !== "uptime") {
+        throw new Error(`An uptime test returned a ${preview.type} preview`);
+      }
+
+      setResult(testText(preview));
     } catch (cause) {
       setResult(cause instanceof Error ? cause.message : "The test failed");
     }
@@ -65,7 +70,17 @@ function EditActions({ org, monitor }: { org: string; monitor: ApiMonitor }): JS
   const [ask, dialog] = useConfirm();
 
   const archive = async (): Promise<void> => {
-    await api.setMonitorStatus(org, monitor, "archived");
+    // A refused delete (a stale version, a non-owner) must say so; the page stays put.
+    try {
+      await api.setMonitorStatus(org, monitor, "archived");
+    } catch (cause) {
+      toast(
+        `The monitor could not be deleted: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+
+      return;
+    }
+
     toast("Monitor deleted");
     navigate(`/${org}/monitors/`);
   };
@@ -113,10 +128,16 @@ type FooterProps = {
   saving: boolean;
   /** The cron guide is open: the SDK creates the monitor, so there is nothing to save here. */
   guided: boolean;
+  /** The first invalid field's message; saving waits until every field is valid. */
+  problem: string | null;
   save: () => void;
 };
 
-export function FormFooter({ org, mode, draft, saving, guided, save }: FooterProps): JSX.Element {
+const GUIDED_TITLE = "Using Auto-Instrumentation does not require you to create a monitor here";
+
+export function FormFooter(props: FooterProps): JSX.Element {
+  const { org, mode, draft, saving, guided, problem, save } = props;
+
   return (
     <footer className="form-footer">
       {mode.kind === "edit" ? (
@@ -124,16 +145,13 @@ export function FormFooter({ org, mode, draft, saving, guided, save }: FooterPro
       ) : (
         <CreateActions org={org} type={draft.type} />
       )}
+      {problem !== null && <span className="field-error">{problem}</span>}
       {draft.type === "uptime" && <TestButton org={org} draft={draft} />}
       <button
         type="button"
         className="primary"
-        disabled={saving || guided}
-        title={
-          guided
-            ? "Using Auto-Instrumentation does not require you to create a monitor here"
-            : undefined
-        }
+        disabled={saving || guided || problem !== null}
+        title={guided ? GUIDED_TITLE : (problem ?? undefined)}
         onClick={save}
       >
         {mode.kind === "edit" ? "Save" : "Create Monitor"}

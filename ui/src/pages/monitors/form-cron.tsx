@@ -5,11 +5,12 @@ import type { JSX } from "react";
 
 import { scheduleText } from "~/lib/monitor-text";
 
-import { intOf } from "./form-common";
 import type { SectionProps } from "./form-common";
+import { WholeNumberInput } from "./form-inputs";
 import type { CronDraft } from "./form-state";
 import { Field, FormSection } from "./parts";
 import { SdkGuide } from "./sdk-guide";
+import type { DsnState } from "./sdk-guide";
 
 const UNITS = ["minute", "hour", "day", "week", "month", "year"] as const;
 
@@ -65,16 +66,13 @@ function IntervalFields({ schedule, update }: { schedule: Interval; update: Upda
     <div className="schedule-grid interval">
       <ScheduleKind schedule={schedule} update={update} />
       <span>Every</span>
-      <input
-        type="number"
+      <WholeNumberInput
+        label="Interval"
         min={1}
         max={1000}
-        aria-label="Interval"
         placeholder="e.g. 1"
         value={schedule.count}
-        onChange={(event) =>
-          update({ schedule: { ...schedule, count: intOf(event.target.value) } })
-        }
+        set={(count) => update({ schedule: { ...schedule, count } })}
       />
       <select
         aria-label="Interval unit"
@@ -138,13 +136,13 @@ function NumberField(props: {
 }): JSX.Element {
   return (
     <Field label={props.label} help={props.help}>
-      <input
-        type="number"
+      <WholeNumberInput
+        label={props.label}
         min={1}
         max={props.max}
         placeholder={props.placeholder}
         value={props.value}
-        onChange={(event) => props.set(intOf(event.target.value))}
+        set={props.set}
       />
     </Field>
   );
@@ -216,7 +214,7 @@ export function CronResolution(props: SectionProps<CronDraft> & { step: number }
 export function Instrumentation(props: {
   slug: string;
   config: Config;
-  dsn: string | null;
+  dsn: DsnState;
   guided: boolean;
   setGuided: (guided: boolean) => void;
 }): JSX.Element {

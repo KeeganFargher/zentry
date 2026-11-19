@@ -6,6 +6,10 @@ import cronstrue from "cronstrue";
 
 export type MonitorType = ApiMonitor["type"];
 
+type MetricSettings = Extract<ApiMonitor, { type: "metric" }>["config"];
+
+type Comparator = MetricSettings["comparator"];
+
 export const TYPE_LABELS: Record<MonitorType, string> = {
   metric: "Metric",
   cron: "Cron",
@@ -64,10 +68,11 @@ export const TICK_LABELS: Record<TimelineStatus, string> = {
 /**
  * Which status a merged tick shows: the first present in this order, as
  * Sentry's `getAggregateStatus` with its `checkInStatusPrecedent` and the
- * uptime `checkStatusPrecedent`.
+ * uptime `checkStatusPrecedent`, except that unknown ranks last. Sentry
+ * puts it first, but here it also marks skipped uptime checks and metric
+ * windows awaiting data, which would hide a bucket's real failures.
  */
 export const TICK_PRECEDENCE: TimelineStatus[] = [
-  "unknown",
   "high",
   "downtime",
   "error",
@@ -77,6 +82,9 @@ export const TICK_PRECEDENCE: TimelineStatus[] = [
   "medium",
   "ok",
   "success",
+  // Last: an unknown is a skipped or paused check, and one in a bucket of
+  // real results must not hide the downtime around it.
+  "unknown",
   "in_progress",
 ];
 
@@ -95,4 +103,47 @@ export function pluralize(count: number, one: string, many: string): string {
 /** "Every 1 minute" for uptime, as Sentry's list details row. */
 export function everyMinutes(minutes: number): string {
   return minutes === 60 ? "Every 1 hour" : `Every ${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+/** How a threshold reads for each comparator, in Sentry's words. */
+export const COMPARATOR_TEXT: Record<Comparator, string> = {
+  gt: "Above",
+  gte: "Above or equal to",
+  lt: "Below",
+  lte: "Below or equal to",
+};
+
+/** The comparator as a symbol, for the list row's compact threshold. */
+export const COMPARATOR_SIGNS: Record<Comparator, string> = {
+  gt: ">",
+  gte: "≥",
+  lt: "<",
+  lte: "≤",
+};
+
+/**
+ * The count that resolves by default, as src/db/metric-query.ts recoveryCrossed:
+ * the medium threshold (else the high one), exclusive of the detection
+ * comparator, so "above or equal to 10" resolves below 10.
+ */
+export function defaultResolveText(config: MetricSettings): string {
+  const base = config.warningThreshold ?? config.threshold;
+
+  const text: Record<Comparator, string> = {
+    gt: `below or equal to ${base}`,
+    gte: `below ${base}`,
+    lt: `above or equal to ${base}`,
+    lte: `above ${base}`,
+  };
+
+  return text[config.comparator];
+}
+
+/** A custom resolve value is inclusive: at or below it for "above", at or above it for "below". */
+export function resolveDirection(config: MetricSettings): string {
+  return config.comparator.startsWith("gt") ? "Below or equal to" : "Above or equal to";
+}
+
+export function customResolveText(config: MetricSettings, recovery: number): string {
+  return `${resolveDirection(config).toLowerCase()} ${recovery}`;
 }

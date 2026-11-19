@@ -100,7 +100,7 @@ export function ConnectedAlerts({
   context: MonitorContext;
 }): JSX.Element {
   const rules = context.rules.filter(({ id }) => detail.monitor.alertRuleIds.includes(id));
-  const edit = `/${org}/monitors/${detail.monitor.id}/edit/#alerts`;
+  const edit = `/${org}/monitors/${detail.monitor.id}/edit/`;
   const create = `/${org}/monitors/alerts/new/?monitor=${detail.monitor.id}`;
 
   return (

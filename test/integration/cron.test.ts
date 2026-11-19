@@ -255,6 +255,7 @@ describe("unrecognized check-ins", () => {
       failureThreshold: 1,
       recoveryThreshold: 1,
     });
+    expect(created?.creator).toEqual({ kind: "sdk" });
   });
 
   it("does not record check-ins for a paused monitor", async () => {

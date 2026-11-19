@@ -1,7 +1,13 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { setTimeout as wait } from "node:timers/promises";
 
-import type { ApiMonitor, MonitorDetail, MonitorHistory, MonitorPreviewJob } from "@contract";
+import type {
+  ApiMonitor,
+  ApiMonitorRule,
+  MonitorDetail,
+  MonitorHistory,
+  MonitorPreviewJob,
+} from "@contract";
 import { expect, test } from "@playwright/test";
 import type { APIRequestContext } from "@playwright/test";
 import * as Sentry from "@sentry/node";
@@ -215,6 +221,43 @@ test("a cron monitor created in the form waits for its first check-in, then draw
   await page.reload();
   await expect(page.getByRole("heading", { name: "Recent Check-Ins" })).toBeVisible();
   await expect(page.getByText("Okay", { exact: true })).toBeVisible();
+  await expect(page.locator(".tick.status-ok").first()).toBeVisible();
+});
+
+test("an existing alert is edited through its form and the change is stored", async ({
+  page,
+  request,
+}) => {
+  const name = `Escalations ${crypto.randomUUID().slice(0, 8)}`;
+  const rules = `/api/0/organizations/${ORG}/monitor-alert-rules/`;
+
+  const created = await request.post(rules, {
+    data: { name, channels: ["email"], triggers: ["failure"], audience: { kind: "project" } },
+  });
+
+  expect(created.status(), await created.text()).toBe(201);
+  const { id } = await contractJson<ApiMonitorRule>(created);
+
+  await page.goto(`/${ORG}/monitors/alerts/`);
+  await page.getByRole("link", { name }).click();
+  await page.getByRole("textbox", { name: "Alert Name" }).fill(`${name} renamed`);
+  await page.getByLabel("Action Throttle").selectOption({ label: "Once every hour" });
+  await page.getByLabel("Recipients").selectOption({ label: "to specific members" });
+  await page
+    .getByRole("list", { name: "Members to notify" })
+    .getByRole("checkbox", { name: "e2e@localhost" })
+    .check();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("link", { name: `${name} renamed` })).toBeVisible();
+
+  const list = await contractJson<ApiMonitorRule[]>(await request.get(rules));
+
+  expect(list.find((rule) => rule.id === id)).toMatchObject({
+    name: `${name} renamed`,
+    throttleSeconds: 3600,
+    audience: { kind: "members", userIds: [expect.any(Number)] },
+    version: 2,
+  });
 });
 
 async function tick(request: APIRequestContext, time: number): Promise<void> {

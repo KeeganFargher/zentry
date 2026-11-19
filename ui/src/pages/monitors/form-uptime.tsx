@@ -3,8 +3,8 @@
 
 import type { JSX } from "react";
 
-import { intOf } from "./form-common";
 import type { SectionProps } from "./form-common";
+import { useValidatedText, WholeNumberInput } from "./form-inputs";
 import type { UptimeDraft } from "./form-state";
 import { Field, FormSection } from "./parts";
 
@@ -115,36 +115,64 @@ export function UptimeDetection(props: SectionProps<UptimeDraft> & { step: numbe
         label="Failure Threshold"
         help={`Issue created after ${config.failureThreshold} consecutive failures (after ${config.failureThreshold * config.intervalMinutes} minutes of downtime).`}
       >
-        <input
-          type="number"
+        <WholeNumberInput
+          label="Failure Threshold"
           min={1}
           max={10}
           placeholder="Defaults to 3"
           value={config.failureThreshold}
-          onChange={(event) => update({ failureThreshold: intOf(event.target.value) })}
+          set={(failureThreshold) => update({ failureThreshold })}
         />
       </Field>
     </FormSection>
   );
 }
 
+type Codes = number[] | undefined;
+
+// The server's limits (src/shared/monitors.ts successCodes).
+const MAX_CODES = 20;
+
+/**
+ * Every comma-separated token must be a status code: one typo blocks saving
+ * with a message, rather than being dropped while the input still shows it.
+ * Empty text means the default, any 2xx.
+ */
+function parseCodes(text: string): { ok: true; value: Codes } | { ok: false; problem: string } {
+  const tokens = text
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token !== "");
+
+  if (tokens.length === 0) {
+    return { ok: true, value: undefined };
+  }
+
+  const bad = tokens.find((token) => !/^[1-5]\d\d$/u.test(token));
+
+  if (bad !== undefined) {
+    return { ok: false, problem: `"${bad}" is not an HTTP status code (100–599).` };
+  }
+
+  if (tokens.length > MAX_CODES) {
+    return { ok: false, problem: `List at most ${MAX_CODES} status codes.` };
+  }
+
+  return { ok: true, value: tokens.map(Number) };
+}
+
 export function UptimeVerification(
   props: SectionProps<UptimeDraft> & { step: number },
 ): JSX.Element {
   const { config } = props.draft;
-  const codes = config.successCodes?.join(", ") ?? "";
 
-  const setCodes = (text: string): void => {
-    const parsed = text
-      .split(",")
-      .map((part) => Number(part.trim()))
-      .filter((code) => Number.isInteger(code) && code >= 100);
-
-    props.set({
-      ...props.draft,
-      config: { ...config, successCodes: parsed.length === 0 ? undefined : parsed },
-    });
-  };
+  const { text, problem, change } = useValidatedText<Codes>({
+    field: "Status Codes",
+    value: config.successCodes,
+    format: (codes) => codes?.join(", ") ?? "",
+    parse: parseCodes,
+    set: (successCodes) => props.set({ ...props.draft, config: { ...config, successCodes } }),
+  });
 
   return (
     <FormSection step={props.step} title="Verification">
@@ -156,9 +184,15 @@ export function UptimeVerification(
           type="text"
           className="mono"
           placeholder="Default: 200–299"
-          defaultValue={codes}
-          onBlur={(event) => setCodes(event.target.value)}
+          aria-invalid={problem !== null}
+          value={text}
+          onChange={(event) => change(event.target.value)}
         />
+        {problem !== null && (
+          <span className="field-error" role="alert">
+            {problem}
+          </span>
+        )}
       </Field>
     </FormSection>
   );
@@ -173,17 +207,14 @@ export function UptimeResolution(props: SectionProps<UptimeDraft> & { step: numb
         label="Recovery Threshold"
         help={`Issue resolved after ${config.recoveryThreshold} consecutive successes (after ${config.recoveryThreshold * config.intervalMinutes} minutes of recovered uptime).`}
       >
-        <input
-          type="number"
+        <WholeNumberInput
+          label="Recovery Threshold"
           min={1}
           max={10}
           placeholder="Defaults to 1"
           value={config.recoveryThreshold}
-          onChange={(event) =>
-            props.set({
-              ...props.draft,
-              config: { ...config, recoveryThreshold: intOf(event.target.value) },
-            })
+          set={(recoveryThreshold) =>
+            props.set({ ...props.draft, config: { ...config, recoveryThreshold } })
           }
         />
       </Field>

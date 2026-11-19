@@ -3,6 +3,7 @@ import { z } from "zod";
 import { jsonText } from "@/shared/json";
 import {
   CreateMonitor,
+  Creator,
   LastIssue,
   MAX_MONITORS_PER_ORGANIZATION,
   MonitorFields,
@@ -23,6 +24,7 @@ const Row = MonitorFields.extend({
   type: z.string(),
   config: jsonText(z.json()),
   lastIssue: jsonText(LastIssue).nullable(),
+  creator: jsonText(Creator),
 }).transform(
   ({
     projectId,
@@ -70,7 +72,7 @@ type Control = Actor & { version: number };
 type CreateIdentity = Actor & { requestKey: string | null };
 
 const COLUMNS =
-  "id, project_id AS projectId, name, description, owner_id AS ownerId, muted_until AS mutedUntil, alert_rule_ids AS alertRuleIds, type, config, status, health, severity, version, evaluated_at AS evaluatedAt, (SELECT id FROM groups WHERE monitor_id = monitors.id ORDER BY status = 'unresolved' DESC, id LIMIT 1) AS issueId, (SELECT json_object('id', g.id, 'shortId', upper(p.slug) || '-' || g.short_id, 'title', g.title, 'status', g.status, 'lastSeen', g.last_seen) FROM groups g JOIN projects p ON p.id = g.project_id WHERE g.monitor_id = monitors.id ORDER BY g.last_seen DESC, g.id DESC LIMIT 1) AS lastIssue, notify, created_at AS createdAt";
+  "id, project_id AS projectId, name, description, owner_id AS ownerId, muted_until AS mutedUntil, alert_rule_ids AS alertRuleIds, type, config, status, health, severity, version, evaluated_at AS evaluatedAt, (SELECT id FROM groups WHERE monitor_id = monitors.id ORDER BY status = 'unresolved' DESC, id LIMIT 1) AS issueId, (SELECT json_object('id', g.id, 'shortId', upper(p.slug) || '-' || g.short_id, 'title', g.title, 'status', g.status, 'lastSeen', g.last_seen) FROM groups g JOIN projects p ON p.id = g.project_id WHERE g.monitor_id = monitors.id ORDER BY g.last_seen DESC, g.id DESC LIMIT 1) AS lastIssue, CASE WHEN provisioned = 1 THEN json_object('kind', 'sdk') WHEN created_by IS NULL THEN json_object('kind', 'former_member') ELSE json_object('kind', 'member', 'userId', created_by) END AS creator, notify, created_at AS createdAt";
 
 export class MonitorStore {
   readonly #db: D1Database;
@@ -90,8 +92,8 @@ export class MonitorStore {
 
     const row = await this.#db
       .prepare(`INSERT INTO monitors (id, project_id, name, type, config, created_at, notify,
-          description, owner_id, alert_rule_ids, changed_by, request_key)
-        SELECT ?1, id, ?4, ?5, ?6, ?7, ?8, ?10, ?11, ?12, ?13, ?14 FROM projects WHERE id = ?3 AND organization_id = ?2
+          description, owner_id, alert_rule_ids, changed_by, created_by, request_key)
+        SELECT ?1, id, ?4, ?5, ?6, ?7, ?8, ?10, ?11, ?12, ?13, ?13, ?14 FROM projects WHERE id = ?3 AND organization_id = ?2
           AND (SELECT COUNT(*) FROM monitors m JOIN projects p ON p.id = m.project_id
             WHERE p.organization_id = ?2 AND m.status != 'archived') < ?9
         ON CONFLICT DO NOTHING RETURNING ${COLUMNS}`)

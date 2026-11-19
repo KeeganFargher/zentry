@@ -4122,3 +4122,14 @@ textarea {
   font-weight: 500;
   max-width: 420px;
 }
+
+/* A field's own validation message, under its control. */
+.field-error {
+  grid-column: 1 / -1;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+input[aria-invalid="true"] {
+  border-color: var(--danger);
+}

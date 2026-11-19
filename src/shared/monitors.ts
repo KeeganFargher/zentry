@@ -171,6 +171,13 @@ export const LastIssue = z.object({
   lastSeen: z.int(),
 });
 
+/** Who created a monitor: a member, a member since deleted, or an SDK's monitor_config. */
+export const Creator = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("member"), userId: z.int().positive() }),
+  z.object({ kind: z.literal("former_member") }),
+  z.object({ kind: z.literal("sdk") }),
+]);
+
 export const MonitorFields = z.object({
   id: z.uuid(),
   status: z.enum(["active", "paused", "archived"]),
@@ -181,6 +188,7 @@ export const MonitorFields = z.object({
   severity: z.enum(["medium", "high"]).nullable(),
   issueId: z.int().nullable(),
   lastIssue: LastIssue.nullable(),
+  creator: Creator,
   createdAt: z.int(),
 });
 

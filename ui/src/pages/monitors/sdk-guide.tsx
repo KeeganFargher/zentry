@@ -2,15 +2,40 @@
 // MonitorQuickStartGuide. Only transports Zentry's ingest accepts are shown:
 // the SDKs' check-in envelopes, and the same envelope sent with cURL.
 
-import type { ApiMonitor } from "@contract";
+import type { ApiKey, ApiMonitor } from "@contract";
 import { useState } from "react";
 import type { JSX } from "react";
 
 import { CopyButton } from "~/components/overlays";
+import type { Resource } from "~/lib/resource";
 
 type CronConfig = Extract<ApiMonitor, { type: "cron" }>["config"];
 
 type GuideInput = { slug: string; config: CronConfig; dsn: string };
+
+/**
+ * The DSN the snippets embed. Loading and a failed key request are their own
+ * states, so neither reads as "this project has no key".
+ */
+export type DsnState =
+  | { status: "loading" }
+  | { status: "failed"; message: string }
+  | { status: "none" }
+  | { status: "ready"; dsn: string };
+
+export function dsnStateOf(keys: Resource<ApiKey[]>): DsnState {
+  if (keys.error !== null) {
+    return { status: "failed", message: keys.error };
+  }
+
+  if (keys.data === null) {
+    return { status: "loading" };
+  }
+
+  const active = keys.data.find(({ status }) => status === "active");
+
+  return active === undefined ? { status: "none" } : { status: "ready", dsn: active.dsn };
+}
 
 /** The SDK's monitor_config for this schedule, in each SDK's own spelling. */
 function scheduleOf(config: CronConfig): { crontab: string } | { count: number; unit: string } {
@@ -140,15 +165,27 @@ export function SdkGuide({
 }: {
   slug: string;
   config: CronConfig;
-  dsn: string | null;
+  dsn: DsnState;
 }): JSX.Element {
   const [guide, setGuide] = useState<Guide>(GUIDES[0]);
 
-  if (dsn === null) {
+  if (dsn.status === "loading") {
+    return <p className="muted">Loading this project&apos;s client keys…</p>;
+  }
+
+  if (dsn.status === "failed") {
+    return (
+      <p className="alert-banner danger">
+        The project&apos;s client keys could not load: {dsn.message}
+      </p>
+    );
+  }
+
+  if (dsn.status === "none") {
     return <p className="muted">Create a client key for this project to send check-ins.</p>;
   }
 
-  const code = guide[2]({ slug, config, dsn });
+  const code = guide[2]({ slug, config, dsn: dsn.dsn });
 
   return (
     <div className="sdk-guide">

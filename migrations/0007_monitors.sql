@@ -45,6 +45,9 @@ CREATE TABLE monitors (
   -- apply only when that change won its optimistic version check.
   write_token      TEXT,
   changed_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- Who created the monitor, kept apart from the pruned audit trail; NULL for
+  -- an SDK-provisioned monitor or a creator who has since been deleted.
+  created_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
   changed_at       INTEGER,
   request_key      TEXT,
   created_at       INTEGER NOT NULL
@@ -361,6 +364,9 @@ CREATE TABLE monitor_deliveries (
   UNIQUE (transition_id, rule_id, channel)
 );
 CREATE INDEX monitor_delivery_throttle ON monitor_deliveries(group_id, rule_id, channel, transition_type, happened_at DESC)
+  WHERE suppression IS NULL;
+-- An alert's last routed delivery, for the Alerts list (src/db/monitor-rules.ts).
+CREATE INDEX monitor_delivery_last ON monitor_deliveries(rule_id, happened_at DESC)
   WHERE suppression IS NULL;
 
 -- Capture the transition before the issue trigger changes its previous state.

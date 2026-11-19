@@ -7,7 +7,7 @@ import type { MonitorPreview, NewMonitor } from "@contract";
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
 
-import { api } from "~/lib/api";
+import { api, ApiFailure } from "~/lib/api";
 import { useNow } from "~/lib/clock";
 import { minuteTime, shortDate } from "~/lib/format";
 import { pluralize } from "~/lib/monitor-text";
@@ -22,26 +22,43 @@ const MINUTE = 60_000;
 
 type Sample = "ok" | "ok-sub" | "fail-sub" | "fail";
 
+// Twenty ticks cannot show 720 failures. Past these counts the run is drawn
+// shortened and the notes say so, so the sample always shows the issue
+// opening and resolving, as Sentry's preview does.
+const SHOWN_FAILURES = 8;
+const SHOWN_RECOVERIES = 4;
+const LEAD = 4;
+
+type Pattern = { samples: Sample[]; opens: number; closes: number };
+
 /** Four good runs, failures up to the threshold and past it, then recovery. */
-function samples(failures: number, recoveries: number): Sample[] {
-  const lead = Math.max(1, Math.min(4, TICKS - failures - recoveries - 4));
-  const failing = Math.max(failures, TICKS - lead - recoveries - 3);
+function samples(failures: number, recoveries: number): Pattern {
+  const shownFailures = Math.min(failures, SHOWN_FAILURES);
+  const shownRecoveries = Math.min(recoveries, SHOWN_RECOVERIES);
+  // Two good runs after recovery, so the resolved state is visible.
+  const failing = Math.max(shownFailures, TICKS - LEAD - shownRecoveries - 2);
   const pattern: Sample[] = [];
 
   for (let index = 0; index < TICKS; index += 1) {
-    const sinceFailing = index - lead;
+    const sinceFailing = index - LEAD;
     const sinceRecovering = sinceFailing - failing;
 
     if (sinceFailing < 0) {
       pattern.push("ok");
     } else if (sinceRecovering < 0) {
-      pattern.push(sinceFailing < failures - 1 ? "fail-sub" : "fail");
+      pattern.push(sinceFailing < shownFailures - 1 ? "fail-sub" : "fail");
     } else {
-      pattern.push(sinceRecovering < recoveries - 1 ? "ok-sub" : "ok");
+      pattern.push(sinceRecovering < shownRecoveries - 1 ? "ok-sub" : "ok");
     }
   }
 
-  return pattern;
+  // Both exist by construction: the failing run ends in "fail" and the
+  // recovery run in "ok", inside the twenty ticks.
+  return {
+    samples: pattern,
+    opens: LEAD + shownFailures - 1,
+    closes: LEAD + failing + shownRecoveries - 1,
+  };
 }
 
 /**
@@ -64,12 +81,51 @@ function useSettled(value: string, ms: number): string {
  * The server's preview of the draft. The resource key is the settled JSON
  * body, so a new request goes out only when the settings have paused.
  */
-function usePreview(org: string, draft: NewMonitor): Resource<MonitorPreview> {
+type Outcome = { kind: "preview"; preview: MonitorPreview } | { kind: "invalid"; detail: string };
+
+/**
+ * A 400 is the server saying the settings are invalid, which is a preview
+ * outcome to show; anything else is a failure and stays an error.
+ */
+async function previewOf(org: string, draft: NewMonitor): Promise<Outcome> {
+  try {
+    return { kind: "preview", preview: await api.previewMonitor(org, bodyOf(draft)) };
+  } catch (cause) {
+    if (cause instanceof ApiFailure && cause.status === 400) {
+      return { kind: "invalid", detail: cause.message };
+    }
+
+    throw cause;
+  }
+}
+
+function usePreview(org: string, draft: NewMonitor): Resource<Outcome> {
   const body = useSettled(JSON.stringify(bodyOf(draft)), 300);
 
-  return useResource(`monitor-preview:${org}:${body}`, () =>
-    api.previewMonitor(org, bodyOf(draft)),
-  );
+  return useResource(`monitor-preview:${org}:${body}`, () => previewOf(org, draft));
+}
+
+/** Loading, a failed request, or the server's reason the settings cannot preview. */
+function PreviewState(props: { preview: Resource<Outcome>; className: string }): JSX.Element {
+  const { preview, className } = props;
+
+  if (preview.error !== null) {
+    return (
+      <div className={`${className} invalid`} role="alert">
+        The preview could not load: {preview.error}{" "}
+        <button type="button" className="small" onClick={preview.reload}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (preview.data?.kind === "invalid") {
+    return <InvalidPreview detail={preview.data.detail} />;
+  }
+
+  // The box keeps its height while the preview loads, so the form below does not jump.
+  return <div className={className} aria-busy="true" />;
 }
 
 /** Every interval from this minute: uptime checks run on a fixed cadence. */
@@ -81,17 +137,17 @@ function uptimeTimes(now: number, intervalMinutes: number): number[] {
 
 function CronPreview({ org, draft }: { org: string; draft: CronDraft }): JSX.Element {
   const preview = usePreview(org, draft);
+  const outcome = preview.data;
 
-  // The box keeps its height while the first preview loads, so the form below does not jump.
-  if (preview.loading && preview.data === null) {
-    return <div className="schedule-preview" aria-busy="true" />;
+  if (outcome?.kind !== "preview") {
+    return <PreviewState preview={preview} className="schedule-preview" />;
   }
 
-  if (preview.data?.type !== "cron") {
-    return <InvalidPreview />;
+  if (outcome.preview.type !== "cron") {
+    throw new Error(`A cron draft previewed as ${outcome.preview.type}`);
   }
 
-  return <SampleTicks times={preview.data.occurrences} config={draft.config} />;
+  return <SampleTicks times={outcome.preview.occurrences} config={draft.config} />;
 }
 
 function UptimePreview({ draft }: { draft: UptimeDraft }): JSX.Element {
@@ -102,11 +158,11 @@ function UptimePreview({ draft }: { draft: UptimeDraft }): JSX.Element {
   );
 }
 
-function InvalidPreview(): JSX.Element {
+function InvalidPreview({ detail }: { detail: string }): JSX.Element {
   return (
     <div className="schedule-preview invalid">
       No preview available. The provided schedule is invalid, or the thresholds are incompatible
-      with it.
+      with it. <span className="muted small">{detail}</span>
     </div>
   );
 }
@@ -130,13 +186,13 @@ type Thresholds = { failureThreshold: number; recoveryThreshold: number };
 function SampleTicks({ times, config }: { times: number[]; config: Thresholds }): JSX.Element {
   const { failureThreshold, recoveryThreshold } = config;
 
+  // The server returns twenty occurrences and uptime computes twenty; fewer is a bug.
   if (times.length < TICKS) {
-    return <InvalidPreview />;
+    throw new Error(`The sample preview needs ${TICKS} times, got ${times.length}`);
   }
 
-  const pattern = samples(failureThreshold, recoveryThreshold);
-  const opens = pattern.indexOf("fail");
-  const closes = pattern.indexOf("ok", opens);
+  const { samples: pattern, opens, closes } = samples(failureThreshold, recoveryThreshold);
+  const shortened = failureThreshold > SHOWN_FAILURES || recoveryThreshold > SHOWN_RECOVERIES;
   const left = (index: number): string => `${((index + 0.5) / TICKS) * 100}%`;
 
   return (
@@ -175,6 +231,7 @@ function SampleTicks({ times, config }: { times: number[]; config: Thresholds })
         </span>
         <span style={{ left: left(closes) }}>
           {pluralize(recoveryThreshold, "1 success check-in", "success check-ins")}
+          {shortened ? " (not to scale)" : ""}
         </span>
       </div>
     </div>
@@ -186,11 +243,28 @@ const HEIGHT = 120;
 /** The window's count over the last twenty minutes, against the thresholds. */
 export function MetricPreview({ org, draft }: { org: string; draft: MetricDraft }): JSX.Element {
   const preview = usePreview(org, draft);
-  const points = preview.data?.type === "metric" ? preview.data.points : [];
+  const outcome = preview.data;
 
-  if (preview.loading && preview.data === null) {
-    return <div className="metric-preview" aria-busy="true" />;
+  if (outcome?.kind !== "preview") {
+    return <PreviewState preview={preview} className="metric-preview" />;
   }
+
+  if (outcome.preview.type !== "metric") {
+    throw new Error(`A metric draft previewed as ${outcome.preview.type}`);
+  }
+
+  return <MetricChart points={outcome.preview.points} config={draft.config} />;
+}
+
+type Point = { time: number; count: number };
+
+/** x across the chart; a single point is drawn as a flat line instead (see below). */
+function xOf(index: number, total: number): number {
+  return total === 1 ? 0 : (index / (total - 1)) * 1000;
+}
+
+function MetricChart(props: { points: Point[]; config: MetricDraft["config"] }): JSX.Element {
+  const { points, config } = props;
 
   if (points.length === 0) {
     return (
@@ -198,16 +272,20 @@ export function MetricPreview({ org, draft }: { org: string; draft: MetricDraft 
     );
   }
 
-  const { threshold, warningThreshold } = draft.config;
+  const { threshold, warningThreshold } = config;
 
   const peak =
     Math.max(threshold, warningThreshold ?? 0, ...points.map(({ count }) => count), 1) * 1.15;
 
   const y = (value: number): number => HEIGHT - (value / peak) * HEIGHT;
 
-  const line = points
-    .map(({ count }, index) => `${(index / (points.length - 1)) * 1000},${y(count)}`)
-    .join(" ");
+  const only = points[0];
+
+  // One point is a flat line across the chart, not a dot at its left edge.
+  const line =
+    points.length === 1 && only !== undefined
+      ? `0,${y(only.count)} 1000,${y(only.count)}`
+      : points.map(({ count }, index) => `${xOf(index, points.length)},${y(count)}`).join(" ");
 
   const first = points[0];
   const last = points.at(-1);

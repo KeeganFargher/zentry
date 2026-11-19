@@ -8,7 +8,7 @@ import type { JSX } from "react";
 
 import { Notice } from "~/components/basics";
 import { Icon } from "~/components/icons";
-import { api } from "~/lib/api";
+import { api, ApiFailure } from "~/lib/api";
 import { useResource } from "~/lib/resource";
 import { navigate, useUrl } from "~/lib/router";
 import { toast } from "~/lib/toast";
@@ -28,16 +28,29 @@ const NEW_RULE: Draft = {
   audience: { kind: "owner" },
 };
 
+/**
+ * The rule's own settings, without the server's id, version and lastTriggered:
+ * the API's rule schema is strict, so sending them fails every edit.
+ */
+function draftOfRule(rule: ApiMonitorRule): Draft {
+  const { name, enabled, channels, triggers, throttleSeconds, audience, environment, priority } =
+    rule;
+
+  return { name, enabled, channels, triggers, throttleSeconds, audience, environment, priority };
+}
+
 function bodyOf(draft: Draft): Json {
-  const { environment, priority, audience, ...rest } = draft;
+  const { environment, priority, audience } = draft;
 
   // Sentry names an unnamed alert after what it does.
   const named =
     draft.name.trim() === "" ? `Notify via ${draft.channels.join(" and ")}` : draft.name;
 
+  // Each field named, so nothing the form holds besides the rule reaches the API.
   const body: JsonObject = {
-    ...rest,
     name: named,
+    enabled: draft.enabled,
+    throttleSeconds: draft.throttleSeconds,
     channels: [...draft.channels],
     triggers: [...draft.triggers],
     audience:
@@ -58,13 +71,17 @@ function bodyOf(draft: Draft): Json {
   return body;
 }
 
-type Links = { monitors: ApiMonitor[]; linked: Set<string>; ruleId: string };
+type Links = { linked: Set<string>; ruleId: string };
 
 /**
  * Links live on each monitor, so each monitor whose link changed is saved
- * with its own version check and audit entry.
+ * with its own version check and audit entry. The monitors are read fresh,
+ * so a retry after a partial save diffs against what is stored now rather
+ * than the versions the page loaded with.
  */
-async function saveLinks(org: string, { monitors, linked, ruleId }: Links): Promise<void> {
+async function saveLinks(org: string, { linked, ruleId }: Links): Promise<void> {
+  const monitors = await api.monitors(org);
+
   for (const monitor of monitors) {
     const has = monitor.alertRuleIds.includes(ruleId);
 
@@ -160,10 +177,58 @@ function EnvironmentFilter({
   );
 }
 
+type Saving = {
+  save: (draft: Draft, linked: Set<string>) => Promise<void>;
+  saving: boolean;
+  error: string | null;
+  /** The rule as last saved: the edited rule, or the one this form created. */
+  saved: ApiMonitorRule | null;
+};
+
+/**
+ * Saving an alert is two steps, the rule then each monitor's links, so a link
+ * can fail after the rule exists. The created rule is kept, so a retry edits
+ * it rather than creating a duplicate, and a save in flight blocks another.
+ */
+function useSaveRule({ org, context, rule }: Omit<Props, "monitors">): Saving {
+  const [saved, setSaved] = useState(rule);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (draft: Draft, linked: Set<string>): Promise<void> => {
+    setError(null);
+    setSaving(true);
+
+    try {
+      const next =
+        saved === null
+          ? await api.createMonitorRule(org, bodyOf(draft))
+          : await api.editMonitorRule(org, saved, bodyOf(draft));
+
+      setSaved(next);
+      await saveLinks(org, { linked, ruleId: next.id });
+      toast(rule === null ? "Alert created" : "Alert saved");
+      context.reloadRules();
+      navigate(`/${org}/monitors/alerts/`);
+    } catch (cause) {
+      // Only the API's refusals are shown; anything else is a bug and surfaces.
+      if (!(cause instanceof ApiFailure)) {
+        throw cause;
+      }
+
+      setError(cause.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return { save, saving, error, saved };
+}
+
 function Editor({ org, context, monitors, rule }: Props): JSX.Element {
   const url = useUrl();
   const preset = url.searchParams.get("monitor");
-  const [draft, setDraft] = useState<Draft>(rule ?? NEW_RULE);
+  const [draft, setDraft] = useState<Draft>(rule === null ? NEW_RULE : draftOfRule(rule));
 
   // A new alert starts linked to the monitor it was created from, if any.
   const initial = new Set(
@@ -175,25 +240,7 @@ function Editor({ org, context, monitors, rule }: Props): JSX.Element {
   );
 
   const [linked, setLinked] = useState(initial);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async (): Promise<void> => {
-    setError(null);
-
-    try {
-      const saved =
-        rule === null
-          ? await api.createMonitorRule(org, bodyOf(draft))
-          : await api.editMonitorRule(org, rule, bodyOf(draft));
-
-      await saveLinks(org, { monitors, linked, ruleId: saved.id });
-      toast(rule === null ? "Alert created" : "Alert saved");
-      context.reloadRules();
-      navigate(`/${org}/monitors/alerts/`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The alert could not be saved");
-    }
-  };
+  const { save, saving, error, saved } = useSaveRule({ org, context, rule });
 
   return (
     <>
@@ -220,8 +267,13 @@ function Editor({ org, context, monitors, rule }: Props): JSX.Element {
         <button type="button" onClick={() => navigate(`/${org}/monitors/alerts/`)}>
           Cancel
         </button>
-        <button type="button" className="primary" onClick={() => void save()}>
-          {rule === null ? "Create Alert" : "Save"}
+        <button
+          type="button"
+          className="primary"
+          disabled={saving}
+          onClick={() => void save(draft, linked)}
+        >
+          {saved === null ? "Create Alert" : "Save"}
         </button>
       </footer>
     </>

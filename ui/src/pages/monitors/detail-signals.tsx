@@ -96,7 +96,48 @@ type MetricMonitor = Extract<ApiMonitor, { type: "metric" }>;
 
 const CHART_HEIGHT = 180;
 
-/** An area of the largest window count per bucket, with dashed threshold lines. */
+/** The largest window count in each bucket that has one; buckets with no evaluation are absent. */
+function bucketValues(timeline: MonitorTimeline): Map<number, number> {
+  const values = new Map<number, number>();
+
+  for (const { index, value } of timeline.buckets) {
+    // Unknown and awaiting-data evaluations carry no count: a gap, not zero errors.
+    if (value === null) {
+      continue;
+    }
+
+    const seen = values.get(index);
+
+    values.set(index, seen === undefined ? value : Math.max(seen, value));
+  }
+
+  return values;
+}
+
+/** A run of consecutive buckets with a value, from bucket `start`. */
+type Run = { start: number; values: number[] };
+
+/** Runs of consecutive buckets with a value, each drawn as its own segment so gaps stay empty. */
+function runsOf(values: Map<number, number>): Run[] {
+  const runs: Run[] = [];
+
+  for (const [index, value] of [...values].toSorted(([a], [b]) => a - b)) {
+    const run = runs.at(-1);
+
+    if (run !== undefined && run.start + run.values.length === index) {
+      run.values.push(value);
+    } else {
+      runs.push({ start: index, values: [value] });
+    }
+  }
+
+  return runs;
+}
+
+/**
+ * Error counts as steps: each bucket spans [index/total, (index+1)/total] of
+ * the width, the scale TimelineScale's labels use, with dashed thresholds.
+ */
 export function MetricChart({
   monitor,
   timeline,
@@ -105,20 +146,26 @@ export function MetricChart({
   timeline: MonitorTimeline;
 }): JSX.Element {
   const total = Math.ceil((timeline.until - timeline.since) / timeline.bucketMs);
-  const values = new Map<number, number>();
-
-  for (const bucket of timeline.buckets) {
-    values.set(bucket.index, Math.max(values.get(bucket.index) ?? 0, bucket.value ?? 0));
-  }
-
+  const values = bucketValues(timeline);
   const { threshold, warningThreshold } = monitor.config;
   const peak = Math.max(threshold, warningThreshold ?? 0, ...values.values(), 1) * 1.15;
   const y = (value: number): number => CHART_HEIGHT - (value / peak) * CHART_HEIGHT;
+  const x = (edge: number): number => (edge / total) * 1000;
 
-  const points = Array.from(
-    { length: total },
-    (_, index) => `${(index / Math.max(1, total - 1)) * 1000},${y(values.get(index) ?? 0)}`,
-  );
+  const segments = runsOf(values).map(({ start, values: counts }) => {
+    const steps = counts.flatMap((count, offset) => [
+      `${x(start + offset)},${y(count)}`,
+      `${x(start + offset + 1)},${y(count)}`,
+    ]);
+
+    const end = start + counts.length;
+
+    return {
+      key: start,
+      line: steps.join(" "),
+      area: `${x(start)},${CHART_HEIGHT} ${steps.join(" ")} ${x(end)},${CHART_HEIGHT}`,
+    };
+  });
 
   return (
     <div className="panel metric-chart">
@@ -128,11 +175,12 @@ export function MetricChart({
         role="img"
         aria-label="Error count per window"
       >
-        <polygon
-          className="area"
-          points={`0,${CHART_HEIGHT} ${points.join(" ")} 1000,${CHART_HEIGHT}`}
-        />
-        <polyline className="line" points={points.join(" ")} />
+        {segments.map((segment) => (
+          <g key={segment.key}>
+            <polygon className="area" points={segment.area} />
+            <polyline className="line" points={segment.line} />
+          </g>
+        ))}
         <line className="threshold high" x1="0" x2="1000" y1={y(threshold)} y2={y(threshold)} />
         {warningThreshold !== undefined && (
           <line

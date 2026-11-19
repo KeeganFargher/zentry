@@ -6,7 +6,7 @@ import type { JSX } from "react";
 
 import { Icon } from "~/components/icons";
 import { useConfirm } from "~/components/overlays";
-import { api } from "~/lib/api";
+import { api, ApiFailure } from "~/lib/api";
 import { replaceQuery } from "~/lib/router";
 import { toast } from "~/lib/toast";
 
@@ -14,6 +14,35 @@ export const PAGE_SIZE = 20;
 
 function countText(count: number): string {
   return `${count} monitor${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Sets every selected monitor's status and returns why each failed one
+ * failed. Monitors already in that status are skipped so the API sees no
+ * no-op edits.
+ */
+async function setStatuses(
+  org: string,
+  selected: ApiMonitor[],
+  status: ApiMonitor["status"],
+): Promise<unknown[]> {
+  const results = await Promise.allSettled(
+    selected.flatMap((monitor) =>
+      monitor.status === status ? [] : [api.setMonitorStatus(org, monitor, status)],
+    ),
+  );
+
+  const failures: unknown[] = [];
+
+  for (const result of results) {
+    if (result.status === "rejected") {
+      const reason: unknown = result.reason;
+
+      failures.push(reason);
+    }
+  }
+
+  return failures;
 }
 
 export function BulkActions({
@@ -29,18 +58,29 @@ export function BulkActions({
 }): JSX.Element {
   const [ask, dialog] = useConfirm();
 
-  // Monitors already in the chosen status are skipped so the API sees no
-  // no-op edits; the toast still counts the whole selection.
+  // Every update runs to the end, so one refusal (a stale version, a
+  // member's 403) does not stop the rest; the list then reloads to show what
+  // changed, and the toast counts what failed.
   const update = async (status: ApiMonitor["status"], label: string): Promise<void> => {
-    await Promise.all(
-      selected
-        .filter((monitor) => monitor.status !== status)
-        .map((monitor) => api.setMonitorStatus(org, monitor, status)),
-    );
+    const failures = await setStatuses(org, selected, status);
 
-    toast(`${label}d ${countText(selected.length)}`);
     clear();
     reload();
+
+    // Anything but an API refusal is a bug, raised once the list has reloaded.
+    const bug = failures.find((reason) => !(reason instanceof ApiFailure));
+
+    if (bug !== undefined) {
+      throw bug;
+    }
+
+    const [first] = failures;
+
+    toast(
+      first instanceof ApiFailure
+        ? `${label}d ${selected.length - failures.length} of ${countText(selected.length)}; ${failures.length} failed: ${first.message}`
+        : `${label}d ${countText(selected.length)}`,
+    );
   };
 
   const apply = (status: ApiMonitor["status"], label: string): void =>
