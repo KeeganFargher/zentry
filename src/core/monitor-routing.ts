@@ -51,8 +51,10 @@ function monitorSuppression({ transition, monitor }: Context): Suppression | nul
     return "disabled";
   }
 
-  // Muting is judged at the transition's time, not when the worker reaches it,
-  // so a failure that happened while muted stays silent after the mute ends.
+  // A mute covers what happened before it ends, so a failure while muted stays
+  // silent even if the worker routes it after the mute ran out. The monitor's
+  // settings are read when the worker routes (usually within the minute): an
+  // explicit unmute, a pause or a newly linked rule before then applies.
   if (monitor.mutedUntil !== null && monitor.mutedUntil > transition.happenedAt) {
     return "muted";
   }

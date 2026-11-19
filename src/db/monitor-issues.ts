@@ -5,12 +5,13 @@
 // the monitor's token for metric and uptime), so a writer that lost its race
 // writes nothing. The issue writes also carry a claim on the issue row itself:
 // the first issue statement stamps a fresh token only if the issue is still in
-// the state that was planned against, and every later one checks that token.
-// A user resolving the issue in the instant between read and write therefore
-// costs this batch its issue writes, never a corrupt issue; the next
-// observation plans against the new state. Rows written earlier in the batch
-// are found by natural key, never last_insert_rowid(), which goes stale when a
-// fenced insert is skipped.
+// the state that was planned against and the monitor is not archived, and
+// every later one checks that token. Archiving resolves the issue without
+// touching a cron environment's fence, so a check-in planned before the
+// archive loses its issue writes instead of reopening an issue that would
+// never resolve; the next observation plans against the issue as it is. Rows
+// written earlier in the batch are found by natural key, never
+// last_insert_rowid(), which goes stale when a fenced insert is skipped.
 
 import { z } from "zod";
 
@@ -96,6 +97,12 @@ function statement(builder: Builder, sql: string, values: Bind[]): D1PreparedSta
 
   const used = Math.max(...[...sql.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1])));
 
+  // A statement must use every value it is given: one that forgets its last
+  // parameter is a bug, not something to bind and ignore.
+  if (values.length > 0 && used !== 3 + values.length) {
+    throw new Error(`a statement binds ${3 + values.length} values but uses ${used}`);
+  }
+
   const text = sql
     .replaceAll("FENCE", `(${fence.sql})`)
     .replaceAll(/\$(\d+)/gu, (_, index: string) => `?${offset + Number(index)}`);
@@ -153,7 +160,8 @@ function claimIssue(
         builder,
         `UPDATE groups SET monitor_write_token = $3
         WHERE monitor_id = $1 AND monitor_scope = $2 AND status = $4 AND level = $5
-          AND times_seen = $6 AND FENCE`,
+          AND times_seen = $6 AND FENCE
+          AND (SELECT status FROM monitors WHERE id = $1) != 'archived'`,
         [status, level, timesSeen],
       ),
     ];
@@ -169,7 +177,7 @@ function claimIssue(
     statement(
       builder,
       `UPDATE projects SET next_short_id = next_short_id + 1
-      WHERE id = (SELECT project_id FROM monitors WHERE id = $1) AND FENCE
+      WHERE id = (SELECT project_id FROM monitors WHERE id = $1 AND status != 'archived') AND FENCE
         AND NOT EXISTS (SELECT 1 FROM groups WHERE monitor_id = $1 AND monitor_scope = $2)`,
       [],
     ),
@@ -181,8 +189,8 @@ function claimIssue(
           json_object('type', m.type, 'value', NULL, 'function', NULL, 'filename', NULL, 'logger', NULL),
           'unresolved', 0, $5, $5, $5, m.id, $2, $3
         FROM monitors m JOIN projects p ON p.id = m.project_id
-        WHERE m.id = $1 AND FENCE
-        ON CONFLICT DO NOTHING`,
+        WHERE m.id = $1 AND m.status != 'archived' AND FENCE
+        ON CONFLICT (monitor_id, monitor_scope) WHERE monitor_id IS NOT NULL DO NOTHING`,
       [change.createIssue.level, at],
     ),
   ];

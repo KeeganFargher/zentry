@@ -230,8 +230,8 @@ export class UptimeMonitorStore {
     const won = results[0]?.meta.changes === 1;
     const issueClaim = issues.claim === null ? undefined : results[1 + issues.claim];
 
-    // The check won but a user changed the issue in the same instant; the next
-    // check plans against the issue as it is now.
+    // The check won but the issue moved under it (see src/db/monitor-issues.ts);
+    // the next check plans against the issue as it is now.
     if (won && issueClaim !== undefined && issueClaim.meta.changes === 0) {
       logInfo("monitor issue changed during its write", { monitorId: job.id });
     }

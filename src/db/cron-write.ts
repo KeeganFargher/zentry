@@ -94,9 +94,9 @@ export async function writeEnvironment(
 }
 
 /**
- * The environment won but its issue moved under it (a user resolved or
- * ignored it in the same instant): this batch's issue writes were skipped, and
- * the next observation plans against the issue as it is now.
+ * The environment won but its issue moved under it (the monitor was archived
+ * in the same instant; see src/db/monitor-issues.ts): this batch's issue
+ * writes were skipped.
  */
 function reportLostIssue(target: Target): void {
   logInfo("monitor issue changed during its write", {

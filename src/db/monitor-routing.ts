@@ -44,16 +44,21 @@ export class MonitorRoutingStore {
   }
 
   /**
-   * The scope's transitions up to this one that are not routed yet, oldest
-   * first. Throttling, "already paged" and a high-priority rule's first
-   * failure all read earlier deliveries, so a scope routes in order.
+   * This transition and the scope's earlier ones still waiting in the outbox,
+   * oldest first. Throttling, "already paged" and a high-priority rule's
+   * first failure all read earlier deliveries, so a scope routes in order. An
+   * earlier transition whose row was dropped after failing too often is
+   * skipped, so one that cannot be routed does not silence its scope.
    */
   async unrouted(transitionId: number): Promise<number[]> {
     const { results } = await this.#db
-      .prepare(`SELECT later.id FROM monitor_transitions this
-        JOIN monitor_transitions later ON later.monitor_id = this.monitor_id AND later.scope = this.scope
-        WHERE this.id = ?1 AND later.id <= ?1 AND later.routed_at IS NULL
-        ORDER BY later.id`)
+      .prepare(`SELECT earlier.id FROM monitor_transitions this
+        JOIN monitor_transitions earlier
+          ON earlier.monitor_id = this.monitor_id AND earlier.scope = this.scope
+        WHERE this.id = ?1 AND earlier.routed_at IS NULL AND (earlier.id = ?1 OR (
+          earlier.id < ?1 AND EXISTS (SELECT 1 FROM notify_outbox o
+            WHERE o.kind = 'status' AND json_extract(o.data, '$.monitorTransitionId') = earlier.id)))
+        ORDER BY earlier.id`)
       .bind(transitionId)
       .all<{ id: number }>();
 

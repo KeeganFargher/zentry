@@ -41,7 +41,7 @@ export const previewMetricQuery = `WITH RECURSIVE points(time) AS (
 // Each due monitor's next state. The writer applies it with a compare-and-swap
 // on evaluated_at, so a concurrent tick that read the same window writes once.
 export const evaluateMetricQuery = `WITH due AS MATERIALIZED (
-          SELECT id, project_id, config, severity, evaluated_at, capture.started_at,
+          SELECT id, project_id, config, severity, evaluated_at, generation, capture.started_at,
             ?1 - json_extract(config, '$.windowSeconds') * 1000 AS windowStart
           FROM monitors JOIN metric_capture capture USING(project_id)
           WHERE type = 'metric' AND status = 'active'
@@ -60,7 +60,7 @@ export const evaluateMetricQuery = `WITH due AS MATERIALIZED (
             ELSE severity
           END AS nextSeverity FROM windows
         )
-        SELECT id AS monitorId, evaluated_at AS previous, nextSeverity AS severity,
+        SELECT id AS monitorId, evaluated_at AS previous, generation, nextSeverity AS severity,
           COALESCE(json_extract(config, '$.environment'), '') AS scope,
           json_object('count', count, 'windowEnd', ?1,
             'windowStart', windowStart, 'coverage', covered, 'severity', nextSeverity,

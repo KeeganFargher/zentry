@@ -23,7 +23,7 @@ import { withMail } from "./deps";
 import type { MailDeps, NotifyDeps } from "./deps";
 import { deliver, unsubscribeUrl } from "./mailer";
 import { routeTransitions } from "./monitor-routing";
-import { eachProvider } from "./providers";
+import { eachProvider, SendDeferred } from "./providers";
 import type { ProviderSend } from "./providers";
 import { pushTo } from "./push";
 import { recipients, workflowRecipients } from "./recipients";
@@ -168,8 +168,24 @@ export async function handleMonitorAlert(deps: NotifyDeps, item: Job<"monitor">)
     return;
   }
 
+  // One row carries every delivery of the transition, so each is attempted
+  // even when another fails, as eachProvider does for providers: a deferred
+  // email must not hold back the push. Sends are keyed by delivery, so the
+  // retry this rethrow causes repeats none that went out.
+  const errors: unknown[] = [];
+
   for (const deliveryId of await routing.deliveries(item.transitionId)) {
-    await sendMonitorDelivery(deps, deliveryId);
+    try {
+      await sendMonitorDelivery(deps, deliveryId);
+    } catch (cause) {
+      errors.push(cause);
+    }
+  }
+
+  const failure = errors.find((cause) => !(cause instanceof SendDeferred)) ?? errors[0];
+
+  if (failure !== undefined) {
+    throw failure;
   }
 }
 

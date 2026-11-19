@@ -1,7 +1,9 @@
 // Metric monitor evaluation: read each due monitor's next state, then write it
 // with its observation and planned issue lifecycle (src/core/monitor-issues.ts)
 // in one batch. Each monitor's statements are fenced by a compare-and-swap on
-// its evaluated_at, so two ticks reading the same window write it once.
+// its evaluated_at and generation: two ticks reading the same window write it
+// once, and an edit or resume between the read and the write (which resets
+// evaluated_at to NULL and bumps the generation) discards the stale window.
 
 import { z } from "zod";
 
@@ -14,6 +16,7 @@ import { readIssueStates, scopeStatements } from "./monitor-issues";
 const MetricDecision = z.object({
   monitorId: z.uuid(),
   previous: z.int().nullable(),
+  generation: z.int(),
   severity: z.enum(["medium", "high"]).nullable(),
   scope: z.string(),
   evidence: z.string(),
@@ -62,8 +65,8 @@ export class MetricEvaluationStore {
       const won = results[offset]?.meta.changes === 1;
       const issue = issueClaim === null ? undefined : results[offset + issueClaim];
 
-      // The window won but a user changed the issue in the same instant; the
-      // next window plans against the issue as it is now.
+      // The window won but the issue moved under it (see src/db/monitor-issues.ts);
+      // the next window plans against the issue as it is now.
       if (won && issue !== undefined && issue.meta.changes === 0) {
         logInfo("monitor issue changed during its write", { monitorId: decision.monitorId });
       }
@@ -74,13 +77,14 @@ export class MetricEvaluationStore {
 
   #statements(windowEnd: number, { decision, plan }: PlannedMetric): MetricStatements {
     const token = crypto.randomUUID();
-    const { monitorId, previous, severity, evidence, health, scope } = decision;
+    const { monitorId, previous, generation, severity, evidence, health, scope } = decision;
 
     const claim = this.#db
       .prepare(`UPDATE monitors SET evaluated_at = ?3, severity = ?4, last_result = ?5,
           health = ?6, write_token = ?2
-        WHERE id = ?1 AND type = 'metric' AND status = 'active' AND evaluated_at IS ?7`)
-      .bind(monitorId, token, windowEnd, severity, evidence, health, previous);
+        WHERE id = ?1 AND type = 'metric' AND status = 'active' AND evaluated_at IS ?7
+          AND generation = ?8`)
+      .bind(monitorId, token, windowEnd, severity, evidence, health, previous, generation);
 
     const issues = scopeStatements(this.#db, {
       monitorId,
