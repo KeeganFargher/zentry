@@ -105,6 +105,8 @@
     "RETENTION_DAYS": "90",
     "MAX_STORED_PER_GROUP_HOUR": "100",
     // The UI's origin, for links in emails.
+    "MONITOR_ALERTS_PAUSED": "0",
+    "MONITOR_BELOW_COUNT_PAGING": "0",
     "APP_URL": "https://zentry.example.com",
     // The origin the mobile app calls, which goes in the pairing QR code. It
     // must be a host Cloudflare Access does not guard: the ingest host, where

@@ -8,6 +8,8 @@ import { EventBlobs } from "@/blobs/events";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
+import { MonitorPreviews } from "@/db/monitor-previews";
+import { MonitorRuleStore } from "@/db/monitor-rules";
 import { MonitorStore } from "@/db/monitors";
 import { NotificationSettingsStore } from "@/db/notify-settings";
 import { OrganizationStore } from "@/db/organizations";
@@ -98,8 +100,10 @@ export function apiDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     projects: new ProjectStore(env.DB),
     uptimeOrigins: "",
     allowMonitorPreview: async () => true,
-    previewUptime: async () => ({ outcome: "unknown" }),
+    monitorPreviews: new MonitorPreviews(env.DB),
+    enqueueMonitorPreview: async () => {},
     monitors: new MonitorStore(env.DB),
+    monitorRules: new MonitorRuleStore(env.DB),
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
     blobs: new EventBlobs(env.BLOBS),

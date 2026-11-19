@@ -2893,3 +2893,35 @@ pre.raw-trace {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+.monitor-preview {
+  margin: 16px 0;
+}
+.monitor-preview-bars {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 112px;
+  margin: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.monitor-preview-bars > div {
+  flex: 1;
+  min-height: 2px;
+  background-color: var(--accent);
+}
+.monitor-preview-bars > div[data-covered="false"] {
+  opacity: 0.28;
+}
+.monitor-preview-line {
+  position: absolute;
+  inset-inline: 0;
+  border-top: 1px solid var(--red);
+}
+.monitor-preview-line.medium {
+  border-top-style: dashed;
+}
+.monitor-form-fields textarea {
+  min-height: 44px;
+}

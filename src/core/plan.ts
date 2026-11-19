@@ -237,7 +237,6 @@ export function planBatch(input: PlanInput): Plan {
       metricEvents: fresh.map(({ event }) => ({
         project: event.projectId,
         eventId: event.eventId,
-        received: event.receivedAt,
         environment: event.environment,
         level: event.level,
       })),

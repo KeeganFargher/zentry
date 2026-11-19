@@ -170,6 +170,11 @@ export default defineConfig({
         "src/db/monitors.ts",
         "src/uptime-probe.ts",
         "src/shared/monitors.ts",
+        // These schemas validate alert rule requests and persisted rule configuration.
+        "src/shared/monitor-alerts.ts",
+        "src/shared/uptime.ts",
+        "src/db/monitor-timeline.ts",
+        "src/db/monitor-previews.ts",
         "src/core/wire.ts",
         "src/core/envelope.ts",
         "src/ingest/handler.ts",

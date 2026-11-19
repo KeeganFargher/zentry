@@ -12,6 +12,7 @@ import type {
   ApiIssueStats,
   ApiKey,
   ApiMonitor,
+  ApiMonitorRule,
   ApiMe,
   ApiNotificationSettings,
   ApiOrganizationLimits,
@@ -22,6 +23,9 @@ import type {
   Json,
   MonitorDetail,
   MonitorPreview,
+  MonitorPreviewJob,
+  MonitorMember,
+  MonitorHistory,
   NotificationProvider,
   NotificationScope,
   NotificationType,
@@ -86,6 +90,34 @@ async function get<T>(path: string): Promise<T> {
 export const eventJsonUrl = (org: string, issueId: string, eventId: string): string =>
   `/api/0/organizations/${org}/issues/${issueId}/events/${eventId}/`;
 
+async function pollMonitorPreview(org: string, body: Json): Promise<MonitorPreview> {
+  const base = `/organizations/${org}/monitor-previews/`;
+
+  const initial = await read<MonitorPreview | MonitorPreviewJob>(
+    await sendJson("POST", base, body),
+  );
+
+  if (initial.type !== "uptime_job") {
+    return initial;
+  }
+
+  // Bound polling even if the queue is unavailable or the server clock differs.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const job = await get<MonitorPreviewJob>(`${base}${initial.id}/`);
+
+    if (job.result !== undefined) {
+      return job.result;
+    }
+
+    if (job.status === "expired") {
+      break;
+    }
+  }
+
+  throw new Error("The test check did not return before the preview timed out");
+}
+
 export const api = {
   me: (): Promise<ApiMe> => get("/me/"),
 
@@ -125,8 +157,33 @@ export const api = {
       }),
     ),
 
-  previewMonitor: async (org: string, body: Json): Promise<MonitorPreview> =>
-    read(await sendJson("POST", `/organizations/${org}/monitor-previews/`, body)),
+  monitorRules: (org: string): Promise<ApiMonitorRule[]> =>
+    get(`/organizations/${org}/monitor-alert-rules/`),
+  monitorMembers: (org: string): Promise<MonitorMember[]> =>
+    get(`/organizations/${org}/monitor-members/`),
+  createMonitorRule: async (org: string, body: Json): Promise<ApiMonitorRule> =>
+    read(await sendJson("POST", `/organizations/${org}/monitor-alert-rules/`, body)),
+  editMonitorRule: async (org: string, rule: ApiMonitorRule, body: Json): Promise<ApiMonitorRule> =>
+    read(
+      await sendJson("PUT", `/organizations/${org}/monitor-alert-rules/${rule.id}/`, {
+        version: rule.version,
+        rule: body,
+      }),
+    ),
+  monitorHistory: (org: string, id: string, cursor: string): Promise<MonitorHistory> =>
+    get(`/organizations/${org}/monitors/${id}/observations/?cursor=${encodeURIComponent(cursor)}`),
+  muteMonitor: async (
+    org: string,
+    monitor: ApiMonitor,
+    input: { until: number | null },
+  ): Promise<ApiMonitor> =>
+    read(
+      await sendJson("PUT", `/organizations/${org}/monitors/${monitor.id}/mute/`, {
+        version: monitor.version,
+        until: input.until,
+      }),
+    ),
+  previewMonitor: pollMonitorPreview,
   monitors: (org: string): Promise<ApiMonitor[]> => get(`/organizations/${org}/monitors/`),
   monitor: (org: string, id: string): Promise<MonitorDetail> =>
     get(`/organizations/${org}/monitors/${id}/`),

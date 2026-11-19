@@ -1,17 +1,16 @@
 import { z } from "zod";
 
-import type { ProbeResult, UptimeMonitorStore } from "@/db/uptime-monitors";
-import type { UptimeSettings, UptimeJob } from "@/shared/monitors";
+import type { MonitorPreviews } from "@/db/monitor-previews";
+import type { ProbeRequest, ProbeResult, UptimeMonitorStore } from "@/db/uptime-monitors";
+import type { UptimeJob } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
+import { ProbeResponse } from "@/shared/uptime";
 
-const Job = z.object({ id: z.uuid(), token: z.uuid() });
-
-const ProbeResponse = z.object({
-  outcome: z.enum(["ok", "failed", "unknown"]),
-  httpStatus: z.int().optional(),
-  durationMs: z.int().nonnegative().optional(),
-});
+const Job = z.union([
+  z.strictObject({ id: z.uuid(), token: z.uuid() }),
+  z.strictObject({ previewId: z.uuid() }),
+]);
 
 export async function dispatchUptime(
   store: UptimeMonitorStore,
@@ -35,34 +34,70 @@ export async function dispatchUptime(
 
 export async function handleUptimeBatch(
   batch: MessageBatch<QueueMessage | NotifyMessage | UptimeJob>,
-  store: UptimeMonitorStore,
-  binding: Fetcher,
+  {
+    store,
+    previews,
+    binding,
+  }: { store: UptimeMonitorStore; previews: MonitorPreviews; binding: Pick<Fetcher, "fetch"> },
 ): Promise<void> {
   await Promise.all(
     batch.messages.map(async (message) => {
       const job = Job.parse(message.body);
+
+      if ("previewId" in job) {
+        await runPreview(previews, binding, job.previewId);
+        message.ack();
+
+        return;
+      }
+
       const config = await store.start(job, Date.now());
 
-      try {
-        if (config !== null) {
-          await store.finish(job, await requestProbe(binding, config));
-        }
-
-        message.ack();
-      } catch (cause) {
-        await store.retry(job);
-        throw cause;
+      // Once an attempt is claimed, retrying the message must not repeat the
+      // target request. If persistence fails, the expired lease records a gap.
+      if (config !== null) {
+        await store.finish(job, await requestProbe(binding, config), Date.now());
       }
+
+      message.ack();
     }),
   );
 }
 
-export async function requestProbe(binding: Fetcher, config: UptimeSettings): Promise<ProbeResult> {
-  const { url, method, timeoutMs } = config;
+async function runPreview(
+  store: MonitorPreviews,
+  binding: Pick<Fetcher, "fetch">,
+  id: string,
+): Promise<void> {
+  const configuration = await store.start(id, Date.now());
+
+  if (configuration === null) {
+    return;
+  }
+
+  const result = await requestProbe(binding, configuration).catch((): ProbeResult => ({
+    outcome: "unknown",
+    reason: "network",
+  }));
+
+  await store.finish(id, result, Date.now());
+}
+
+async function requestProbe(
+  binding: Pick<Fetcher, "fetch">,
+  input: ProbeRequest,
+): Promise<ProbeResult> {
+  const { url, method, timeoutMs, successCodes } = input.config;
 
   const response = await binding.fetch("https://uptime-probe.internal/", {
     method: "POST",
-    body: JSON.stringify({ url, method, timeoutMs }),
+    body: JSON.stringify({
+      url,
+      method,
+      timeoutMs,
+      successCodes,
+      organizationId: input.organizationId,
+    }),
   });
 
   if (!response.ok) {

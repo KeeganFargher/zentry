@@ -1,16 +1,19 @@
 import { z } from "zod";
 
 import { nextCronOccurrence } from "@/core/cron-schedule";
-import type { MonitorPreview } from "@/shared/contract";
+import type { MonitorHistory } from "@/shared/contract";
 import { CreateMonitor } from "@/shared/monitors";
 import type { NewMonitor } from "@/shared/monitors";
-import { MINUTE } from "@/shared/time";
+import { DAY } from "@/shared/time";
 import { approvedUptimeTarget, productionUptimeTarget } from "@/shared/uptime";
 
 import type { ApiContext, Handler } from "./context";
 import {
   badRequest,
   forbidden,
+  CursorParam,
+  encodeCursor,
+  IntParam,
   IdParam,
   isLocal,
   notFound,
@@ -28,13 +31,9 @@ const ChangeStatus = z.strictObject({
   status: z.enum(["active", "paused", "archived"]),
 });
 
-function validateMonitor(context: ApiContext, monitor: NewMonitor): string | undefined {
-  if (
-    monitor.type === "metric" &&
-    monitor.config.recoveryThreshold !== undefined &&
-    monitor.config.recoveryThreshold >= monitor.config.threshold
-  ) {
-    return "metric recovery threshold must be lower than the breach threshold";
+export function validateMonitor(context: ApiContext, monitor: NewMonitor): string | undefined {
+  if (monitor.type === "metric") {
+    return validateMetric(monitor.config);
   }
 
   if (monitor.type === "uptime") {
@@ -42,7 +41,9 @@ function validateMonitor(context: ApiContext, monitor: NewMonitor): string | und
     const localFixture = isLocal(context.url) && target.origin === "http://localhost:5199";
 
     if (
-      !approvedUptimeTarget(target, context.deps.uptimeOrigins) ||
+      target.hostname === context.deps.ingestHost ||
+      applicationTarget(target, context, localFixture) ||
+      !approvedUptimeTarget(target, context.organizationId, context.deps.uptimeOrigins) ||
       (!productionUptimeTarget(target) && !localFixture)
     ) {
       return "uptime URL must use an approved origin";
@@ -52,6 +53,31 @@ function validateMonitor(context: ApiContext, monitor: NewMonitor): string | und
   }
 
   return monitor.type === "cron" ? validateCron(monitor, context.now) : undefined;
+}
+
+function applicationTarget(target: URL, context: ApiContext, localFixture: boolean): boolean {
+  return target.hostname === context.url.hostname && !localFixture;
+}
+
+function validateMetric(
+  config: Extract<NewMonitor, { type: "metric" }>["config"],
+): string | undefined {
+  const { threshold, warningThreshold, recoveryThreshold, comparator } = config;
+  const falling = comparator === "lt" || comparator === "lte";
+  const warning = warningThreshold ?? threshold;
+
+  if (warningThreshold !== undefined && (falling ? warning <= threshold : warning >= threshold)) {
+    return "the medium threshold must be closer to healthy than the high threshold";
+  }
+
+  if (
+    recoveryThreshold !== undefined &&
+    (falling ? recoveryThreshold <= warning : recoveryThreshold >= warning)
+  ) {
+    return "recovery must be on the healthy side of the alert thresholds";
+  }
+
+  return undefined;
 }
 
 function validateCron(
@@ -74,6 +100,24 @@ function conflict(): Response {
   );
 }
 
+async function validateRouting(
+  context: ApiContext,
+  monitor: NewMonitor,
+): Promise<string | undefined> {
+  const [members, rules] = await Promise.all([
+    context.deps.notificationSettings.members(context.organizationId),
+    context.deps.monitorRules.list(context.organizationId),
+  ]);
+
+  if (monitor.ownerId !== null && !members.some(({ userId }) => userId === monitor.ownerId)) {
+    return "owner must be a member of the organization";
+  }
+
+  return monitor.alertRuleIds.every((id) => rules.some((rule) => rule.id === id))
+    ? undefined
+    : "all alert rules must belong to the organization";
+}
+
 export const createMonitor: Handler = async (context) => {
   if (context.role !== "owner") {
     return forbidden("only an owner can create monitors");
@@ -94,7 +138,18 @@ export const createMonitor: Handler = async (context) => {
     return notFound();
   }
 
-  const monitor = await context.deps.monitors.create(context.organizationId, body, context.now);
+  const routing = await validateRouting(context, body);
+  const requestKey = context.request.headers.get("idempotency-key");
+
+  if (routing !== undefined || (requestKey !== null && !/^[\w-]{1,80}$/.test(requestKey))) {
+    return badRequest(routing ?? "invalid idempotency key");
+  }
+
+  const monitor = await context.deps.monitors.create(context.organizationId, body, {
+    userId: context.user.id,
+    time: context.now,
+    requestKey,
+  });
 
   return monitor === null ? conflict() : Response.json(monitor, { status: 201 });
 };
@@ -116,9 +171,27 @@ export const getMonitor: Handler = async (context, args) => {
     return notFound();
   }
 
+  const store = context.deps.monitors.timeline;
+
+  const [history, audit, scopes, coverage, incidents, deliveries, checkIns] = await Promise.all([
+    observationPage(context, id),
+    store.audit(id),
+    store.scopes(id),
+    monitor.type === "uptime" ? store.uptimeCoverage(id, context.now - DAY) : null,
+    store.incidents(id),
+    store.deliveries(id),
+    monitor.type === "cron" ? store.checkIns(id) : [],
+  ]);
+
   return Response.json({
     monitor,
-    observations: await context.deps.monitors.history(context.organizationId, id),
+    ...history,
+    audit,
+    scopes,
+    coverage,
+    incidents,
+    deliveries,
+    checkIns,
   });
 };
 
@@ -127,10 +200,7 @@ function changedCronScope(current: NewMonitor, edited: NewMonitor): boolean {
     return false;
   }
 
-  return (
-    current.config.slug !== edited.config.slug ||
-    current.config.environment !== edited.config.environment
-  );
+  return current.config.slug !== edited.config.slug;
 }
 
 export const editMonitor: Handler = async (context, args) => {
@@ -151,7 +221,7 @@ export const editMonitor: Handler = async (context, args) => {
   }
 
   if (changedCronScope(current, monitor)) {
-    return badRequest("cron slug and environment are fixed");
+    return badRequest("cron slug is fixed");
   }
 
   const error = validateMonitor(context, monitor);
@@ -160,7 +230,18 @@ export const editMonitor: Handler = async (context, args) => {
     return badRequest(error);
   }
 
-  const updated = await context.deps.monitors.edit(current, { monitor, version });
+  const routing = await validateRouting(context, monitor);
+
+  if (routing !== undefined) {
+    return badRequest(routing);
+  }
+
+  const updated = await context.deps.monitors.edit(current, {
+    monitor,
+    version,
+    userId: context.user.id,
+    time: context.now,
+  });
 
   return updated === null ? conflict() : Response.json(updated);
 };
@@ -178,57 +259,69 @@ export const setMonitorStatus: Handler = async (context, args) => {
     return notFound();
   }
 
-  const updated = await context.deps.monitors.setStatus(id, status);
+  const updated = await context.deps.monitors.setStatus(id, {
+    ...status,
+    userId: context.user.id,
+    time: context.now,
+  });
 
   return updated === null ? conflict() : Response.json(updated);
 };
 
-export const previewMonitor: Handler = async (context) => {
+const HistoryQuery = z.object({
+  cursor: CursorParam.pipe(z.tuple([IntParam, IntParam])).optional(),
+});
+
+const Mute = z.strictObject({ version: z.int().positive(), until: z.int().nullable() });
+
+async function observationPage(context: ApiContext, id: string): Promise<MonitorHistory> {
+  const { cursor } = readQuery(context.url, HistoryQuery);
+  const [time, key] = cursor ?? [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+
+  const entries = await context.deps.monitors.timeline.history(context.organizationId, id, {
+    time,
+    id: key,
+    size: 51,
+  });
+
+  const observations = entries.slice(0, 50);
+  const last = observations.at(-1);
+
+  return {
+    observations,
+    nextCursor:
+      entries.length > 50 && last !== undefined ? encodeCursor([last.time, last.id]) : null,
+  };
+}
+
+export const monitorHistory: Handler = async (context, args) => {
+  const [id] = readParams(args, MonitorId);
+  const found = await context.deps.monitors.find(context.organizationId, id);
+
+  return found === null ? notFound() : Response.json(await observationPage(context, id));
+};
+
+export const muteMonitor: Handler = async (context, args) => {
   if (context.role !== "owner") {
-    return forbidden("only an owner can preview monitors");
+    return forbidden("only an owner can mute monitors");
   }
 
-  const body = await readBody(context.request, CreateMonitor);
-  const error = validateMonitor(context, body);
+  const [id] = readParams(args, MonitorId);
+  const input = await readBody(context.request, Mute);
 
-  if (error !== undefined) {
-    return badRequest(error);
+  if (input.until !== null && (input.until <= context.now || input.until > context.now + 7 * DAY)) {
+    return badRequest("mute expiry must be within seven days");
   }
 
-  const project = (await context.deps.projects.list(context.organizationId)).find(
-    ({ id }) => id === body.projectId,
-  );
-
-  if (project === undefined) {
+  if ((await context.deps.monitors.find(context.organizationId, id)) === null) {
     return notFound();
   }
 
-  if (!(await context.deps.allowMonitorPreview(String(context.organizationId)))) {
-    return Response.json({ detail: "too many monitor previews" }, { status: 429 });
-  }
+  const updated = await context.deps.monitors.mute(id, {
+    ...input,
+    userId: context.user.id,
+    time: context.now,
+  });
 
-  return Response.json(await preview(context, body));
+  return updated === null ? conflict() : Response.json(updated);
 };
-
-async function preview(context: ApiContext, body: NewMonitor): Promise<MonitorPreview> {
-  if (body.type === "uptime") {
-    return { type: "uptime", ...(await context.deps.previewUptime(body.config)) };
-  }
-
-  if (body.type === "metric") {
-    const windowEnd = Math.floor(context.now / MINUTE) * MINUTE - 2 * MINUTE;
-    const count = await context.deps.monitors.count(body, windowEnd);
-
-    return { type: "metric", count, windowEnd };
-  }
-
-  const occurrences: number[] = [];
-  let time = context.now;
-
-  for (let index = 0; index < 5; index += 1) {
-    time = nextCronOccurrence(body.config, time);
-    occurrences.push(time);
-  }
-
-  return { type: "cron", occurrences };
-}

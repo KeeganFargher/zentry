@@ -1,6 +1,7 @@
 import type { CronMonitorStore } from "@/db/cron-monitors";
 import type { MonitorStore } from "@/db/monitors";
 import type { UptimeMonitorStore } from "@/db/uptime-monitors";
+import { errorText, logError, logInfo } from "@/shared/log";
 import type { UptimeJob } from "@/shared/monitors";
 import { HOUR, MINUTE } from "@/shared/time";
 
@@ -37,6 +38,9 @@ export async function evaluateMonitors(time: number, deps: MonitorTickDeps): Pro
   }
 
   if (failures.length > 0) {
+    logError("monitor evaluation failed", { errors: failures.map(errorText), time });
     throw new AggregateError(failures, "one or more monitor evaluators failed");
   }
+
+  logInfo("monitor scheduler heartbeat", { scheduledAt: time, completedAt: Date.now() });
 }

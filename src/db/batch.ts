@@ -211,17 +211,13 @@ const UPSERT_USAGE = `
 
 // Metric receipts cover events whose bodies were dropped by the flood sampler.
 const INSERT_METRIC_EVENTS = `
-  INSERT INTO metric_receipts (project_id, event_id, minute, environment)
-  SELECT value->>'project', value->>'eventId', (value->>'received' / 60000) * 60000,
-    CASE WHEN length(value->>'environment') <= 64 THEN value->>'environment' ELSE '' END
-  FROM json_each(?1)
+  INSERT INTO metric_receipts (project_id, event_id, minute, environment, level)
+  SELECT pending.project_id, pending.event_id, (pending.received_at / 60000) * 60000,
+    CASE WHEN length(value->>'environment') <= 64 THEN value->>'environment' ELSE '' END, value->>'level'
+  FROM json_each(?1) JOIN metric_pending pending
+    ON pending.project_id = value->>'project' AND pending.event_id = value->>'eventId'
   WHERE value->>'level' IN ('error', 'fatal')
-    AND value->>'received' >= ?2 - 86400000
-    AND EXISTS (
-      SELECT 1 FROM monitors
-      WHERE project_id = value->>'project' AND type = 'metric' AND status != 'archived'
-        AND created_at <= value->>'received'
-    )
+    AND pending.received_at >= ?2 - 86400000
   ON CONFLICT(project_id, event_id) DO NOTHING`;
 
 /** A statement in the commit, and whether its rows are outbox rows. */
@@ -294,7 +290,7 @@ export class BatchStore {
    * E1 to E9, as one transaction. Returns how many notifications it queued in
    * the outbox, so the caller knows whether to wake the notify consumer.
    */
-  async commit(writes: BatchWrites, now: number): Promise<number> {
+  async commit(writes: BatchWrites, now: number, inputs: EventKey[]): Promise<number> {
     const db = this.#db;
     const aggregates = JSON.stringify(writes.aggregates);
     const usage = JSON.stringify(writes.usage);
@@ -306,6 +302,12 @@ export class BatchStore {
       write(db.prepare(UPDATE_GROUPS).bind(aggregates)),
       write(db.prepare(INSERT_EVENTS).bind(JSON.stringify(writes.events))),
       write(db.prepare(INSERT_METRIC_EVENTS).bind(JSON.stringify(writes.metricEvents), now)),
+      write(
+        db
+          .prepare(`DELETE FROM metric_pending WHERE (project_id, event_id) IN (
+        SELECT value->>'p', value->>'e' FROM json_each(?1))`)
+          .bind(JSON.stringify(inputs)),
+      ),
       write(db.prepare(UPSERT_GROUP_STATS).bind(JSON.stringify(writes.groupStats))),
       write(db.prepare(UPSERT_TAGS).bind(JSON.stringify(writes.tags))),
       write(db.prepare(UPSERT_PROJECT_STATS).bind(JSON.stringify(writes.projectStats))),

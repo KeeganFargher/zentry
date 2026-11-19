@@ -1,4 +1,4 @@
-import type { ApiMonitor, MonitorDetail } from "@contract";
+import type { ApiMonitor, ApiMonitorRule, ApiProject, MonitorMember } from "@contract";
 import { useState } from "react";
 import type { JSX } from "react";
 
@@ -7,17 +7,12 @@ import { api } from "~/lib/api";
 import { useResource } from "~/lib/resource";
 import { navigate } from "~/lib/router";
 
+import { MonitorControls } from "./monitor-control";
 import { MonitorForm } from "./monitor-form";
+import { HEALTH, MonitorAudit, MonitorOperations, MonitorTimeline } from "./monitor-history";
+import { MonitorRuleForm } from "./monitor-rule-form";
 
 const LABELS = { metric: "Metric", cron: "Cron", uptime: "Uptime" };
-
-const HEALTH = {
-  awaiting_data: "Awaiting data",
-  healthy: "Healthy",
-  degraded: "Degraded",
-  failing: "Failing",
-  unknown: "Unknown",
-};
 
 function MonitorHealth({ monitor }: { monitor: ApiMonitor }): JSX.Element {
   return (
@@ -27,10 +22,165 @@ function MonitorHealth({ monitor }: { monitor: ApiMonitor }): JSX.Element {
   );
 }
 
+type RuleProps = {
+  org: string;
+  rules: ApiMonitorRule[];
+  members: MonitorMember[];
+  reload: () => void;
+};
+
+function Rules({ org, rules, members, reload }: RuleProps): JSX.Element {
+  const [selected, setSelected] = useState("");
+  const current = rules.find(({ id }) => id === selected);
+
+  return (
+    <details className="panel padded">
+      <summary>Manage alert rules</summary>
+      <label>
+        Alert rule
+        <select value={selected} onChange={(event) => setSelected(event.currentTarget.value)}>
+          <option value="">New alert rule</option>
+          {rules.map(({ id, name }) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <MonitorRuleForm
+        key={current === undefined ? "new" : `${current.id}:${current.version}`}
+        members={members}
+        {...(current === undefined ? {} : { rule: current })}
+        save={async (body) => {
+          const rule =
+            current === undefined
+              ? await api.createMonitorRule(org, body)
+              : await api.editMonitorRule(org, current, body);
+
+          setSelected(rule.id);
+          reload();
+        }}
+      />
+    </details>
+  );
+}
+
+type ListProps = {
+  org: string;
+  monitors: ApiMonitor[];
+  projects: ApiProject[];
+  members: MonitorMember[];
+};
+
+type Filters = { project: string; type: string; health: string; owner: string };
+
+function matches(monitor: ApiMonitor, filters: Filters): boolean {
+  return (
+    (filters.project === "" || String(monitor.projectId) === filters.project) &&
+    (filters.type === "" || monitor.type === filters.type) &&
+    (filters.health === "" || monitor.health === filters.health) &&
+    (filters.owner === "" || String(monitor.ownerId ?? "") === filters.owner)
+  );
+}
+
+function MonitorFilters({
+  filters,
+  set,
+  projects,
+  members,
+}: Pick<ListProps, "projects" | "members"> & {
+  filters: Filters;
+  set: (filter: Filters) => void;
+}): JSX.Element {
+  return (
+    <div className="form-row">
+      <label>
+        Filter by project{" "}
+        <select
+          value={filters.project}
+          onChange={(event) => set({ ...filters, project: event.currentTarget.value })}
+        >
+          <option value="">All projects</option>
+          {projects.map(({ id, name }) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Filter by type{" "}
+        <select
+          value={filters.type}
+          onChange={(event) => set({ ...filters, type: event.currentTarget.value })}
+        >
+          <option value="">All types</option>
+          {Object.entries(LABELS).map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Filter by health{" "}
+        <select
+          value={filters.health}
+          onChange={(event) => set({ ...filters, health: event.currentTarget.value })}
+        >
+          <option value="">All states</option>
+          {Object.entries(HEALTH).map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <OwnerFilter filters={filters} set={set} members={members} />
+    </div>
+  );
+}
+
+function MonitorList({ org, monitors, projects, members }: ListProps): JSX.Element {
+  const [filters, set] = useState<Filters>({ project: "", type: "", health: "", owner: "" });
+  const filtered = monitors.filter((monitor) => matches(monitor, filters));
+
+  return (
+    <>
+      <MonitorFilters filters={filters} set={set} projects={projects} members={members} />
+      <div className="panel monitor-list">
+        {filtered.length === 0 && <p className="padded muted">No monitors match these filters.</p>}
+        {filtered.map((monitor) => (
+          <Link to={`/${org}/monitors/${monitor.id}/`} key={monitor.id} className="monitor-row">
+            <div>
+              <strong>{monitor.name}</strong>
+              <span className="muted">
+                {projects.find(({ id }) => id === monitor.projectId)?.name}
+                {monitor.evaluatedAt !== null &&
+                  ` · ${new Date(monitor.evaluatedAt).toLocaleString()}`}
+              </span>
+            </div>
+            <span>{LABELS[monitor.type]}</span>
+            <MonitorHealth monitor={monitor} />
+          </Link>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function useMonitorOptions(org: string) {
+  return {
+    projects: useResource(`projects:${org}`, () => api.projects(org)).data ?? [],
+    members: useResource(`monitor-members:${org}`, () => api.monitorMembers(org)).data ?? [],
+    rules: useResource(`monitor-rules:${org}`, () => api.monitorRules(org)),
+  };
+}
+
 function Monitors({ org }: { org: string }): JSX.Element {
-  const projects = useResource(`projects:${org}`, () => api.projects(org));
-  const monitors = useResource(`monitors:${org}`, () => api.monitors(org));
-  const list = monitors.data ?? [];
+  const { projects, members, rules } = useMonitorOptions(org);
+  const list = useResource(`monitors:${org}`, () => api.monitors(org));
+  const routes = rules.data ?? [];
 
   return (
     <>
@@ -39,30 +189,23 @@ function Monitors({ org }: { org: string }): JSX.Element {
       </header>
       <div className="content monitor-content">
         <Notice
-          loading={monitors.loading}
-          error={monitors.error}
-          empty={list.length === 0 ? "No monitors configured." : null}
+          loading={list.loading}
+          error={list.error}
+          empty={list.data?.length === 0 ? "No monitors configured." : null}
         />
-        {list.length > 0 && (
-          <div className="panel monitor-list">
-            {list.map((monitor) => (
-              <Link to={`/${org}/monitors/${monitor.id}/`} key={monitor.id} className="monitor-row">
-                <div>
-                  <strong>{monitor.name}</strong>
-                  <span className="muted">
-                    {projects.data?.find(({ id }) => id === monitor.projectId)?.name}
-                  </span>
-                </div>
-                <span>{LABELS[monitor.type]}</span>
-                <MonitorHealth monitor={monitor} />
-              </Link>
-            ))}
-          </div>
+        {list.data !== null && list.data.length > 0 && (
+          <>
+            <MonitorOperations monitors={list.data} />
+            <MonitorList org={org} monitors={list.data} projects={projects} members={members} />
+          </>
         )}
-        {projects.data !== null && projects.data.length > 0 && (
+        <Rules org={org} rules={routes} members={members} reload={rules.reload} />
+        {projects.length > 0 && (
           <MonitorForm
             preview={(body) => api.previewMonitor(org, body)}
-            projects={projects.data}
+            projects={projects}
+            rules={routes}
+            members={members}
             save={async (body) => {
               const monitor = await api.createMonitor(org, body);
 
@@ -75,132 +218,29 @@ function Monitors({ org }: { org: string }): JSX.Element {
   );
 }
 
-function Activity({ detail, org }: { detail: MonitorDetail; org: string }): JSX.Element {
-  return (
-    <section className="panel padded">
-      <h2>Recent observations</h2>
-      {detail.monitor.issueId !== null && (
-        <Link to={`/${org}/issues/${detail.monitor.issueId}/`}>View monitor issue</Link>
-      )}
-      {detail.observations.length === 0 && (
-        <p className="muted">Waiting for the first observation.</p>
-      )}
-      <ol className="monitor-observations">
-        {detail.observations.map(({ id, time, health, evidence }) => (
-          <li key={id}>
-            <time dateTime={new Date(time).toISOString()}>{new Date(time).toLocaleString()}</time>
-            <span>{HEALTH[health]}</span>
-            <code>{JSON.stringify(evidence)}</code>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
 function MonitorPage({ org, id }: { org: string; id: string }): JSX.Element {
-  const data = useResource(`monitor:${org}:${id}`, () => api.monitor(org, id));
-  const projects = useResource(`projects:${org}`, () => api.projects(org));
+  const resource = useResource(`monitor:${org}:${id}`, () => api.monitor(org, id));
+  const { projects, members, rules } = useMonitorOptions(org);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
+  const detail = resource.data;
 
-  if (data.data === null) {
-    return <Notice loading={data.loading} error={data.error} empty={null} />;
+  if (detail === null) {
+    return <Notice loading={resource.loading} error={resource.error} empty={null} />;
   }
 
-  const detail = data.data;
   const { monitor } = detail;
 
-  const update = async (status: ApiMonitor["status"]): Promise<void> => {
+  const run = async (action: () => Promise<ApiMonitor>): Promise<void> => {
     setError("");
 
     try {
-      await api.setMonitorStatus(org, monitor, status);
-      data.reload();
+      await action();
+      resource.reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update monitor");
     }
   };
-
-  const settings = (
-    <>
-      {" "}
-      {editing && projects.data !== null && monitor.status !== "archived" && (
-        <MonitorForm
-          preview={(body) => api.previewMonitor(org, body)}
-          initial={monitor}
-          projects={projects.data}
-          save={async (body) => {
-            await api.editMonitor(org, monitor, body);
-            setEditing(false);
-            data.reload();
-          }}
-        />
-      )}
-    </>
-  );
-
-  return (
-    <MonitorDetailsView
-      detail={detail}
-      org={org}
-      error={error}
-      editing={editing}
-      update={update}
-      setEditing={setEditing}
-      settings={settings}
-    />
-  );
-}
-
-type MonitorDetailsViewProps = {
-  detail: MonitorDetail;
-  org: string;
-  error: string;
-  editing: boolean;
-  update: (status: ApiMonitor["status"]) => Promise<void>;
-  setEditing: (editing: boolean) => void;
-  settings: JSX.Element;
-};
-
-function SignalSummary({ monitor }: { monitor: ApiMonitor }): JSX.Element {
-  return (
-    <>
-      {" "}
-      {monitor.type === "cron" && (
-        <p>
-          Send SDK check-ins for <code>{monitor.config.slug}</code> in{" "}
-          <code>{monitor.config.environment}</code>.
-        </p>
-      )}
-      {monitor.type === "uptime" && (
-        <p>
-          <code>
-            {monitor.config.method} {monitor.config.url}
-          </code>
-        </p>
-      )}
-      {monitor.type === "metric" && (
-        <p>
-          Open an issue at {monitor.config.threshold} errors within{" "}
-          {monitor.config.windowSeconds / 60} minutes.
-        </p>
-      )}
-    </>
-  );
-}
-
-function MonitorDetailsView({
-  detail,
-  org,
-  error,
-  editing,
-  update,
-  setEditing,
-  settings,
-}: MonitorDetailsViewProps): JSX.Element {
-  const { monitor } = detail;
-  const paused = monitor.status === "paused";
 
   return (
     <>
@@ -210,28 +250,35 @@ function MonitorDetailsView({
       </header>
       <div className="content monitor-content">
         <Link to={`/${org}/monitors/`}>All monitors</Link>
-        <section className="panel padded">
-          <h2>{LABELS[monitor.type]} monitor</h2>
-          <SignalSummary monitor={monitor} />
-          {monitor.status !== "archived" && (
-            <div className="form-row">
-              <button type="button" onClick={() => void update(paused ? "active" : "paused")}>
-                {paused ? "Resume monitor" : "Pause monitor"}
-              </button>
-              <button type="button" onClick={() => setEditing(!editing)}>
-                {editing ? "Close settings" : "Edit monitor"}
-              </button>
-              {paused && (
-                <button type="button" onClick={() => void update("archived")}>
-                  Archive monitor
-                </button>
-              )}
-            </div>
-          )}
-          {error !== "" && <p role="alert">{error}</p>}
-        </section>
-        {settings}
-        <Activity detail={detail} org={org} />
+        {error !== "" && <p role="alert">{error}</p>}
+        <MonitorControls
+          detail={detail}
+          org={org}
+          editing={editing}
+          edit={() => setEditing(!editing)}
+          update={(status) => run(() => api.setMonitorStatus(org, monitor, status))}
+          mute={(until) => run(() => api.muteMonitor(org, monitor, { until }))}
+        />
+        {editing && monitor.status !== "archived" && (
+          <MonitorForm
+            initial={monitor}
+            preview={(body) => api.previewMonitor(org, body)}
+            projects={projects}
+            members={members}
+            rules={rules.data ?? []}
+            save={async (body) => {
+              await api.editMonitor(org, monitor, body);
+              setEditing(false);
+              resource.reload();
+            }}
+          />
+        )}
+        <MonitorTimeline
+          key={`${id}:${monitor.version}:${detail.observations[0]?.id ?? 0}`}
+          detail={detail}
+          org={org}
+        />
+        <MonitorAudit detail={detail} org={org} />
       </div>
     </>
   );
@@ -246,5 +293,32 @@ export function MonitorsRoute({
     <Monitors org={route.org} />
   ) : (
     <MonitorPage org={route.org} id={route.id} />
+  );
+}
+
+function OwnerFilter({
+  filters,
+  set,
+  members,
+}: {
+  filters: Filters;
+  set: (filter: Filters) => void;
+  members: MonitorMember[];
+}): JSX.Element {
+  return (
+    <label>
+      Filter by owner{" "}
+      <select
+        value={filters.owner}
+        onChange={(event) => set({ ...filters, owner: event.currentTarget.value })}
+      >
+        <option value="">All owners</option>
+        {members.map(({ userId, email }) => (
+          <option key={userId} value={userId}>
+            {email}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

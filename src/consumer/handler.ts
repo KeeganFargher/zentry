@@ -13,7 +13,13 @@ import { WireEvent } from "@/core/wire";
 import type { BatchKeys } from "@/db/batch";
 import { jsonText } from "@/shared/json";
 import { errorText, logError } from "@/shared/log";
-import type { BatchState, BatchWrites, GroupHourKey, GroupHourStored } from "@/shared/plan";
+import type {
+  BatchState,
+  BatchWrites,
+  EventKey,
+  GroupHourKey,
+  GroupHourStored,
+} from "@/shared/plan";
 import { hourBucket } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
@@ -21,7 +27,7 @@ export type ConsumerDeps = {
   readState: (keys: BatchKeys) => Promise<BatchState>;
   readStored: (keys: GroupHourKey[]) => Promise<GroupHourStored[]>;
   /** Returns how many notifications the commit queued in the outbox. */
-  commit: (writes: BatchWrites, now: number) => Promise<number>;
+  commit: (writes: BatchWrites, now: number, inputs: EventKey[]) => Promise<number>;
   putBlobs: (blobs: EventBlob[]) => Promise<void>;
   loadSpill: (key: string) => Promise<string | null>;
   deleteSpill: (keys: string[]) => Promise<void>;
@@ -131,7 +137,13 @@ export async function processMessages(messages: QueueMessage[], deps: ConsumerDe
       })),
     );
 
-    if ((await deps.commit(plan.writes, now)) > 0) {
+    if (
+      (await deps.commit(
+        plan.writes,
+        now,
+        prepared.map(({ event }) => ({ p: event.projectId, e: event.eventId })),
+      )) > 0
+    ) {
       await wake(deps);
     }
   }

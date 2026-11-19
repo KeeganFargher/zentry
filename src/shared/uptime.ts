@@ -1,5 +1,18 @@
-/** Exact operator-approved origins. Loopback HTTP is reserved for the local fixture. */
-export function approvedUptimeTarget(target: URL, approvedOrigins: string): boolean {
+import { z } from "zod";
+
+export const ProbeResponse = z.object({
+  outcome: z.enum(["ok", "failed", "unknown"]),
+  httpStatus: z.int().optional(),
+  durationMs: z.int().nonnegative().optional(),
+  reason: z.enum(["policy", "timeout", "network", "status", "budget", "paused"]).optional(),
+});
+
+/** Registrations authorize a canonical origin or one exact path by organization. */
+export function approvedUptimeTarget(
+  target: URL,
+  organizationId: number,
+  approvedOrigins: string,
+): boolean {
   if (
     target.username !== "" ||
     target.password !== "" ||
@@ -9,7 +22,12 @@ export function approvedUptimeTarget(target: URL, approvedOrigins: string): bool
     return false;
   }
 
-  return approvedOrigins.split(",").includes(target.origin);
+  const allowed = approvedOrigins.split(",");
+
+  return (
+    allowed.includes(`${organizationId}=${target.origin}`) ||
+    allowed.includes(`${organizationId}=${target.href}`)
+  );
 }
 
 export function productionUptimeTarget(target: URL): boolean {

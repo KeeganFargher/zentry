@@ -6,6 +6,7 @@ import type { DeviceRecord } from "@/db/devices";
 import type { Membership, UserRecord } from "@/db/tenancy";
 import type { ApiMe } from "@/shared/contract";
 import { sha256Hex } from "@/shared/ids";
+import { errorText, logError } from "@/shared/log";
 import { DAY, MINUTE } from "@/shared/time";
 
 import type { ApiDeps, Handler, UserContext, UserHandler } from "./context";
@@ -29,12 +30,20 @@ import {
   updateIssue,
   updateIssues,
 } from "./issues";
+import { getMonitorPreview, previewMonitor } from "./monitor-previews";
+import {
+  createMonitorRule,
+  listMonitorMembers,
+  listMonitorRules,
+  updateMonitorRule,
+} from "./monitor-rules";
 import {
   createMonitor,
   editMonitor,
   getMonitor,
   listMonitors,
-  previewMonitor,
+  monitorHistory,
+  muteMonitor,
   setMonitorStatus,
 } from "./monitors";
 import {
@@ -85,11 +94,18 @@ const ROUTES: Route<Handler>[] = [
   app(route("GET", `/organizations/${ORG}/projects`, listProjects)),
   route("POST", `/organizations/${ORG}/projects`, createProject),
   route("POST", `/organizations/${ORG}/monitors`, createMonitor),
+  route("GET", `/organizations/${ORG}/monitor-members`, listMonitorMembers),
+  route("GET", `/organizations/${ORG}/monitor-alert-rules`, listMonitorRules),
+  route("POST", `/organizations/${ORG}/monitor-alert-rules`, createMonitorRule),
+  route("PUT", `/organizations/${ORG}/monitor-alert-rules/([0-9a-f-]+)`, updateMonitorRule),
   route("POST", `/organizations/${ORG}/monitor-previews`, previewMonitor),
+  route("GET", `/organizations/${ORG}/monitor-previews/([0-9a-f-]+)`, getMonitorPreview),
   route("GET", `/organizations/${ORG}/monitors`, listMonitors),
   route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, getMonitor),
   route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, editMonitor),
   route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)/status`, setMonitorStatus),
+  route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)/mute`, muteMonitor),
+  route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)/observations`, monitorHistory),
   app(route("GET", `/projects/${ORG}/${SLUG}`, getProject)),
   route("PUT", `/projects/${ORG}/${SLUG}`, updateProject),
   route("DELETE", `/projects/${ORG}/${SLUG}`, deleteProject),
@@ -300,6 +316,20 @@ export async function handleApi(
     }
 
     throw cause;
+  }
+}
+
+export async function serveApi(
+  request: Request,
+  deps: ApiDeps,
+  sessions: Sessions,
+): Promise<Response> {
+  try {
+    return await handleApi(request, deps, sessions);
+  } catch (cause) {
+    logError("api request failed", { url: request.url, error: errorText(cause) });
+
+    return Response.json({ detail: "internal error" }, { status: 500 });
   }
 }
 

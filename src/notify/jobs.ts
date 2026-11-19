@@ -1,13 +1,21 @@
 // The other outbox kinds: workflow, quota, spike protection and the weekly
 // report. DESIGN.md §18.3, §18.7 and §19.
 
+import { renderEmail } from "@/core/email-layout";
 import type { EmailContent } from "@/core/email-layout";
-import { quotaEmail, spikeEmail, weeklyReportEmail, workflowEmail } from "@/core/email-messages";
+import {
+  clip,
+  quotaEmail,
+  settingsUrl,
+  spikeEmail,
+  weeklyReportEmail,
+  workflowEmail,
+} from "@/core/email-messages";
 import type { MailLinks } from "@/core/email-messages";
 import { quotaPush, spikePush, workflowPush } from "@/core/push-messages";
 import type { UnsubscribeTarget } from "@/core/unsubscribe";
 import type { NotificationProvider, NotificationType } from "@/shared/contract";
-import type { OutboxItem, Recipient } from "@/shared/notify";
+import type { IssueNotice, MonitorDelivery, OutboxItem, Recipient } from "@/shared/notify";
 import type { PushContent } from "@/shared/push";
 import { nextMonthBucket } from "@/shared/time";
 
@@ -78,6 +86,126 @@ async function fanOut(deps: NotifyDeps, audienceOf: AudienceOf, fanout: Fanout):
   }
 
   await eachProvider(deps, sends);
+}
+
+async function monitorRecipients(
+  deps: NotifyDeps,
+  job: MonitorDelivery,
+  issue: IssueNotice,
+): Promise<Recipient[]> {
+  const audience = {
+    type: "alerts" as const,
+    organizationId: issue.project.organization.id,
+    projectId: issue.project.id,
+  };
+
+  const allowed = await recipients(deps, audience, job.channel);
+
+  const previous =
+    job.transition === "recovery" ? await deps.store.monitorRecoveryAudience(job) : null;
+
+  const selected = job.audience;
+
+  return allowed.filter(
+    ({ userId }) =>
+      (previous === null || previous.has(userId)) &&
+      (selected.kind === "project" ||
+        (selected.kind === "owner" ? job.ownerId === userId : selected.userIds.includes(userId))),
+  );
+}
+
+function renderMonitorAlert(input: {
+  job: MonitorDelivery;
+  issue: IssueNotice;
+  subject: string;
+  links: MailLinks;
+}): EmailContent {
+  const { job, issue, subject, links } = input;
+  const { project } = issue;
+  const organization = project.organization.slug;
+
+  return renderEmail({
+    subject,
+    blocks: [
+      { kind: "heading", text: subject },
+      {
+        kind: "paragraph",
+        text: job.environment === "" ? issue.title : `${issue.title} · ${job.environment}`,
+      },
+      {
+        kind: "button",
+        label: "View monitor",
+        url: `${links.appUrl}/${organization}/monitors/${job.monitorId}/`,
+      },
+      {
+        kind: "button",
+        label: "View issue",
+        url: `${links.appUrl}/${organization}/issues/${issue.id}/`,
+      },
+    ],
+    footer: {
+      reason: "A linked alert rule sent this monitor update.",
+      settingsUrl: settingsUrl(links.appUrl, project.organization),
+      unsubscribeUrl: links.unsubscribeUrl,
+    },
+  });
+}
+
+export async function handleMonitorAlert(deps: NotifyDeps, item: Job<"monitor">): Promise<void> {
+  if (deps.monitorAlertsPaused) {
+    await deps.store.suppressMonitorDelivery(item.deliveryId, "delivery_paused");
+
+    return;
+  }
+
+  const job = await deps.store.monitorDelivery(item.deliveryId, deps.now());
+
+  if (job === null) {
+    await deps.store.suppressMonitorDelivery(item.deliveryId, "changed_before_dispatch");
+
+    return;
+  }
+
+  if (job.belowCount === 1 && !deps.monitorBelowCountPaging) {
+    await deps.store.suppressMonitorDelivery(job.id, "below_count_paging_disabled");
+
+    return;
+  }
+
+  const [issue] = await deps.store.issues([job.groupId]);
+
+  if (issue === undefined) {
+    return;
+  }
+
+  const targets = await monitorRecipients(deps, job, issue);
+
+  if (targets.length === 0) {
+    await deps.store.suppressMonitorDelivery(item.deliveryId, "recipient_preferences");
+
+    return;
+  }
+
+  const { project } = issue;
+  const organization = project.organization.slug;
+  const subject = `${issue.shortId} · Monitor ${job.transition}`;
+
+  await fanOut(deps, async (provider) => (provider === job.channel ? targets : []), {
+    kind: "alerts",
+    key: `monitor:${job.id}`,
+    groupId: issue.id,
+    scope: { type: "alerts", scope: "project", scopeId: project.id },
+    render: (links) => renderMonitorAlert({ job, issue, subject, links }),
+    push:
+      job.channel === "push"
+        ? {
+            title: subject,
+            body: clip(issue.title, 240),
+            channel: "alerts",
+            data: { kind: "issue", organization, issueId: issue.id },
+          }
+        : null,
+  });
 }
 
 export async function handleWorkflow(deps: NotifyDeps, job: Job<"status">): Promise<void> {

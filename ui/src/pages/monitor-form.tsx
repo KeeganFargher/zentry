@@ -1,11 +1,21 @@
-import type { ApiMonitor, ApiProject, Json, MonitorPreview } from "@contract";
+import type {
+  ApiMonitor,
+  ApiMonitorRule,
+  ApiProject,
+  Json,
+  MonitorMember,
+  MonitorPreview,
+} from "@contract";
 import { useState } from "react";
 import type { FormEvent, JSX } from "react";
 
 import { FIELDS } from "./monitor-fields";
+import { PreviewResult } from "./monitor-preview";
 
 type Props = {
   projects: ApiProject[];
+  rules: ApiMonitorRule[];
+  members: MonitorMember[];
   save: (data: Json) => Promise<void>;
   preview: (data: Json) => Promise<MonitorPreview>;
   initial?: ApiMonitor | undefined;
@@ -22,7 +32,9 @@ function cronSettings(data: FormData): Json {
 
   const scope = {
     slug: field(data, "slug"),
-    environment: field(data, "environment"),
+    environments: field(data, "environments")
+      .split(",")
+      .map((name) => name.trim()),
     graceMinutes: Number(field(data, "grace")),
     failureThreshold: Number(field(data, "failures")),
     recoveryThreshold: Number(field(data, "recoveries")),
@@ -39,16 +51,21 @@ function signal(data: FormData, type: ApiMonitor["type"]): Json {
     const config = {
       windowSeconds: Number(field(data, "window")),
       threshold: Number(field(data, "threshold")),
+      comparator: field(data, "comparator"),
     };
 
     const environment = field(data, "environment");
 
     const recovery = field(data, "recovery");
+    const warning = field(data, "warning");
+    const level = field(data, "level");
 
     return Object.assign(
       config,
       environment === "" ? {} : { environment },
       recovery === "" ? {} : { recoveryThreshold: Number(recovery) },
+      warning === "" ? {} : { warningThreshold: Number(warning) },
+      level === "" ? {} : { level },
     );
   }
 
@@ -56,14 +73,21 @@ function signal(data: FormData, type: ApiMonitor["type"]): Json {
     return cronSettings(data);
   }
 
-  return {
-    url: field(data, "url"),
-    method: field(data, "method"),
-    intervalMinutes: Number(field(data, "interval")),
-    timeoutMs: Number(field(data, "timeout")),
-    failureThreshold: Number(field(data, "failures")),
-    recoveryThreshold: Number(field(data, "recoveries")),
-  };
+  const statuses = field(data, "success-codes");
+  const environment = field(data, "environment");
+
+  return Object.assign(
+    {
+      url: field(data, "url"),
+      method: field(data, "method"),
+      intervalMinutes: Number(field(data, "interval")),
+      timeoutMs: Number(field(data, "timeout")),
+      failureThreshold: Number(field(data, "failures")),
+      recoveryThreshold: Number(field(data, "recoveries")),
+    },
+    statuses === "" ? {} : { successCodes: statuses.split(",").map(Number) },
+    environment === "" ? {} : { environment },
+  );
 }
 
 type CommonProps = Pick<Props, "initial" | "projects"> & {
@@ -115,7 +139,72 @@ function CommonFields({ initial, projects, type, changeType }: CommonProps): JSX
   );
 }
 
-export function MonitorForm({ initial, projects, save, preview }: Props): JSX.Element {
+function RoutingFields({
+  initial,
+  rules,
+  members,
+}: Pick<Props, "initial" | "rules" | "members">): JSX.Element {
+  return (
+    <div className="monitor-form-fields">
+      <label>
+        Description{" "}
+        <textarea name="description" maxLength={2000} defaultValue={initial?.description} />
+      </label>
+      <label>
+        Monitor owner
+        <select name="owner" aria-label="Monitor owner" defaultValue={initial?.ownerId ?? ""}>
+          <option value="">Unassigned</option>
+          {members.map(({ userId, email }) => (
+            <option key={userId} value={userId}>
+              {email}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Linked alert rules
+        <select
+          name="rules"
+          aria-label="Linked alert rules"
+          multiple
+          defaultValue={initial?.alertRuleIds ?? []}
+        >
+          {rules.map(({ id, name }) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <input name="notify" type="checkbox" defaultChecked={initial?.notify ?? true} /> Enable
+        linked alerts
+      </label>
+    </div>
+  );
+}
+
+function monitorBody(data: FormData, type: ApiMonitor["type"], projectId: number) {
+  return {
+    projectId: projectId,
+    name: field(data, "name"),
+    type,
+    config: signal(data, type),
+    notify: data.has("notify"),
+    description: field(data, "description"),
+    ownerId: Number(field(data, "owner")) || null,
+    alertRuleIds: data.getAll("rules").flatMap((value) => (value instanceof File ? [] : [value])),
+  };
+}
+
+export function MonitorForm({
+  initial,
+  projects,
+  rules,
+  members,
+  save,
+  preview,
+}: Props): JSX.Element {
   const [type, setType] = useState<ApiMonitor["type"]>(initial?.type ?? "metric");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -129,13 +218,7 @@ export function MonitorForm({ initial, projects, save, preview }: Props): JSX.El
     const data = new FormData(event.currentTarget);
 
     try {
-      const body = {
-        projectId: initial?.projectId ?? Number(field(data, "project")),
-        name: field(data, "name"),
-        type,
-        config: signal(data, type),
-        notify: data.has("notify"),
-      };
+      const body = monitorBody(data, type, initial?.projectId ?? Number(field(data, "project")));
 
       const submitter = event.nativeEvent;
 
@@ -163,10 +246,7 @@ export function MonitorForm({ initial, projects, save, preview }: Props): JSX.El
         <CommonFields initial={initial} projects={projects} type={type} changeType={setType} />
         <Fields initial={initial} />
       </div>
-      <label className="monitor-notify">
-        <input name="notify" type="checkbox" defaultChecked={initial?.notify} /> Notify using
-        project alert preferences
-      </label>
+      <RoutingFields initial={initial} members={members} rules={rules} />
       {error !== "" && (
         <p className="notice failed" role="alert">
           {error}
@@ -180,33 +260,5 @@ export function MonitorForm({ initial, projects, save, preview }: Props): JSX.El
         {initial === undefined ? "Create monitor" : "Save settings"}
       </button>
     </form>
-  );
-}
-
-function PreviewResult({ result }: { result: MonitorPreview }): JSX.Element {
-  if (result.type === "cron") {
-    return (
-      <ol aria-label="Next scheduled runs">
-        {result.occurrences.map((time) => (
-          <li key={time}>{new Date(time).toLocaleString()}</li>
-        ))}
-      </ol>
-    );
-  }
-
-  if (result.type === "metric") {
-    return (
-      <p>
-        Processed errors in the window ending {new Date(result.windowEnd).toLocaleString()}:{" "}
-        {result.count}
-      </p>
-    );
-  }
-
-  return (
-    <p>
-      Probe result: {result.outcome}{" "}
-      {result.httpStatus !== undefined && `(HTTP ${result.httpStatus})`}
-    </p>
   );
 }

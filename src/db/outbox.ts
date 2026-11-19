@@ -30,7 +30,12 @@ const OutboxRecord = z.discriminatedUnion("kind", [
     kind: z.literal("status"),
     group_id: Id,
     actor_id: Id.nullable(),
-    data: jsonText(z.object({ status: z.enum(["unresolved", "resolved", "ignored"]) })),
+    data: jsonText(
+      z.union([
+        z.object({ monitorDeliveryId: Id }),
+        z.object({ status: z.enum(["unresolved", "resolved", "ignored"]) }),
+      ]),
+    ),
   }),
   z.object({
     id: Id,
@@ -62,6 +67,10 @@ export function toOutboxItem(row: OutboxRow): OutboxItem {
     }
 
     case "status": {
+      if ("monitorDeliveryId" in record.data) {
+        return { id: record.id, kind: "monitor", deliveryId: record.data.monitorDeliveryId };
+      }
+
       const { status } = record.data;
 
       return {

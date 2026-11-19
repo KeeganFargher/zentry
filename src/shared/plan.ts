@@ -103,7 +103,6 @@ export type UsageRow = { o: number; m: number; n: number };
 export type MetricEventRow = {
   project: number;
   eventId: string;
-  received: number;
   environment: string;
   level: string;
 };

@@ -4,13 +4,13 @@ import type { EventBlobs } from "@/blobs/events";
 import type { DeviceRecord, DeviceStore } from "@/db/devices";
 import type { EventStore } from "@/db/events";
 import type { IssueStore } from "@/db/issues";
+import type { MonitorPreviews } from "@/db/monitor-previews";
+import type { MonitorRuleStore } from "@/db/monitor-rules";
 import type { MonitorStore } from "@/db/monitors";
 import type { NotificationSettingsStore } from "@/db/notify-settings";
 import type { OrganizationStore } from "@/db/organizations";
 import type { ProjectStore } from "@/db/projects";
 import type { Membership, TenancyStore, UserRecord } from "@/db/tenancy";
-import type { ProbeResult } from "@/db/uptime-monitors";
-import type { UptimeSettings } from "@/shared/monitors";
 
 import type { AccessVerifier } from "./access";
 
@@ -21,6 +21,7 @@ export type ApiDeps = {
   projects: ProjectStore;
   issues: IssueStore;
   monitors: MonitorStore;
+  monitorRules: MonitorRuleStore;
   events: EventStore;
   blobs: EventBlobs;
   notificationSettings: NotificationSettingsStore;
@@ -38,7 +39,8 @@ export type ApiDeps = {
   mobileApiUrl: string;
   uptimeOrigins: string;
   allowMonitorPreview: (key: string) => Promise<boolean>;
-  previewUptime: (config: UptimeSettings) => Promise<ProbeResult>;
+  monitorPreviews: MonitorPreviews;
+  enqueueMonitorPreview: (id: string) => Promise<void>;
   now: () => number;
 };
 

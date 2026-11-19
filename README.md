@@ -106,38 +106,53 @@ DESIGN.md §16.3 and `oxlint.config.ts` together.
 
 Under **Projects → Monitors**, choose a project and create a Metric, Cron, or
 Uptime monitor. Owners can edit settings, pause execution and archive monitors.
-A confirmed failure opens an issue. Select the notification option to route
-failures through the project's existing notification preferences. A recovery
-resolves the issue and can notify its workflow subscribers. Use **Preview**
-to inspect a draft without changing the monitor's health.
+A confirmed failure opens an issue and a confirmed recovery resolves it.
+Link reusable rules to send failure, escalation, and recovery alerts by
+email or mobile push. Recipient preferences apply per channel. Detail pages
+include observations, incident periods, delivery decisions, and revisions.
+The monitoring operations panel summarizes status and coverage across the organization.
+Use **Preview** to inspect a draft. Uptime tests run through the private probe
+queue and expire after two minutes.
 
-- **Metric** counts processed error and fatal events in receive-time windows.
-  Configure an environment, a breach threshold and an optional recovery
-  threshold. Rollups start when the project creates its first metric monitor.
-  Evaluations wait two minutes for ingestion. Heavy queue lag can delay coverage.
+- **Metric** counts errors and fatal events by their first durable acceptance
+  time. Configure a 5-, 15-, or 60-minute window, exact environment and level
+  filters, the comparison direction, medium severity, and recovery. The
+  evaluator waits two minutes and holds an incident open when processing
+  coverage is incomplete. Collection begins with the first metric monitor.
 - **Cron** accepts Sentry SDK terminal check-ins and start/finish pairs. Create
   the monitor before sending a check-in and match its configured slug and
   environment. A valid first check-in arms missing-run detection. Crontab
-  schedules use the configured IANA timezone. Intervals use elapsed time.
+  schedules use the configured IANA timezone. They skip nonexistent times
+  and use the earlier occurrence when a local time repeats. Intervals use
+  elapsed time.
 - **Uptime** sends GET or HEAD to operator-approved HTTPS origins from a
-  separate Worker. Checks use a timeout, no redirects and HTTP 2xx for success.
-  Failure and recovery streaks count scheduled observations.
+  separate Worker. Checks use a timeout, configurable success codes, and
+  never follow redirects. Unknown coverage breaks confirmation streaks.
 
 Monitor history retains up to 14 days, with the latest 50 observations on the
-detail page. The initial implementation uses Zentry's existing issue alert
-configuration. Listed rollout milestones and follow-on monitor capabilities
+detail page with a control to load older entries. The rollout milestones
 are in the [monitoring plan](docs/sentry-monitoring-workers-plan.md).
 
 ### Deploy monitoring on Workers
 
 1. Create the `zentry-uptime` and `zentry-uptime-dlq` Queues.
 2. Prepare a private deployment configuration from `wrangler.probe.jsonc`.
-   Set `UPTIME_ORIGINS` to a comma-separated list of exact HTTPS origins you
-   operate and permit for probing. Keep `FIXTURE_ORIGIN` empty. Deploy this
-   Worker first with `pnpm wrangler deploy -c <probe-config>`.
+   Set `UPTIME_ORIGINS` to comma-separated registrations such as
+   `42=https://status.example.com/health`. The number is the organization ID.
+   Register an origin without a trailing slash to authorize all its paths.
+   Set `UPTIME_BLOCKED_HOSTS` to the application, ingest, and other control
+   hostnames and keep `FIXTURE_ORIGIN` empty. Deploy the probe Worker first.
 3. Update the main production config with the binding, queues, limiters,
    minute trigger and the same approved origins from `wrangler.jsonc`.
-   Then follow the main migration and deployment steps below.
+   Apply D1 migrations before enabling the scheduler. Verify the controlled
+   public HTTPS target, queue redelivery, and paired device in staging.
+4. Set `UPTIME_PROBES_PAUSED=1` on the probe Worker to stop outbound checks
+   and surface unknown coverage. Set `MONITOR_ALERTS_PAUSED=1` on the
+   application Worker to suppress outbound monitor notifications.
+   Monitor the uptime DLQ and redrive after correcting the cause. Expired
+   jobs are discarded and missed slots appear as gaps. Use the `monitor scheduler
+   heartbeat` log to track completed ticks. Keep `MONITOR_BELOW_COUNT_PAGING=0`
+   until the ingest ledger and close policy meet the pilot load target.
 
 `pnpm dev` starts both Workers locally. Playwright starts an isolated
 database, the application and probe Workers, and a local HTTP fixture server.

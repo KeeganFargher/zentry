@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import { EventBlobs } from "@/blobs/events";
 import { handleBatch, processMessages } from "@/consumer/handler";
-import { HOUR, monthBucket } from "@/shared/time";
+import { MonitorStore } from "@/db/monitors";
+import { CreateMonitor } from "@/shared/monitors";
+import { HOUR, MINUTE, monthBucket } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
 import {
@@ -16,6 +18,7 @@ import {
   message,
   NOW,
 } from "./helpers";
+import { addMember } from "./notify-helpers";
 
 async function limitOf(projectId: number): Promise<{ until: number; reason: string } | null> {
   return env.DB.prepare(
@@ -65,6 +68,56 @@ function batchOf(body: QueueMessage, settled: Settled): MessageBatch<QueueMessag
 }
 
 describe("consumer", () => {
+  it("uses the canonical pending receipt after duplicate delivery and holds recovery across a gap", async () => {
+    const { id: projectId } = await createProject();
+    const store = new MonitorStore(env.DB);
+    const firstMinute = Math.floor(NOW / MINUTE) * MINUTE;
+
+    const settings = CreateMonitor.parse({
+      projectId,
+      name: "Pipeline coverage",
+      type: "metric",
+      config: { windowSeconds: 300, threshold: 1 },
+    });
+
+    const actor = await addMember(1);
+
+    const monitor = await store.create(1, settings, {
+      userId: actor.id,
+      time: firstMinute,
+      requestKey: null,
+    });
+
+    expect(monitor).not.toBeNull();
+    const event = message({ projectId, index: 10, event: errorEvent("canonical") });
+
+    const pending = env.DB.prepare(
+      "INSERT INTO metric_pending(project_id,event_id,received_at) VALUES (?1,?2,?3)",
+    );
+
+    await pending.bind(projectId, event.event_id, firstMinute + MINUTE).run();
+    await processMessages([{ ...event, received_at: firstMinute + 7 * MINUTE }], consumerDeps());
+    expect(
+      await env.DB.prepare("SELECT minute FROM metric_receipts WHERE project_id = ?1")
+        .bind(projectId)
+        .first(),
+    ).toEqual({ minute: firstMinute + MINUTE });
+
+    await store.evaluateMetrics(firstMinute + 5 * MINUTE);
+    expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
+      health: "failing",
+      severity: "high",
+    });
+
+    await pending.bind(projectId, eventId(11), firstMinute + 6 * MINUTE).run();
+    await store.evaluateMetrics(firstMinute + 11 * MINUTE);
+    expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
+      health: "unknown",
+      severity: "high",
+    });
+    expect((await groupsOf(projectId))[0]).toMatchObject({ status: "unresolved" });
+  });
+
   it("acks a committed batch even when deleting its spilled payloads fails", async () => {
     const project = await createProject();
     const settled = { acked: false, retried: false };
@@ -277,11 +330,15 @@ describe("consumer", () => {
     const store = consumerDeps();
 
     const failing = consumerDeps({
-      commit: async (writes, now) => {
+      commit: async (writes, now, inputs) => {
         // A second copy of an event row makes the events insert hit its primary key.
         const [first] = writes.events;
 
-        return store.commit({ ...writes, events: first === undefined ? [] : [first, first] }, now);
+        return store.commit(
+          { ...writes, events: first === undefined ? [] : [first, first] },
+          now,
+          inputs,
+        );
       },
     });
 

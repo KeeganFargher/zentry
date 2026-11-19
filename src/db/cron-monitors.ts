@@ -5,22 +5,39 @@ import { MINUTE } from "@/shared/time";
 
 const Config = jsonText(CronConfig);
 
-const RECORD_CHECK_IN = `
-  INSERT INTO cron_checkins (monitor_id, check_in_id, status, received_at, duration_ms, generation)
-  SELECT id, ?3, ?4, ?5, ?6, generation FROM monitors
-  WHERE id = ?1 AND version = ?2 AND status = 'active'
-    AND NOT EXISTS (
-      SELECT 1 FROM cron_checkins c WHERE c.monitor_id = monitors.id
-        AND c.check_in_id = ?3 AND c.generation != monitors.generation
-    )
-  ON CONFLICT DO NOTHING`;
-
 const FIND_SCOPE = `
-  SELECT id, version, config, next_cron_at FROM monitors
-  WHERE project_id = ?1 AND type = 'cron' AND status = 'active'
-    AND json_extract(config, '$.slug') = ?2 AND json_extract(config, '$.environment') = ?3`;
+  SELECT m.id, m.config, m.version, s.environment, s.generation, s.revision, s.next_at AS nextAt
+  FROM monitors m JOIN cron_scopes s ON s.monitor_id = m.id
+  WHERE m.project_id = ?1 AND m.type = 'cron' AND m.status = 'active'
+    AND json_extract(m.config, '$.slug') = ?2 AND s.environment = ?3`;
 
-type Scope = { id: string; version: number; config: string; next_cron_at: number | null };
+const APPLY_NEXT = `
+  INSERT INTO cron_applied (monitor_id, environment, generation, slot, decided_at)
+  SELECT s.monitor_id, s.environment, s.generation, run.slot, MAX(?1, run.completed_at,
+    COALESCE((SELECT decided_at + 1 FROM cron_applied previous
+      WHERE previous.monitor_id = s.monitor_id AND previous.environment = s.environment
+        AND previous.generation = s.generation AND previous.slot = s.applied_at), 0))
+  FROM cron_scopes s JOIN monitors m ON m.id = s.monitor_id
+  JOIN cron_runs run ON run.monitor_id = s.monitor_id AND run.environment = s.environment
+    AND run.generation = s.generation AND run.slot = (
+      SELECT MIN(pending.slot) FROM cron_runs pending
+      WHERE pending.monitor_id = s.monitor_id AND pending.environment = s.environment
+        AND pending.generation = s.generation AND pending.slot > COALESCE(s.applied_at, -1)
+    )
+  WHERE m.status = 'active' AND run.outcome IS NOT NULL AND (?2 IS NULL OR m.id = ?2)
+  ORDER BY run.slot, s.monitor_id, s.environment LIMIT 100`;
+
+type Scope = {
+  id: string;
+  config: string;
+  environment: string;
+  generation: number;
+  revision: number;
+  version: number;
+  nextAt: number | null;
+};
+
+type Input = { checkIn: MonitorCheckIn; time: number };
 
 type NextOccurrence = (settings: CronSettings, time: number) => number;
 
@@ -34,107 +51,182 @@ export class CronMonitorStore {
   }
 
   async record(projectId: number, checkIn: MonitorCheckIn, receivedAt: number): Promise<boolean> {
-    const { check_in_id, monitor_slug, status, environment, duration } = checkIn;
-    const db = this.#db;
+    const { monitor_slug, environment } = checkIn;
 
-    const scope = await db
-      .prepare(FIND_SCOPE)
-      .bind(projectId, monitor_slug, environment)
-      .first<Scope>();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const scope = await this.#db
+        .prepare(FIND_SCOPE)
+        .bind(projectId, monitor_slug, environment)
+        .first<Scope>();
 
-    if (scope === null) {
-      return false;
+      if (scope === null) {
+        return false;
+      }
+
+      if (await this.#accept(scope, { checkIn, time: receivedAt })) {
+        await this.#apply({ now: receivedAt, monitorId: scope.id });
+
+        return true;
+      }
     }
 
+    throw new Error("cron configuration changed during receipt");
+  }
+
+  async #accept(scope: Scope, input: Input): Promise<boolean> {
+    const db = this.#db;
+    const { checkIn, time } = input;
+    const { id, version, revision, environment, generation, nextAt } = scope;
+    const key = checkIn.check_in_id;
+    const status = checkIn.status;
+    const writeToken = crypto.randomUUID();
+    const phase = status === "in_progress" ? "start" : "finish";
     const config = Config.parse(scope.config);
-    const durationMs = duration === undefined ? null : Math.round(duration * 1000);
-    const expected = scope.next_cron_at;
+    const maxRuntime = config.maxRuntimeMinutes * MINUTE;
+    const duration = checkIn.duration === undefined ? null : Math.round(checkIn.duration * 1000);
 
-    const current =
-      expected !== null &&
-      receivedAt >= expected - Math.min(30_000, config.graceMinutes * MINUTE) &&
-      receivedAt <= expected + config.graceMinutes * MINUTE;
+    const eligible =
+      nextAt === null || (time >= nextAt - 30_000 && time <= nextAt + config.graceMinutes * MINUTE);
 
-    const next =
-      expected === null || current ? this.#next(config, expected ?? receivedAt) : expected;
+    const slot = nextAt ?? time;
+    const next = eligible ? this.#next(config, slot) : nextAt;
 
-    // Pairing by run ID protects terminal decisions when a start is redelivered.
-    const statements = [
+    // The successful compare-and-swap owns the receipt. Keeping the receipt
+    // and its run in one batch prevents a 2xx for a discarded racing write.
+    const results = await db.batch([
       db
-        .prepare(RECORD_CHECK_IN)
-        .bind(scope.id, scope.version, check_in_id, status, receivedAt, durationMs),
+        .prepare(`UPDATE cron_scopes SET revision = revision + 1, write_token = ?6
+        WHERE monitor_id = ?1 AND environment = ?2 AND revision = ?3
+          AND generation = ?4 AND EXISTS (
+            SELECT 1 FROM monitors WHERE id = ?1 AND version = ?5 AND status = 'active')`)
+        .bind(id, environment, revision, generation, version, writeToken),
       db
-        .prepare(`UPDATE monitors SET next_cron_at = ?3
-        WHERE id = ?1 AND version = ?2 AND changes() = 1 AND next_cron_at IS ?4
-          AND (SELECT COUNT(*) FROM cron_checkins WHERE monitor_id = ?1 AND check_in_id = ?5) = 1`)
-        .bind(scope.id, scope.version, next, expected, check_in_id),
-    ];
+        .prepare(`INSERT OR IGNORE INTO cron_receipts
+        (monitor_id, environment, run_id, phase, received_at, status, duration_ms)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE changes() = 1`)
+        .bind(id, environment, key, phase, time, status, duration),
+      db
+        .prepare(`UPDATE cron_runs SET completed_at = ?4, duration_ms = ?5,
+          outcome = CASE WHEN ?4 > deadline OR ?5 > ?8 THEN 'timed_out' ELSE ?6 END
+        WHERE changes() = 1 AND ?7 = 'finish' AND monitor_id = ?1 AND environment = ?2
+          AND run_id = ?3 AND generation = ?9 AND outcome IS NULL`)
+        .bind(id, environment, key, time, duration, status, phase, maxRuntime, generation),
+      db
+        .prepare(`INSERT OR IGNORE INTO cron_runs(monitor_id, environment, generation, slot,
+          run_id, started_at, received_at, deadline, completed_at, outcome, duration_ms)
+        SELECT ?1, ?2, ?3, ?4, ?5, CASE WHEN ?7 = 'start' THEN ?6 END, ?6,
+          CASE WHEN ?7 = 'start' THEN ?6 + ?8 END,
+          CASE WHEN ?7 = 'finish' THEN ?6 END,
+          CASE WHEN ?7 = 'finish' THEN CASE WHEN ?10 > ?8 THEN 'timed_out' ELSE ?9 END END,
+          ?10
+        WHERE ?11 = 1
+          AND (SELECT received_at FROM cron_receipts
+               WHERE monitor_id = ?1 AND environment = ?2 AND run_id = ?5 AND phase = ?7) = ?6
+          AND EXISTS(SELECT 1 FROM monitors WHERE id = ?1 AND version = ?12 AND status = 'active')
+          AND (SELECT write_token FROM cron_scopes WHERE monitor_id = ?1 AND environment = ?2) = ?13
+          AND (SELECT COUNT(*) FROM cron_receipts WHERE monitor_id = ?1 AND environment = ?2 AND run_id = ?5) = 1`)
+        .bind(
+          id,
+          environment,
+          generation,
+          slot,
+          key,
+          time,
+          phase,
+          maxRuntime,
+          status,
+          duration,
+          Number(eligible),
+          version,
+          writeToken,
+        ),
+      db
+        .prepare(`UPDATE cron_scopes SET next_at = ?3
+        WHERE changes() = 1 AND monitor_id = ?1 AND environment = ?2`)
+        .bind(id, environment, next),
+      // A finish received first remains authoritative, but a later start can
+      // supply context without running the state machine a second time.
+      db
+        .prepare(`UPDATE cron_runs SET started_at = ?4
+        WHERE monitor_id = ?1 AND environment = ?2 AND run_id = ?3 AND generation = ?5
+          AND started_at IS NULL AND outcome IS NOT NULL AND ?6 = 'start'
+          AND (SELECT write_token FROM cron_scopes WHERE monitor_id = ?1 AND environment = ?2) = ?7`)
+        .bind(id, environment, key, time, generation, phase, writeToken),
+    ]);
 
-    await db.batch(statements);
-
-    return true;
+    return results[0]?.meta.changes === 1;
   }
 
   async evaluate(now: number): Promise<void> {
     const db = this.#db;
 
     await db
-      .prepare(`
-      UPDATE cron_checkins SET timed_out = 1 WHERE (monitor_id, check_in_id, status) IN (
-        SELECT c.monitor_id, c.check_in_id, c.status FROM cron_checkins c JOIN monitors m ON m.id = c.monitor_id
-        WHERE c.status = 'in_progress' AND c.timed_out = 0 AND m.status = 'active' AND c.generation = m.generation
-          AND c.received_at + json_extract(m.config, '$.maxRuntimeMinutes') * 60000 <= ?1
-          AND NOT EXISTS (
-            SELECT 1 FROM cron_checkins terminal WHERE terminal.monitor_id = c.monitor_id
-              AND terminal.check_in_id = c.check_in_id AND terminal.status IN ('ok','error')
-          )
-        ORDER BY c.received_at LIMIT 100
-      )`)
+      .prepare(`UPDATE cron_runs SET outcome = 'timed_out', completed_at = deadline
+      WHERE (monitor_id, environment, generation, slot) IN (
+        SELECT r.monitor_id, r.environment, r.generation, r.slot
+        FROM cron_runs r JOIN monitors m ON m.id = r.monitor_id AND m.generation = r.generation
+        WHERE r.outcome IS NULL AND r.deadline <= ?1 AND m.status = 'active'
+        ORDER BY r.deadline LIMIT 100)`)
       .bind(now)
       .run();
 
     const { results } = await db
       .prepare(`
-      SELECT id, version, config, next_cron_at FROM monitors WHERE type = 'cron' AND status = 'active'
-        AND next_cron_at + json_extract(config, '$.graceMinutes') * 60000 <= ?1
-      ORDER BY next_cron_at LIMIT 100`)
+      SELECT m.id, m.config, m.version, s.environment, s.generation, s.revision, s.next_at AS nextAt
+      FROM cron_scopes s JOIN monitors m ON m.id = s.monitor_id
+      WHERE m.status = 'active' AND s.next_at + json_extract(m.config, '$.graceMinutes') * 60000 < ?1
+      ORDER BY s.next_at, s.monitor_id, s.environment LIMIT 100`)
       .bind(now)
       .all<Scope>();
 
-    if (results.length === 0) {
-      return;
+    for (const scope of results) {
+      await this.#miss(scope, now);
     }
 
-    await db.batch(
-      results.map((scope) =>
-        db
-          .prepare(`
-      UPDATE monitors SET next_cron_at = ?4, evaluated_at = ?5,
-        health = CASE
-          WHEN failures + 1 >= json_extract(config, '$.failureThreshold') OR health = 'failing' THEN 'failing'
-          ELSE 'degraded' END,
-        failures = failures + 1, successes = 0,
-        last_result = json_object('outcome','missed','expectedAt',?3)
-      WHERE id = ?1 AND version = ?2 AND next_cron_at = ?3 AND status = 'active'
-       AND (evaluated_at IS NULL OR evaluated_at <= ?5)`)
-          .bind(
-            scope.id,
-            scope.version,
-            scope.next_cron_at,
-            this.#afterMiss(Config.parse(scope.config), scope.next_cron_at ?? now, now),
-            now,
-          ),
-      ),
-    );
+    await this.#apply({ now });
   }
 
-  #afterMiss(config: CronSettings, due: number, now: number): number {
-    if ("intervalMinutes" in config) {
-      const interval = config.intervalMinutes * MINUTE;
+  async #miss(scope: Scope, now: number): Promise<void> {
+    const { id, environment, revision, generation, nextAt } = scope;
 
-      return due + (Math.floor((now - due) / interval) + 1) * interval;
+    if (nextAt === null) {
+      throw new Error("due cron scope has no slot");
     }
 
-    return this.#next(config, now);
+    const config = Config.parse(scope.config);
+    const following = this.#next(config, nextAt);
+    const gap = following + config.graceMinutes * MINUTE < now;
+
+    const afterGap =
+      "intervalMinutes" in config
+        ? nextAt +
+          (Math.floor((now - nextAt) / (config.intervalMinutes * MINUTE)) + 1) *
+            config.intervalMinutes *
+            MINUTE
+        : this.#next(config, now);
+
+    const db = this.#db;
+
+    await db.batch([
+      db
+        .prepare(`UPDATE cron_scopes SET revision = revision + 1, next_at = ?5
+        WHERE monitor_id = ?1 AND environment = ?2 AND revision = ?3 AND generation = ?4`)
+        .bind(id, environment, revision, generation, gap ? afterGap : following),
+      db
+        .prepare(`INSERT INTO cron_runs(monitor_id, environment, generation, slot, received_at, completed_at, outcome)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?5, ?6 WHERE changes() = 1`)
+        .bind(id, environment, generation, nextAt, now, gap ? "unknown" : "missed"),
+    ]);
+  }
+
+  async #apply(input: { now: number; monitorId?: string }): Promise<void> {
+    const db = this.#db;
+
+    // A recovery can unblock several outcomes after an overlapping run.
+    const writes = Array.from({ length: 12 }, () =>
+      db.prepare(APPLY_NEXT).bind(input.now, input.monitorId ?? null),
+    );
+
+    await db.batch(writes);
   }
 }

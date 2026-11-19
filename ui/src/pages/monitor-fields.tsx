@@ -12,32 +12,42 @@ function cronText(
   return "expression" in schedule ? schedule : { expression: "", timezone: "UTC" };
 }
 
+function MetricWindow({ value }: { value: number }): JSX.Element {
+  return (
+    <label>
+      Evaluation window
+      <select name="window" defaultValue={value}>
+        {WINDOWS.map((seconds) => (
+          <option key={seconds} value={seconds}>
+            {seconds / 60} minutes
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function MetricFields({ initial }: FieldsProps): JSX.Element {
-  const config = initial?.type === "metric" ? initial.config : undefined;
+  const {
+    environment,
+    windowSeconds = 300,
+    threshold,
+    recoveryThreshold,
+    comparator = "gte",
+    level = "",
+    warningThreshold,
+  } = initial?.type === "metric" ? initial.config : {};
 
   return (
     <>
       <label>
         Environment{" "}
-        <input
-          name="environment"
-          defaultValue={config?.environment}
-          placeholder="All environments"
-        />
+        <input name="environment" defaultValue={environment} placeholder="All environments" />
       </label>
-      <label>
-        Evaluation window
-        <select name="window" defaultValue={config?.windowSeconds ?? 300}>
-          {WINDOWS.map((seconds) => (
-            <option key={seconds} value={seconds}>
-              {seconds / 60} minutes
-            </option>
-          ))}
-        </select>
-      </label>
+      <MetricWindow value={windowSeconds} />
       <label>
         Error count threshold{" "}
-        <input name="threshold" type="number" min="1" required defaultValue={config?.threshold} />
+        <input name="threshold" type="number" min="0" required defaultValue={threshold} />
       </label>
       <label>
         Recovery threshold{" "}
@@ -45,9 +55,30 @@ function MetricFields({ initial }: FieldsProps): JSX.Element {
           name="recovery"
           type="number"
           min="0"
-          defaultValue={config?.recoveryThreshold}
-          placeholder="Below the breach threshold"
+          defaultValue={recoveryThreshold}
+          placeholder="On the healthy side of the threshold"
         />
+      </label>
+      <label>
+        Comparison
+        <select name="comparator" defaultValue={comparator}>
+          <option value="gte">At or above</option>
+          <option value="gt">Above</option>
+          <option value="lte">At or below</option>
+          <option value="lt">Below</option>
+        </select>
+      </label>
+      <label>
+        Event level
+        <select name="level" defaultValue={level}>
+          <option value="">Error and fatal</option>
+          <option value="error">Error</option>
+          <option value="fatal">Fatal</option>
+        </select>
+      </label>
+      <label>
+        Medium threshold{" "}
+        <input type="number" min="0" name="warning" defaultValue={warningThreshold} />
       </label>
     </>
   );
@@ -108,7 +139,7 @@ function CronFields({ initial }: FieldsProps): JSX.Element {
 
   const {
     slug = "",
-    environment = "production",
+    environments = ["production"],
     graceMinutes = 1,
     maxRuntimeMinutes = 30,
   } = config ?? {};
@@ -120,10 +151,11 @@ function CronFields({ initial }: FieldsProps): JSX.Element {
   return (
     <>
       <label>
-        SDK monitor slug <input name="slug" required defaultValue={slug} />
+        SDK monitor slug{" "}
+        <input name="slug" required defaultValue={slug} readOnly={initial !== undefined} />
       </label>
       <label>
-        Environment <input name="environment" required defaultValue={environment} />
+        Environments <input name="environments" required defaultValue={environments.join(", ")} />
       </label>
       <NumberField
         label="Interval (minutes)"
@@ -194,16 +226,16 @@ function UptimeHttpFields({
 }
 
 function UptimeFields({ initial }: FieldsProps): JSX.Element {
-  const config = initial?.type === "uptime" ? initial.config : undefined;
-
   const {
+    environment,
+    successCodes,
     url = "",
     method = "GET",
     intervalMinutes = 1,
     timeoutMs = 5000,
     failureThreshold = 3,
     recoveryThreshold = 1,
-  } = config ?? {};
+  } = initial?.type === "uptime" ? initial.config : {};
 
   return (
     <>
@@ -218,6 +250,17 @@ function UptimeFields({ initial }: FieldsProps): JSX.Element {
         />
       </label>
       <UptimeHttpFields method={method} intervalMinutes={intervalMinutes} />
+      <label>
+        Environment label <input name="environment" defaultValue={environment} />
+      </label>
+      <label>
+        Success status codes{" "}
+        <input
+          name="success-codes"
+          placeholder="Default: 200–299"
+          defaultValue={successCodes?.join(", ")}
+        />
+      </label>
       <NumberField
         label="Timeout (milliseconds)"
         name="timeout"

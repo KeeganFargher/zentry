@@ -53,6 +53,8 @@ export function notifyHarness(fail: (to: string) => Error | null = () => null): 
     },
     deps: {
       store: new NotifyStore(env.DB),
+      monitorAlertsPaused: false,
+      monitorBelowCountPaging: false,
       settings: new NotificationSettingsStore(env.DB),
       mail: new MailStore(env.DB),
       reports: new ReportStore(env.DB),

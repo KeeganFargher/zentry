@@ -8,7 +8,7 @@ import { findEventItem, parseEnvelope } from "@/core/envelope";
 import type { KeyInfo } from "@/db/keys";
 import { newEventId, normalizeEventId, parseId } from "@/shared/ids";
 import { jsonText } from "@/shared/json";
-import { errorText, logError } from "@/shared/log";
+import { errorText, logError, logInfo } from "@/shared/log";
 import type { MonitorCheckIn } from "@/shared/monitors";
 import { Label, lenient } from "@/shared/schema";
 import { nextMonthBucket, SECOND } from "@/shared/time";
@@ -240,16 +240,44 @@ async function accept(request: Request, route: Route, deps: IngestDeps): Promise
     return rejected(401, "invalid sentry key");
   }
 
-  const checkInError = await receiveCheckIn(parsed, auth, deps);
+  return receiveItems({ request, parsed, auth }, deps);
+}
 
-  if (checkInError !== undefined) {
-    return checkInError;
+type EnvelopeInput = {
+  request: Request;
+  parsed: Parsed;
+  auth: NonNullable<Awaited<ReturnType<typeof authenticate>>>;
+};
+
+async function receiveItems(input: EnvelopeInput, deps: IngestDeps): Promise<Response> {
+  const { parsed, auth } = input;
+
+  if (parsed.payload === null && parsed.checkIns.length > 0) {
+    return (await receiveCheckIn(parsed, auth, deps)) ?? acceptedNothing();
   }
 
-  if (parsed.payload === null) {
-    return acceptedNothing();
+  const [event, checkIn] = await Promise.all([
+    receiveEvent(input, deps),
+    receiveCheckIn(parsed, auth, deps),
+  ]);
+
+  if (checkIn !== undefined) {
+    logInfo("check-in rejected in mixed envelope", {
+      project_id: auth.info.projectId,
+      status: checkIn.status,
+    });
+    const limit = checkIn.headers.get("x-sentry-rate-limits");
+
+    if (limit !== null && event.ok) {
+      event.headers.set("X-Sentry-Rate-Limits", limit);
+    }
   }
 
+  return event;
+}
+
+async function receiveEvent(input: EnvelopeInput, deps: IngestDeps): Promise<Response> {
+  const { request, parsed, auth } = input;
   const limited = await limitedFor(auth.info, deps);
 
   if (limited !== null) {

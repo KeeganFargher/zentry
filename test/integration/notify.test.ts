@@ -2,15 +2,22 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { processMessages } from "@/consumer/handler";
+import { nextCronOccurrence } from "@/core/cron-schedule";
 import { signUnsubscribe } from "@/core/unsubscribe";
 import { sweepOutbox } from "@/cron/notify";
+import { CronMonitorStore } from "@/db/cron-monitors";
+import { DeviceStore } from "@/db/devices";
 import { IssueStore } from "@/db/issues";
+import { MonitorRuleStore } from "@/db/monitor-rules";
+import { MonitorStore } from "@/db/monitors";
 import { NotificationSettingsStore } from "@/db/notify-settings";
 import { flushDigest } from "@/notify/alerts";
 import type { MailDeps } from "@/notify/deps";
 import { drainOutbox } from "@/notify/handler";
 import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "@/notify/unsubscribe";
 import type { ApiNotificationSettings } from "@/shared/contract";
+import { MonitorRule } from "@/shared/monitor-alerts";
+import { CheckIn, CreateMonitor } from "@/shared/monitors";
 import { DAY, MINUTE } from "@/shared/time";
 
 import { api } from "./api-helpers";
@@ -634,4 +641,84 @@ describe("notification settings API", () => {
     });
     expect(await (await api(path)).json()).toEqual({ subscribed: true });
   });
+});
+
+it("delivers one email and device link per transition and fences a throttled incident's recovery", async () => {
+  const { organizationId, projectId, alice } = await setup();
+  const harness = notifyHarness();
+  const devices = new DeviceStore(env.DB);
+
+  const device = await devices.create(
+    {
+      userId: alice.id,
+      tokenHash: crypto.randomUUID(),
+      name: "Monitor phone",
+    },
+    NOW,
+  );
+
+  await devices.setPushToken(device.id, "ExponentPushToken[monitor-phone]");
+
+  const settings = MonitorRule.parse({
+    name: "Monitor on-call",
+    channels: ["email", "push"],
+    triggers: ["failure", "recovery"],
+    throttleSeconds: 3600,
+    audience: { kind: "owner" },
+    environment: "production",
+  });
+
+  const rule = await new MonitorRuleStore(env.DB).create(organizationId, settings);
+
+  if (rule === null) {
+    throw new Error("monitor alert rule was not created");
+  }
+
+  const configuration = CreateMonitor.parse({
+    projectId,
+    name: "Watch batch",
+    ownerId: alice.id,
+    notify: true,
+    alertRuleIds: [rule.id],
+    type: "cron",
+    config: { slug: "batch", intervalMinutes: 1, environments: ["production"] },
+  });
+
+  const monitor = await new MonitorStore(env.DB).create(organizationId, configuration, {
+    time: NOW,
+    userId: alice.id,
+    requestKey: null,
+  });
+
+  if (monitor === null) {
+    throw new Error("monitor was not created");
+  }
+
+  const cron = new CronMonitorStore(env.DB, nextCronOccurrence);
+
+  const attempt = async (offset: number, status: "ok" | "error"): Promise<void> => {
+    const data = CheckIn.parse({ check_in_id: crypto.randomUUID(), monitor_slug: "batch", status });
+    expect(await cron.record(projectId, data, NOW + offset * MINUTE)).toBe(true);
+    expect(await cron.record(projectId, data, NOW + offset * MINUTE)).toBe(true);
+    await drainAll(harness);
+  };
+
+  await attempt(0, "error");
+  await attempt(1, "ok");
+  await attempt(2, "error");
+  await attempt(3, "ok");
+
+  const [group] = await groupsOf(projectId);
+  expect(harness.sent.map(({ to }) => to)).toEqual([alice.email, alice.email]);
+  expect(harness.sent.map(({ subject }) => subject)).toEqual([
+    expect.stringContaining("failure"),
+    expect.stringContaining("recovery"),
+  ]);
+  expect(harness.pushed.map(({ data }) => data)).toEqual([
+    expect.objectContaining({ kind: "issue", issueId: group?.id }),
+    expect.objectContaining({ kind: "issue", issueId: group?.id }),
+  ]);
+  const timeline = await new MonitorStore(env.DB).timeline.deliveries(monitor.id);
+
+  expect(timeline.filter(({ suppression }) => suppression === "throttled")).toHaveLength(4);
 });

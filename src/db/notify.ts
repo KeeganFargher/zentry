@@ -3,7 +3,15 @@
 // DESIGN.md §18.
 
 import type { Level } from "@/shared/contract";
-import type { AlertReason, IssueNotice, OrganizationNotice, ProjectNotice } from "@/shared/notify";
+import { jsonText } from "@/shared/json";
+import { MonitorRule } from "@/shared/monitor-alerts";
+import type {
+  AlertReason,
+  IssueNotice,
+  MonitorDelivery,
+  OrganizationNotice,
+  ProjectNotice,
+} from "@/shared/notify";
 
 import { toOutboxItem } from "./outbox";
 import type { OutboxEntry, OutboxRow } from "./outbox";
@@ -109,6 +117,63 @@ export class NotifyStore {
 
   async handled(id: number): Promise<void> {
     await this.#db.prepare(`DELETE FROM notify_outbox WHERE id = ?1`).bind(id).run();
+  }
+
+  async monitorDelivery(id: number, time: number): Promise<MonitorDelivery | null> {
+    const row = await this.#db
+      .prepare(`SELECT d.id, d.group_id AS groupId, r.id AS ruleId, d.channel,
+      d.transition_type AS transition, m.id AS monitorId, m.owner_id AS ownerId,
+      COALESCE(NULLIF(t.scope,''), json_extract(m.config,'$.environment'), '') AS environment, t.period_id AS periodId, r.config,
+      CASE WHEN m.type = 'metric' AND json_extract(m.config,'$.comparator') IN ('lt','lte') THEN 1 ELSE 0 END AS belowCount
+      FROM monitor_deliveries d JOIN monitor_transitions t ON t.id = d.transition_id
+      JOIN monitor_alert_rules r ON r.id = d.rule_id JOIN monitors m ON m.id = t.monitor_id
+      WHERE d.id = ?1 AND d.suppression IS NULL AND m.status = 'active' AND m.notify = 1 AND t.generation = m.generation
+        AND COALESCE(m.muted_until,0) <= ?2 AND json_extract(r.config,'$.enabled') = 1
+        AND r.id IN (SELECT value FROM json_each(m.alert_rule_ids))
+        AND d.channel IN (SELECT value FROM json_each(r.config,'$.channels'))
+        AND d.transition_type IN (SELECT value FROM json_each(r.config,'$.triggers'))
+        AND (json_extract(r.config,'$.environment') IS NULL OR json_extract(r.config,'$.environment') = COALESCE(NULLIF(t.scope,''),json_extract(m.config,'$.environment')))
+        AND (json_extract(r.config,'$.priority') IS NULL OR json_extract(t.evidence,'$.severity') = 'high')`)
+      .bind(id, time)
+      .first<Omit<MonitorDelivery, "audience"> & { config: string }>();
+
+    if (row === null) {
+      return null;
+    }
+
+    const { config, ...delivery } = row;
+    const { audience } = jsonText(MonitorRule.omit({ name: true })).parse(config);
+
+    return { ...delivery, audience };
+  }
+
+  async suppressMonitorDelivery(id: number, reason: string): Promise<void> {
+    await this.#db
+      .prepare(
+        "UPDATE monitor_deliveries SET suppression = ?2 WHERE id = ?1 AND suppression IS NULL",
+      )
+      .bind(id, reason)
+      .run();
+  }
+
+  async monitorRecoveryAudience(delivery: MonitorDelivery): Promise<Set<number>> {
+    const { results } = await this.#db
+      .prepare(`
+      SELECT DISTINCT sends.user_id AS userId FROM monitor_deliveries prior
+      JOIN monitor_transitions transition ON transition.id = prior.transition_id
+      JOIN email_sends sends ON sends.key = 'monitor:' || prior.id || ':' || sends.user_id
+      WHERE prior.group_id = ?1 AND prior.rule_id = ?2 AND prior.transition_type IN ('failure','escalation')
+        AND prior.channel = ?4 AND sends.status = 'sent' AND transition.period_id = ?3
+      UNION
+      SELECT DISTINCT devices.user_id AS userId FROM monitor_deliveries prior
+      JOIN monitor_transitions transition ON transition.id = prior.transition_id
+      JOIN devices JOIN push_sends sends ON sends.key = 'monitor:' || prior.id || ':' || devices.user_id || ':' || devices.id
+      WHERE prior.group_id = ?1 AND prior.rule_id = ?2 AND prior.transition_type IN ('failure','escalation')
+        AND prior.channel = ?4 AND sends.status IN ('sent','delivered') AND transition.period_id = ?3`)
+      .bind(delivery.groupId, delivery.ruleId, delivery.periodId, delivery.channel)
+      .all<{ userId: number }>();
+
+    return new Set(results.map(({ userId }) => userId));
   }
 
   async issues(groupIds: number[]): Promise<IssueNotice[]> {

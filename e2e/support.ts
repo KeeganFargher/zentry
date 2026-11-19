@@ -13,13 +13,18 @@ import type {
   StoredEvent,
 } from "@contract";
 import { expect } from "@playwright/test";
-import type { APIRequestContext, Page, Response } from "@playwright/test";
+import type { APIRequestContext, APIResponse, Page, Response } from "@playwright/test";
 
 import { ORG, SHOP_URL } from "./urls";
 
 export type Fixture = { project: ApiProject; key: ApiKey };
 
 export type ShopOptions = { release?: string; environment?: string; dsn?: string };
+
+export async function contractJson<T>(response: APIResponse): Promise<T> {
+  // SAFETY: the Worker builds these responses from the shared contract.
+  return (await response.json()) as T;
+}
 
 async function getJson<T>(request: APIRequestContext, path: string): Promise<T> {
   const response = await request.get(`/api/0${path}`);
