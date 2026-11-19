@@ -100,7 +100,15 @@ export type LimitRow = { p: number; until: number; reason: RateLimitReason };
 /** E9: events accepted in one UTC month by one organization's projects. */
 export type UsageRow = { o: number; m: number; n: number };
 
+export type MetricEventRow = {
+  project: number;
+  eventId: string;
+  environment: string;
+  level: string;
+};
+
 export type BatchWrites = {
+  metricEvents: MetricEventRow[];
   newGroups: NewGroupRow[];
   aggregates: AggregateRow[];
   events: EventRow[];

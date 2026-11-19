@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zentry-uptime-probe",
+  "main": "src/uptime-probe.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "ratelimits": [
+    { "name": "DESTINATION_RL", "namespace_id": "1005", "simple": { "limit": 60, "period": 60 } },
+  ],
+  "vars": {
+    "UPTIME_ORIGINS": "",
+    "FIXTURE_ORIGIN": "",
+    "UPTIME_PROBES_PAUSED": "0",
+    // Zentry's own UI and ingest hosts, which no probe may call even if an
+    // approval names them. Replace with your hosts, as in wrangler.jsonc.
+    "UPTIME_BLOCKED_HOSTS": "zentry.example.com,ingest.zentry.example.com",
+  },
+}

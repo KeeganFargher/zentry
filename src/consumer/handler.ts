@@ -13,7 +13,13 @@ import { WireEvent } from "@/core/wire";
 import type { BatchKeys } from "@/db/batch";
 import { jsonText } from "@/shared/json";
 import { errorText, logError } from "@/shared/log";
-import type { BatchState, BatchWrites, GroupHourKey, GroupHourStored } from "@/shared/plan";
+import type {
+  BatchState,
+  BatchWrites,
+  EventKey,
+  GroupHourKey,
+  GroupHourStored,
+} from "@/shared/plan";
 import { hourBucket } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
@@ -21,7 +27,9 @@ export type ConsumerDeps = {
   readState: (keys: BatchKeys) => Promise<BatchState>;
   readStored: (keys: GroupHourKey[]) => Promise<GroupHourStored[]>;
   /** Returns how many notifications the commit queued in the outbox. */
-  commit: (writes: BatchWrites, now: number) => Promise<number>;
+  commit: (writes: BatchWrites, now: number, inputs: EventKey[]) => Promise<number>;
+  /** Clears the metric pending rows of events dropped before the commit. */
+  release: (inputs: EventKey[]) => Promise<void>;
   putBlobs: (blobs: EventBlob[]) => Promise<void>;
   loadSpill: (key: string) => Promise<string | null>;
   deleteSpill: (keys: string[]) => Promise<void>;
@@ -112,6 +120,14 @@ export async function processMessages(messages: QueueMessage[], deps: ConsumerDe
   const prepared = results.filter((result) => result !== null);
   const now = deps.now();
 
+  // A dropped event will never be counted. Releasing its pending row now
+  // stops it from holding every metric window that contains it as unknown.
+  const dropped = messages.filter((_, index) => results[index] === null);
+
+  if (dropped.length > 0) {
+    await deps.release(dropped.map((message) => ({ p: message.project_id, e: message.event_id })));
+  }
+
   if (prepared.length > 0) {
     const state = await deps.readState(batchKeys(prepared, now));
     const storedThisHour = await deps.readStored(groupHourKeys(prepared, state.knownGroups));
@@ -131,7 +147,13 @@ export async function processMessages(messages: QueueMessage[], deps: ConsumerDe
       })),
     );
 
-    if ((await deps.commit(plan.writes, now)) > 0) {
+    if (
+      (await deps.commit(
+        plan.writes,
+        now,
+        prepared.map(({ event }) => ({ p: event.projectId, e: event.eventId })),
+      )) > 0
+    ) {
       await wake(deps);
     }
   }

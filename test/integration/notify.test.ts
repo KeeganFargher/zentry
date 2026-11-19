@@ -3,14 +3,23 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { processMessages } from "@/consumer/handler";
 import { signUnsubscribe } from "@/core/unsubscribe";
+import { evaluateMetrics } from "@/cron/metric-evaluation";
 import { sweepOutbox } from "@/cron/notify";
+import { CronStore } from "@/db/cron-store";
+import { DeviceStore } from "@/db/devices";
 import { IssueStore } from "@/db/issues";
+import { MetricEvaluationStore } from "@/db/metric-evaluation";
+import { MonitorRuleStore } from "@/db/monitor-rules";
+import { MonitorStore } from "@/db/monitors";
 import { NotificationSettingsStore } from "@/db/notify-settings";
+import { receiveCheckIn } from "@/ingest/cron-receive";
 import { flushDigest } from "@/notify/alerts";
 import type { MailDeps } from "@/notify/deps";
 import { drainOutbox } from "@/notify/handler";
 import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "@/notify/unsubscribe";
 import type { ApiNotificationSettings } from "@/shared/contract";
+import { MonitorRule } from "@/shared/monitor-alerts";
+import { CheckIn, CreateMonitor } from "@/shared/monitors";
 import { DAY, MINUTE } from "@/shared/time";
 
 import { api } from "./api-helpers";
@@ -634,4 +643,149 @@ describe("notification settings API", () => {
     });
     expect(await (await api(path)).json()).toEqual({ subscribed: true });
   });
+});
+
+it("delivers one email and device link per transition and never throttles a recovery", async () => {
+  const { organizationId, projectId, alice } = await setup();
+  const harness = notifyHarness();
+  const devices = new DeviceStore(env.DB);
+
+  const device = await devices.create(
+    {
+      userId: alice.id,
+      tokenHash: crypto.randomUUID(),
+      name: "Monitor phone",
+    },
+    NOW,
+  );
+
+  await devices.setPushToken(device.id, "ExponentPushToken[monitor-phone]");
+
+  const settings = MonitorRule.parse({
+    name: "Monitor on-call",
+    channels: ["email", "push"],
+    triggers: ["failure", "recovery"],
+    throttleSeconds: 3600,
+    audience: { kind: "owner" },
+    environment: "production",
+  });
+
+  const rule = await new MonitorRuleStore(env.DB).create(organizationId, settings);
+
+  if (rule === null) {
+    throw new Error("monitor alert rule was not created");
+  }
+
+  const configuration = CreateMonitor.parse({
+    projectId,
+    name: "Watch batch",
+    ownerId: alice.id,
+    notify: true,
+    alertRuleIds: [rule.id],
+    type: "cron",
+    config: { slug: "batch", schedule: { type: "interval", count: 1, unit: "minute" } },
+  });
+
+  const monitor = await new MonitorStore(env.DB).create(organizationId, configuration, {
+    time: NOW,
+    userId: alice.id,
+    requestKey: null,
+  });
+
+  if (monitor === null) {
+    throw new Error("monitor was not created");
+  }
+
+  const cron = new CronStore(env.DB);
+
+  // Each check-in is sent twice, as an SDK retry would; the copy changes nothing.
+  const attempt = async (offset: number, status: "ok" | "error"): Promise<void> => {
+    const data = CheckIn.parse({ check_in_id: crypto.randomUUID(), monitor_slug: "batch", status });
+    await receiveCheckIn(cron, { projectId, checkIn: data, now: NOW + offset * MINUTE });
+    await receiveCheckIn(cron, { projectId, checkIn: data, now: NOW + offset * MINUTE });
+    await drainAll(harness);
+  };
+
+  await attempt(0, "error");
+  await attempt(1, "ok");
+  await attempt(2, "error");
+  await attempt(3, "ok");
+
+  const [group] = await groupsOf(projectId);
+  expect(harness.sent.map(({ to }) => to)).toEqual([alice.email, alice.email]);
+  expect(harness.sent.map(({ subject }) => subject)).toEqual([
+    expect.stringContaining("failure"),
+    expect.stringContaining("recovery"),
+  ]);
+  expect(harness.pushed.map(({ data }) => data)).toEqual([
+    expect.objectContaining({ kind: "issue", issueId: group?.id }),
+    expect.objectContaining({ kind: "issue", issueId: group?.id }),
+  ]);
+  const timeline = await new MonitorStore(env.DB).timeline.deliveries(monitor.id);
+
+  // The second failure is throttled on both channels. Its recovery is not
+  // throttled, but it reaches nobody: no one was told about that failure.
+  expect(timeline.filter(({ suppression }) => suppression === "throttled")).toHaveLength(2);
+});
+
+it("pages a high-priority rule when a medium incident escalates, and sends its recovery", async () => {
+  const { organizationId, projectId, alice } = await setup();
+  const harness = notifyHarness();
+  const minute = Math.floor(NOW / MINUTE) * MINUTE;
+
+  const rule = await new MonitorRuleStore(env.DB).create(
+    organizationId,
+    MonitorRule.parse({
+      name: "High only",
+      channels: ["email"],
+      triggers: ["failure", "recovery"],
+      priority: "high",
+      audience: { kind: "owner" },
+    }),
+  );
+
+  if (rule === null) {
+    throw new Error("monitor alert rule was not created");
+  }
+
+  const monitors = new MonitorStore(env.DB);
+
+  await monitors.create(
+    organizationId,
+    CreateMonitor.parse({
+      projectId,
+      name: "Checkout errors",
+      ownerId: alice.id,
+      notify: true,
+      alertRuleIds: [rule.id],
+      type: "metric",
+      config: { windowSeconds: 300, threshold: 3, warningThreshold: 1 },
+    }),
+    { time: minute, userId: alice.id, requestKey: null },
+  );
+
+  // Counts per minute, written as the consumer's rollup would.
+  const count = async (at: number, value: number): Promise<void> => {
+    await env.DB.prepare(
+      `INSERT INTO metric_level_minutes (project_id, minute, environment, level, count)
+       VALUES (?1, ?2, 'production', 'error', ?3)`,
+    )
+      .bind(projectId, at, value)
+      .run();
+  };
+
+  // Medium, then high, then healthy, in three covered five-minute windows.
+  await count(minute + 2 * MINUTE, 1);
+  await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 6 * MINUTE);
+  await drainAll(harness);
+  await count(minute + 8 * MINUTE, 3);
+  await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 12 * MINUTE);
+  await drainAll(harness);
+  await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 18 * MINUTE);
+  await drainAll(harness);
+
+  expect(harness.sent.map(({ subject }) => subject)).toEqual([
+    expect.stringContaining("failure"),
+    expect.stringContaining("recovery"),
+  ]);
 });

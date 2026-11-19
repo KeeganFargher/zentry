@@ -136,6 +136,15 @@ async function withStats(
   }));
 }
 
+/**
+ * Monitor issues open and resolve from the monitor's evaluations, so a manual
+ * change would be undone by the next one. The bulk endpoint skips them; a
+ * single-issue request says why instead of appearing to succeed.
+ */
+function monitorOwned(detail: string): Response {
+  return Response.json({ detail }, { status: 409 });
+}
+
 /** The issue named by the route's first parameter. */
 async function issueOf(context: ApiContext, args: string[]): Promise<IssueRecord | null> {
   const [id] = readParams(args, z.tuple([IdParam]));
@@ -203,6 +212,10 @@ export const updateIssue: Handler = async (context, args) => {
 
   const { status, hasSeen } = await readBody(context.request, UpdateIssueBody);
 
+  if (status !== null && issue.monitorId !== undefined) {
+    return monitorOwned("A monitor's issue follows its health. Pause or mute the monitor instead.");
+  }
+
   if (status !== null) {
     await changeStatus(context, [issue.id], status);
   }
@@ -222,6 +235,12 @@ export const deleteIssue: Handler = async (context, args) => {
 
   if (issue === null) {
     return notFound();
+  }
+
+  if (issue.monitorId !== undefined) {
+    return monitorOwned(
+      "A monitor's issue is removed with its monitor. Archive the monitor instead.",
+    );
   }
 
   await context.deps.blobs.deleteAll(issue.projectId, await context.deps.events.idsOf(issue.id));

@@ -10,7 +10,13 @@ import type { NotifyMessage } from "@/shared/types";
 
 import { flushDigest, handleAlert } from "./alerts";
 import type { NotifyDeps } from "./deps";
-import { handleQuota, handleSpike, handleWeeklyReport, handleWorkflow } from "./jobs";
+import {
+  handleMonitorAlert,
+  handleQuota,
+  handleSpike,
+  handleWeeklyReport,
+  handleWorkflow,
+} from "./jobs";
 import { SendDeferred } from "./providers";
 
 /** Rows per drain; a full drain asks for another rather than run long. */
@@ -27,6 +33,10 @@ async function handleItem(deps: NotifyDeps, item: OutboxItem): Promise<void> {
     case "new_issue":
     case "regression": {
       return handleAlert(deps, item);
+    }
+
+    case "monitor": {
+      return handleMonitorAlert(deps, item);
     }
 
     case "status": {

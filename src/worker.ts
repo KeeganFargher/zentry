@@ -3,11 +3,12 @@
 
 import { AccessVerifier, fetchAccessKeys } from "@/api/access";
 import type { ApiDeps } from "@/api/context";
-import { handleApi, Sessions } from "@/api/router";
+import { serveApi, Sessions, serveAppApi } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
 import { SpillStore } from "@/blobs/spill";
 import { handleBatch } from "@/consumer/handler";
 import type { ConsumerDeps } from "@/consumer/handler";
+import { evaluateMonitors } from "@/cron/monitors";
 import { runWeeklyReports, sweepOutbox } from "@/cron/notify";
 import type { NotifyCronDeps } from "@/cron/notify";
 import { checkPushReceipts } from "@/cron/push-receipts";
@@ -16,12 +17,18 @@ import { runRetention } from "@/cron/retention";
 import type { RetentionDeps } from "@/cron/retention";
 import { runSpikeProtection } from "@/cron/spike";
 import type { SpikeDeps } from "@/cron/spike";
+import { handleUptimeBatch } from "@/cron/uptime";
 import { BatchStore } from "@/db/batch";
+import { CronStore } from "@/db/cron-store";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
 import { MailStore } from "@/db/mail";
+import { enqueueMetricInput, MetricCapture } from "@/db/metric-input";
+import { MonitorPreviews } from "@/db/monitor-previews";
+import { MonitorRuleStore } from "@/db/monitor-rules";
+import { MonitorStore } from "@/db/monitors";
 import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
 import { OrganizationStore } from "@/db/organizations";
@@ -31,8 +38,10 @@ import { ReportStore } from "@/db/reports";
 import { RetentionStore } from "@/db/retention";
 import { SpikeStore } from "@/db/spike";
 import { TenancyStore } from "@/db/tenancy";
+import { UptimeMonitorStore } from "@/db/uptime-monitors";
 import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
+import { receiveCheckIn } from "@/ingest/cron-receive";
 import { handleIngest, matchIngestRoute } from "@/ingest/handler";
 import type { IngestDeps } from "@/ingest/handler";
 import { rejected } from "@/ingest/http";
@@ -41,12 +50,14 @@ import type { MailConfig, NotifyDeps } from "@/notify/deps";
 import { handleNotifyBatch } from "@/notify/handler";
 import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "@/notify/unsubscribe";
 import { ExpoPush } from "@/push/expo";
-import { errorText, logError } from "@/shared/log";
+import { logError } from "@/shared/log";
+import type { UptimeJob } from "@/shared/monitors";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
 
 // Per-isolate caches, shared by every request the isolate serves.
 let keyCache: KeyCache | undefined;
 let usageCache: UsageCache | undefined;
+let metricCapture: MetricCapture | undefined;
 let accessVerifier: AccessVerifier | undefined;
 const sessions = new Sessions();
 
@@ -54,30 +65,28 @@ const sessions = new Sessions();
 const expo = new ExpoPush((input, init) => fetch(input, init));
 
 function ingestDeps(env: Env): IngestDeps {
-  const keyStore = new KeyStore(env.DB);
-  const spill = new SpillStore(env.BLOBS);
-
-  const usageStore = new UsageStore(env.DB);
-
-  keyCache ??= new KeyCache((publicKey) => keyStore.findActive(publicKey));
-  usageCache ??= new UsageCache((organizationId, month) =>
-    usageStore.received(organizationId, month),
+  // The caches outlive this request, so their lookups open their own stores.
+  keyCache ??= new KeyCache((publicKey) => new KeyStore(env.DB).findActive(publicKey));
+  usageCache ??= new UsageCache((organization, month) =>
+    new UsageStore(env.DB).received(organization, month),
   );
 
+  const capture = (metricCapture ??= new MetricCapture(env.DB));
+
   return {
+    allowCheckIn: async (key) => (await env.CHECK_IN_RL.limit({ key })).success,
+    recordCheckIn: (projectId, checkIn, now) =>
+      receiveCheckIn(new CronStore(env.DB), { projectId, checkIn, now }),
     keys: keyCache,
     usage: usageCache,
     allow: async (publicKey) => (await env.INGEST_RL.limit({ key: publicKey })).success,
-    spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
-    send: async (message) => {
-      await env.EVENTS_Q.send(message);
-    },
+    spill: (projectId, eventId, payload) =>
+      new SpillStore(env.BLOBS).put(projectId, eventId, payload),
+    send: (message) =>
+      enqueueMetricInput({ db: env.DB, queue: env.EVENTS_Q, capture, now: Date.now() }, message),
     now: () => Date.now(),
   };
 }
-
-const EVENTS_QUEUE = "zentry-events";
-const NOTIFY_QUEUE = "zentry-notify";
 
 /** Wakes the notify consumer to drain the outbox. */
 async function wakeNotify(env: Env): Promise<void> {
@@ -96,9 +105,9 @@ function signingKey(env: Env): string {
 
 /** Asks for a flush of the project's digest window after `delaySeconds`. */
 async function flushLater(env: Env, projectId: number, delaySeconds: number): Promise<void> {
-  const body: NotifyMessage = { kind: "digest", project_id: projectId };
-
-  await env.NOTIFY_Q.send(body, { delaySeconds });
+  await env.NOTIFY_Q.send({ kind: "digest", project_id: projectId } satisfies NotifyMessage, {
+    delaySeconds,
+  });
 }
 
 /**
@@ -128,6 +137,8 @@ function mailConfig(env: Env): MailConfig | null {
 function notifyDeps(env: Env): NotifyDeps {
   return {
     store: new NotifyStore(env.DB),
+    monitorAlertsPaused: env.MONITOR_ALERTS_PAUSED !== "0",
+    monitorBelowCountPaging: env.MONITOR_BELOW_COUNT_PAGING === "1",
     settings: new NotificationSettingsStore(env.DB),
     mail: new MailStore(env.DB),
     reports: new ReportStore(env.DB),
@@ -168,7 +179,8 @@ function consumerDeps(env: Env): ConsumerDeps {
   return {
     readState: (keys) => store.readState(keys),
     readStored: (keys) => store.readStored(keys),
-    commit: (writes, now) => store.commit(writes, now),
+    commit: (writes, now, inputs) => store.commit(writes, now, inputs),
+    release: (inputs) => store.release(inputs),
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),
@@ -189,6 +201,8 @@ function apiDeps(env: Env): ApiDeps {
     tenancy: new TenancyStore(env.DB),
     organizations: new OrganizationStore(env.DB),
     projects: new ProjectStore(env.DB),
+    monitors: new MonitorStore(env.DB),
+    monitorRules: new MonitorRuleStore(env.DB),
     issues: new IssueStore(env.DB),
     events: new EventStore(env.DB),
     blobs: new EventBlobs(env.BLOBS),
@@ -196,6 +210,11 @@ function apiDeps(env: Env): ApiDeps {
     devices: new DeviceStore(env.DB),
     notify: () => wakeNotify(env),
     emailEnabled: mailConfig(env) !== null,
+    uptimeOrigins: env.UPTIME_ORIGINS,
+    uptimeFixtureOrigin: env.UPTIME_FIXTURE_ORIGIN,
+    allowMonitorPreview: async (key) => (await env.MONITOR_PREVIEW_RL.limit({ key })).success,
+    monitorPreviews: new MonitorPreviews(env.DB),
+    enqueueMonitorPreview: (previewId) => env.UPTIME_Q.send({ previewId }).then(() => undefined),
     ingestHost: env.INGEST_HOST,
     mobileApiUrl: env.MOBILE_API_URL.replace(/\/+$/, ""),
     now: () => Date.now(),
@@ -248,9 +267,7 @@ const WEEKLY_REPORT_CRON = "0 12 * * 6";
 
 async function runCron(cron: string, env: Env): Promise<void> {
   if (cron === RETENTION_CRON) {
-    await runRetention(retentionDeps(env));
-
-    return;
+    return runRetention(retentionDeps(env));
   }
 
   if (cron === SPIKE_CRON) {
@@ -272,55 +289,28 @@ async function runCron(cron: string, env: Env): Promise<void> {
   }
 
   if (cron === WEEKLY_REPORT_CRON) {
-    await runWeeklyReports(notifyCronDeps(env));
-
-    return;
+    return runWeeklyReports(notifyCronDeps(env));
   }
 
   // A cron added to wrangler.jsonc without a handler here is a bug to see, not to skip.
   throw new Error(`no handler for cron "${cron}"`);
 }
 
-type AnyBatch = MessageBatch<QueueMessage | NotifyMessage>;
+type AnyBatch = MessageBatch<QueueMessage | NotifyMessage | UptimeJob>;
 
 // Each queue carries one kind of message, sent only by this Worker.
 function isEventBatch(batch: AnyBatch): batch is MessageBatch<QueueMessage> {
-  return batch.queue === EVENTS_QUEUE;
+  return batch.queue === "zentry-events";
 }
 
 function isNotifyBatch(batch: AnyBatch): batch is MessageBatch<NotifyMessage> {
-  return batch.queue === NOTIFY_QUEUE;
-}
-
-async function serveApi(request: Request, env: Env): Promise<Response> {
-  try {
-    return await handleApi(request, apiDeps(env), sessions);
-  } catch (cause) {
-    logError("api request failed", { url: request.url, error: errorText(cause) });
-
-    return Response.json({ detail: "internal error" }, { status: 500 });
-  }
+  return batch.queue === "zentry-notify";
 }
 
 /**
  * The API on the public ingest host, limited per client address: Access does
  * not guard it, and every request costs a D1 read (DESIGN.md §19.1).
  */
-async function serveAppApi(request: Request, env: Env): Promise<Response> {
-  const client = request.headers.get("cf-connecting-ip");
-
-  // Cloudflare sets the header on every request it routes to the Worker.
-  if (client === null) {
-    throw new Error("request without cf-connecting-ip on the ingest host");
-  }
-
-  const { success } = await env.APP_API_RL.limit({ key: client });
-
-  return success
-    ? serveApi(request, env)
-    : Response.json({ detail: "too many requests" }, { status: 429 });
-}
-
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -348,16 +338,24 @@ export default {
     // could not reach the API there.
     if (url.hostname === env.INGEST_HOST) {
       return url.pathname.startsWith("/api/0/")
-        ? serveAppApi(request, env)
+        ? serveAppApi(request, env.APP_API_RL, () => serveApi(request, apiDeps(env), sessions))
         : rejected(404, "not found");
     }
 
-    return url.pathname.startsWith("/api/") ? serveApi(request, env) : env.ASSETS.fetch(request);
+    return url.pathname.startsWith("/api/")
+      ? serveApi(request, apiDeps(env), sessions)
+      : env.ASSETS.fetch(request);
   },
 
   async queue(batch, env): Promise<void> {
     if (isEventBatch(batch)) {
       await handleBatch(batch, consumerDeps(env));
+    } else if (batch.queue === "zentry-uptime") {
+      await handleUptimeBatch(batch, {
+        store: new UptimeMonitorStore(env.DB),
+        previews: new MonitorPreviews(env.DB),
+        binding: env.UPTIME_PROBE,
+      });
     } else if (isNotifyBatch(batch)) {
       await handleNotifyBatch(batch, notifyDeps(env));
     } else {
@@ -366,6 +364,14 @@ export default {
   },
 
   async scheduled(controller, env): Promise<void> {
+    if (controller.cron === "* * * * *") {
+      return evaluateMonitors(controller.scheduledTime, {
+        db: env.DB,
+        queue: env.UPTIME_Q,
+        notify: notifyCronDeps(env),
+      });
+    }
+
     await runCron(controller.cron, env);
   },
-} satisfies ExportedHandler<Env, QueueMessage | NotifyMessage>;
+} satisfies ExportedHandler<Env, QueueMessage | NotifyMessage | UptimeJob>;

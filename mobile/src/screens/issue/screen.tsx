@@ -244,19 +244,43 @@ export function IssueScreen(): JSX.Element {
         <Crumbs shortId={issue.data.shortId} />
         <IssueHeader issue={issue.data} now={now} />
         <IssueActions issue={issue.data} />
-        <Graph issue={issue.data} now={now} />
-        <Tabs
-          tabs={TABS}
-          value={view.tab}
-          onChange={(tab) => setView({ tab })}
-          trailing={<AllEventsLink issueId={issueId} />}
-        />
-        {view.tab === "event" && (
-          <EventPanel issueId={issueId} which={view.which} onPick={(which) => setView({ which })} />
+        {issue.data.monitorId === undefined ? (
+          <IssueEvents issue={issue.data} now={now} view={view} setView={setView} />
+        ) : (
+          <ActivityTab issue={issue.data} />
         )}
-        {view.tab === "tags" && <TagsTab issueId={issueId} />}
-        {view.tab === "activity" && <ActivityTab issue={issue.data} />}
       </ScrollView>
     </View>
+  );
+}
+
+function IssueEvents({
+  issue,
+  now,
+  view,
+  setView,
+}: {
+  issue: ApiIssue;
+  now: number;
+  view: ReturnType<typeof useView>[0];
+  setView: ReturnType<typeof useView>[1];
+}): JSX.Element {
+  const issueId = issue.id;
+
+  return (
+    <>
+      <Graph issue={issue} now={now} />
+      <Tabs
+        tabs={TABS}
+        value={view.tab}
+        onChange={(tab) => setView({ tab })}
+        trailing={<AllEventsLink issueId={issueId} />}
+      />
+      {view.tab === "event" && (
+        <EventPanel issueId={issueId} which={view.which} onPick={(which) => setView({ which })} />
+      )}
+      {view.tab === "tags" && <TagsTab issueId={issueId} />}
+      {view.tab === "activity" && <ActivityTab issue={issue} />}
+    </>
   );
 }

@@ -10,7 +10,7 @@ import type { IconName } from "~/components/icons";
 import { useUrl } from "~/lib/router";
 import { useTheme } from "~/lib/theme";
 
-export type Section = "issues" | "projects";
+export type Section = "issues" | "monitors" | "projects";
 
 type RailProps = { org: string; section: Section; me: ApiMe; onMenu: () => void };
 
@@ -59,6 +59,12 @@ export function Rail({ org, section, me, onMenu }: RailProps): JSX.Element {
         <Icon name="menu" size={18} />
       </button>
       <RailLink to={`/${org}/issues/`} icon="issues" label="Issues" active={section === "issues"} />
+      <RailLink
+        to={`/${org}/monitors/`}
+        icon="monitor"
+        label="Monitors"
+        active={section === "monitors"}
+      />
       <RailLink
         to={`/${org}/projects/`}
         icon="projects"
@@ -144,15 +150,42 @@ function ProjectLinks({ org, projects }: Omit<SubNavProps, "section">): JSX.Elem
   );
 }
 
+/** Sentry's Monitors navigation, without its Error and Mobile Build types. */
+function MonitorLinks({ org }: { org: string }): JSX.Element {
+  const base = `/${org}/monitors/`;
+
+  return (
+    <>
+      <div className="subnav-group">
+        <SubLink to={base} label="All Monitors" />
+        <SubLink to={`${base}mine/`} label="My Monitors" />
+      </div>
+      <div className="subnav-group">
+        <div className="subnav-label">By Monitor Type</div>
+        <SubLink to={`${base}metrics/`} label="Metric" />
+        <SubLink to={`${base}crons/`} label="Cron" />
+        <SubLink to={`${base}uptime/`} label="Uptime" />
+      </div>
+      <div className="subnav-group">
+        <SubLink to={`${base}alerts/`} label="Alerts" />
+      </div>
+    </>
+  );
+}
+
+const TITLES: Record<Section, string> = {
+  issues: "Issues",
+  monitors: "Monitors",
+  projects: "Projects",
+};
+
 export function SubNav({ org, section, projects }: SubNavProps): JSX.Element {
   return (
     <nav className="subnav" aria-label={section}>
-      <div className="subnav-title">{section === "issues" ? "Issues" : "Projects"}</div>
-      {section === "issues" ? (
-        <IssueLinks org={org} projects={projects} />
-      ) : (
-        <ProjectLinks org={org} projects={projects} />
-      )}
+      <div className="subnav-title">{TITLES[section]}</div>
+      {section === "issues" && <IssueLinks org={org} projects={projects} />}
+      {section === "monitors" && <MonitorLinks org={org} />}
+      {section === "projects" && <ProjectLinks org={org} projects={projects} />}
     </nav>
   );
 }

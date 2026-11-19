@@ -32,16 +32,26 @@
   // Notification email through Cloudflare Email Service (DESIGN.md §18). It
   // sends only once the sender's domain is onboarded; until EMAIL_FROM is set
   // below, nothing is sent at all.
+  "services": [{ "binding": "UPTIME_PROBE", "service": "zentry-uptime-probe" }],
   "send_email": [{ "name": "EMAIL" }],
   // Signs unsubscribe links: `wrangler secret put EMAIL_SIGNING_KEY`, and a
   // line in .dev.vars for local development.
   "secrets": { "required": ["EMAIL_SIGNING_KEY"] },
   "queues": {
     "producers": [
+      { "binding": "UPTIME_Q", "queue": "zentry-uptime" },
       { "binding": "EVENTS_Q", "queue": "zentry-events" },
       { "binding": "NOTIFY_Q", "queue": "zentry-notify" },
     ],
     "consumers": [
+      {
+        "queue": "zentry-uptime",
+        "max_batch_size": 4,
+        "max_batch_timeout": 1,
+        "max_concurrency": 10,
+        "max_retries": 3,
+        "dead_letter_queue": "zentry-uptime-dlq",
+      },
       {
         "queue": "zentry-events",
         "max_batch_size": 100,
@@ -63,6 +73,14 @@
     ],
   },
   "ratelimits": [
+    {
+      "name": "MONITOR_PREVIEW_RL",
+      "namespace_id": "1004",
+      "simple": { "limit": 10, "period": 60 },
+    },
+    // Per project, monitor slug and environment: Sentry's default of six
+    // check-ins a minute per monitor environment (options/defaults.py).
+    { "name": "CHECK_IN_RL", "namespace_id": "1003", "simple": { "limit": 6, "period": 60 } },
     { "name": "INGEST_RL", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } },
     // The mobile app's API on the public ingest host, per client address: the
     // pairing exchange and every device-token lookup cost a D1 read, and no
@@ -72,7 +90,7 @@
   ],
   // Daily retention; the hourly spike thresholds and outbox sweep; the weekly
   // report on Saturdays. src/worker.ts tells them apart by the cron string.
-  "triggers": { "crons": ["17 3 * * *", "3 * * * *", "0 12 * * 6"] },
+  "triggers": { "crons": ["* * * * *", "17 3 * * *", "3 * * * *", "0 12 * * 6"] },
   // Without this, `wrangler dev` presents requests as if they came to the
   // first route above, and the Worker would treat everything as ingest-only.
   "dev": { "port": 8787, "host": "localhost:8787", "upstream_protocol": "http" },
@@ -82,12 +100,17 @@
   // bounding that second cost. Raise it while debugging.
   "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   "vars": {
+    "UPTIME_ORIGINS": "",
+    // Only the end-to-end suite sets this, to its loopback shop fixture.
+    "UPTIME_FIXTURE_ORIGIN": "",
     "INGEST_HOST": "ingest.zentry.example.com",
     "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
     "ACCESS_AUD": "replace-with-the-access-application-audience-tag",
     "RETENTION_DAYS": "90",
     "MAX_STORED_PER_GROUP_HOUR": "100",
     // The UI's origin, for links in emails.
+    "MONITOR_ALERTS_PAUSED": "0",
+    "MONITOR_BELOW_COUNT_PAGING": "0",
     "APP_URL": "https://zentry.example.com",
     // The origin the mobile app calls, which goes in the pairing QR code. It
     // must be a host Cloudflare Access does not guard: the ingest host, where

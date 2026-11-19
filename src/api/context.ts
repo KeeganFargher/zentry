@@ -4,6 +4,9 @@ import type { EventBlobs } from "@/blobs/events";
 import type { DeviceRecord, DeviceStore } from "@/db/devices";
 import type { EventStore } from "@/db/events";
 import type { IssueStore } from "@/db/issues";
+import type { MonitorPreviews } from "@/db/monitor-previews";
+import type { MonitorRuleStore } from "@/db/monitor-rules";
+import type { MonitorStore } from "@/db/monitors";
 import type { NotificationSettingsStore } from "@/db/notify-settings";
 import type { OrganizationStore } from "@/db/organizations";
 import type { ProjectStore } from "@/db/projects";
@@ -17,6 +20,8 @@ export type ApiDeps = {
   organizations: OrganizationStore;
   projects: ProjectStore;
   issues: IssueStore;
+  monitors: MonitorStore;
+  monitorRules: MonitorRuleStore;
   events: EventStore;
   blobs: EventBlobs;
   notificationSettings: NotificationSettingsStore;
@@ -32,6 +37,12 @@ export type ApiDeps = {
   ingestHost: string;
   /** The origin the mobile app calls, put in the pairing QR code. */
   mobileApiUrl: string;
+  uptimeOrigins: string;
+  /** The e2e shop's plain-HTTP origin; empty outside the end-to-end suite. */
+  uptimeFixtureOrigin: string;
+  allowMonitorPreview: (key: string) => Promise<boolean>;
+  monitorPreviews: MonitorPreviews;
+  enqueueMonitorPreview: (id: string) => Promise<void>;
   now: () => number;
 };
 

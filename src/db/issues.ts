@@ -35,7 +35,8 @@ export type IssueHour = { groupId: number; bucket: number; count: number; stored
 
 export type TagCount = { key: string; value: string; count: number; total: number };
 
-type IssueRow = Omit<IssueRecord, "metadata" | "shortId"> & {
+type IssueRow = Omit<IssueRecord, "metadata" | "shortId" | "monitorId"> & {
+  monitorId: string | null;
   metadata: string;
   shortNumber: number;
 };
@@ -51,7 +52,7 @@ const SORT_COLUMNS = {
 } satisfies { [sort in IssueSort]: string };
 
 const ISSUE_COLUMNS = `
-  SELECT g.id, g.short_id AS shortNumber, g.project_id AS projectId, p.slug AS projectSlug,
+  SELECT g.id, g.monitor_id AS monitorId, g.short_id AS shortNumber, g.project_id AS projectId, p.slug AS projectSlug,
          g.title, g.culprit, g.level, g.platform, g.metadata, g.status, g.substatus,
          g.times_seen AS timesSeen, g.first_seen AS firstSeen, g.last_seen AS lastSeen,
          g.resolved_at AS resolvedAt, g.last_event_id AS lastEventId, g.first_release AS firstRelease`;
@@ -81,12 +82,14 @@ const Metadata = jsonText(
   }),
 ) satisfies z.ZodType<IssueMetadata, string>;
 
-function toRecord({ metadata, shortNumber, ...row }: IssueRow): IssueRecord {
-  return {
+function toRecord({ metadata, shortNumber, monitorId, ...row }: IssueRow): IssueRecord {
+  const issue = {
     ...row,
     shortId: `${row.projectSlug.toUpperCase()}-${shortNumber}`,
     metadata: Metadata.parse(metadata),
   };
+
+  return monitorId === null ? issue : { ...issue, monitorId };
 }
 
 function escapeLike(text: string): string {
@@ -187,7 +190,7 @@ export class IssueStore {
   async setStatus(change: StatusChange): Promise<number> {
     const db = this.#db;
     const ids = JSON.stringify(change.issueIds);
-    const changed = `id IN (SELECT value FROM json_each(?1)) AND ${IN_ORGANIZATION} AND status != ?3`;
+    const changed = `id IN (SELECT value FROM json_each(?1)) AND ${IN_ORGANIZATION} AND status != ?3 AND monitor_id IS NULL`;
     const binds = [ids, change.organizationId, change.status, change.userId, change.now];
 
     const results = await db.batch([
@@ -261,7 +264,7 @@ export class IssueStore {
   /** Cascades to the issue's hashes, events, tags, stats, activity and seen marks. */
   async delete(organizationId: number, issueId: number): Promise<void> {
     await this.#db
-      .prepare(`DELETE FROM groups WHERE id = ?1 AND ${IN_ORGANIZATION}`)
+      .prepare(`DELETE FROM groups WHERE id = ?1 AND ${IN_ORGANIZATION} AND monitor_id IS NULL`)
       .bind(issueId, organizationId)
       .run();
   }

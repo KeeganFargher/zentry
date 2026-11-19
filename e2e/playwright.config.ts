@@ -1,16 +1,17 @@
 // End-to-end tests: a real browser runs the fixture shop, whose Sentry SDK
 // reports to a local Zentry started from a clean database.
 
+import { randomUUID } from "node:crypto";
+
 import { defineConfig } from "@playwright/test";
 
 import { SHOP_URL, ZENTRY_URL } from "./urls";
 
-const STATE = ".wrangler/e2e";
+const STATE = `.wrangler/e2e-${randomUUID()}`;
 
 const startZentry = [
-  `rm -rf ${STATE}`,
   `wrangler d1 migrations apply zentry --local --persist-to ${STATE}`,
-  `wrangler dev --port 8798 --host localhost:8798 --inspector-port 9339 --persist-to ${STATE} --var DEV_USER_EMAIL:e2e@localhost`,
+  `wrangler dev -c wrangler.jsonc -c e2e/wrangler.probe.jsonc --var UPTIME_ORIGINS:1=http://localhost:5199 --var UPTIME_FIXTURE_ORIGIN:http://localhost:5199 --port 8798 --host localhost:8798 --inspector-port 9339 --persist-to ${STATE} --var DEV_USER_EMAIL:e2e@localhost`,
 ].join(" && ");
 
 export default defineConfig({
@@ -38,7 +39,7 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: "vite e2e/shop --port 5199 --strictPort",
+      command: "vite e2e/shop -c e2e/shop/vite.config.ts --port 5199 --strictPort",
       cwd: "..",
       url: SHOP_URL,
       reuseExistingServer: false,

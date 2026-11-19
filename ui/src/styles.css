@@ -57,6 +57,19 @@
   --sans: "Rubik Variable", "Avenir Next", system-ui, sans-serif;
   --mono: "Roboto Mono", Monaco, Consolas, monospace;
   --radius: 8px;
+  /* Monitor ticks: dataviz.semantic.good / bad / meh / neutral, their hatches
+     border.success.muted / danger.muted / neutral.muted, and priority dots
+     graphics.danger / warning / success.vibrant. */
+  --good: #58cd6f;
+  --bad: #c10000;
+  --meh: #ffce00;
+  --neutral-tick: #a29faa;
+  --hatch-good: #b5eabb;
+  --hatch-bad: #ffc4bd;
+  --hatch-neutral: #dad9de;
+  --prio-high: #ff002b;
+  --prio-medium: #d59600;
+  --prio-low: #009800;
 }
 
 /* Sentry's dark borders are darker than its backgrounds: edges read as grooves. */
@@ -97,6 +110,16 @@
   --stripe: #24202b;
   --tip: #393442;
   --tip-shadow: rgb(0 0 0 / 45%);
+  --good: #5ece73;
+  --bad: #ff002b;
+  --meh: #ffce00;
+  --neutral-tick: #898294;
+  --hatch-good: #006d00;
+  --hatch-bad: #9a0116;
+  --hatch-neutral: #534d5e;
+  --prio-high: #ed7b74;
+  --prio-medium: #ffce00;
+  --prio-low: #5ece73;
 }
 
 * {
@@ -177,7 +200,8 @@ button,
 select,
 input[type="text"],
 input[type="search"],
-input[type="number"] {
+input[type="number"],
+input[type="url"] {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -2817,4 +2841,1295 @@ pre.raw-trace {
 .pairing-actions {
   display: flex;
   gap: 8px;
+}
+
+/* ── Monitors ─────────────────────────────────────────────────────────── */
+
+/*
+ * Sentry's Monitors area (static/app/views/detectors). Tick colours are its
+ * dataviz.semantic tokens and hatches its border.*.muted tokens, as in
+ * views/insights/crons/utils.tsx tickStyle.
+ */
+
+.monitor-page,
+.monitor-form {
+  max-width: 1440px;
+}
+
+.monitor-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.monitor-toolbar > select {
+  height: 34px;
+}
+
+.monitor-toolbar > button.primary,
+.intro-bar + .content .primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+}
+
+.monitor-table,
+.rule-table {
+  container-type: inline-size;
+}
+
+.monitor-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 2fr) 90px minmax(0, 1.5fr) 150px 90px;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 0 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.monitor-row.head {
+  min-height: 42px;
+  border-top: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 500;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.monitor-row:not(.head):hover {
+  background: var(--surface);
+}
+
+.monitor-row.faded > :not(input) {
+  opacity: 0.6;
+}
+
+/* Cron and uptime lists add a timeline and drop the type, as Sentry's. */
+.with-timeline .monitor-row {
+  grid-template-columns: 28px minmax(0, 1.4fr) minmax(0, 1fr) 120px 80px minmax(0, 2.4fr);
+}
+
+.with-timeline .cell-type {
+  display: none;
+}
+
+@container (width < 900px) {
+  .monitor-row {
+    grid-template-columns: 28px minmax(0, 1fr) 70px minmax(0, 1fr);
+  }
+
+  .monitor-row .cell-assignee,
+  .monitor-row .cell-alerts,
+  .monitor-row .row-timelines,
+  .monitor-row.head > :nth-child(n + 5) {
+    display: none;
+  }
+}
+
+.monitor-name {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.monitor-name a {
+  color: var(--heading);
+}
+
+.monitor-details {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.monitor-details .detail-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Sentry separates detail items with a 1×10px bar. */
+.monitor-details .detail-item::before {
+  content: "";
+  width: 1px;
+  height: 10px;
+  background: var(--border);
+  flex: none;
+}
+
+.project-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.last-issue {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.last-issue a {
+  color: var(--text);
+}
+
+.row-timelines {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+  border-left: 1px solid var(--border-soft);
+  padding-left: 12px;
+}
+
+.row-timeline {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-timeline:only-child:not(:has(.env-label)) {
+  grid-template-columns: 1fr;
+}
+
+.bulk-actions {
+  grid-column: 2 / -1;
+  display: flex;
+  gap: 8px;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.pagination button {
+  height: 30px;
+  width: 34px;
+  display: grid;
+  place-items: center;
+}
+
+.alert-banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.alert-banner.warning {
+  border-color: var(--meh);
+  background: color-mix(in srgb, var(--meh) 14%, var(--bg));
+}
+
+.alert-banner.danger {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.alert-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+/* ── Ticks ── */
+
+.tick-row {
+  position: relative;
+  height: 14px;
+}
+
+.tick-row.placeholder {
+  background: repeating-linear-gradient(90deg, var(--track) 0 4px, transparent 4px 19px);
+  opacity: 0.5;
+  border-radius: 2px;
+}
+
+.tick-slot {
+  position: absolute;
+  top: 0;
+  height: 14px;
+}
+
+.tick {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.status-ok,
+.status-success {
+  --tick: var(--good);
+  --label: var(--ok);
+}
+
+.status-error,
+.status-downtime,
+.status-high {
+  --tick: var(--bad);
+  --label: var(--danger);
+}
+
+.status-timeout,
+.status-failure {
+  --tick: var(--bad);
+  --hatch: var(--hatch-bad);
+  --label: var(--danger);
+}
+
+.status-missed,
+.status-medium {
+  --tick: var(--meh);
+  --label: var(--warning-text);
+}
+
+.status-in_progress {
+  --tick: var(--faint);
+  --label: var(--faint);
+}
+
+.status-unknown {
+  --tick: var(--neutral-tick);
+  --hatch: var(--hatch-neutral);
+  --label: var(--muted);
+}
+
+.tick,
+.swatch,
+.dot {
+  background: var(--tick);
+}
+
+/* Sentry's hatched tick: an outline in the tick colour over diagonal stripes. */
+.tick.status-timeout,
+.tick.status-failure,
+.tick.status-unknown,
+.swatch.status-timeout,
+.swatch.status-failure,
+.swatch.status-unknown {
+  border: 1px solid var(--tick);
+  background:
+    linear-gradient(
+        45deg,
+        var(--hatch) 25%,
+        transparent 25%,
+        transparent 50%,
+        var(--hatch) 50%,
+        var(--hatch) 75%,
+        transparent 75%
+      )
+      0 0 / 3px 3px,
+    var(--bg);
+}
+
+.tick-label,
+.status-text {
+  color: var(--label);
+}
+
+.status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.tick-card table {
+  margin-top: 6px;
+  border-spacing: 8px 2px;
+}
+
+.tick-scale {
+  position: relative;
+  height: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tick-scale span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+}
+
+/* ── Detail ── */
+
+.monitor-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 32px;
+  max-width: 1440px;
+}
+
+@media (max-width: 1000px) {
+  .monitor-detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.monitor-main {
+  display: grid;
+  gap: 24px;
+  align-content: start;
+  min-width: 0;
+}
+
+.detail-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.detail-toolbar select {
+  height: 32px;
+}
+
+/* The mute menu's trigger matches the small buttons beside it. */
+.detail-toolbar .menu > button {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.detail-section {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-section h3,
+.side-section h3 {
+  font-size: 16px;
+}
+
+.detail-section p {
+  margin: 0;
+}
+
+.detail-section .panel,
+.detail-section table.rows {
+  margin: 0;
+}
+
+.section-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 0 var(--border);
+  background: var(--bg);
+  color: var(--heading);
+  font-weight: 500;
+}
+
+.button-link.small {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.button-link:hover {
+  background: var(--surface);
+  text-decoration: none;
+}
+
+.panel.empty-state {
+  justify-items: center;
+}
+
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--raised);
+  color: var(--muted);
+}
+
+.tag.warning {
+  background: color-mix(in srgb, var(--meh) 25%, var(--bg));
+  color: var(--warning-text);
+}
+
+.tag.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.timeline-table {
+  display: grid;
+  margin: 0;
+}
+
+.timeline-table-row {
+  display: grid;
+  grid-template-columns: 135px 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.timeline-table.single .timeline-table-row {
+  grid-template-columns: 0 1fr;
+  gap: 0;
+}
+
+.timeline-table-row.head {
+  border-top: 0;
+  padding-top: 10px;
+  padding-bottom: 6px;
+}
+
+.env-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-label.health-failing {
+  color: var(--danger);
+}
+
+.env-label.health-healthy {
+  color: var(--ok);
+}
+
+.env-status.ok {
+  color: var(--ok);
+}
+
+.env-status.bad {
+  color: var(--danger);
+}
+
+.env-status.warn {
+  color: var(--warning-text);
+}
+
+.env-status.muted {
+  color: var(--faint);
+}
+
+.metric-chart {
+  padding: 16px;
+  margin: 0;
+}
+
+.metric-chart svg,
+.metric-preview svg {
+  display: block;
+  width: 100%;
+  height: 180px;
+}
+
+.metric-preview svg {
+  height: 120px;
+}
+
+.metric-chart .area,
+.metric-preview .area {
+  fill: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.metric-chart .line,
+.metric-preview .line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.threshold {
+  stroke-dasharray: 6 4;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.threshold.high {
+  stroke: var(--prio-high);
+}
+
+.threshold.medium {
+  stroke: var(--prio-medium);
+}
+
+.activity {
+  margin: 0;
+  padding: 10px 16px;
+}
+
+.activity summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.activity ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.monitor-side {
+  display: grid;
+  gap: 22px;
+  align-content: start;
+}
+
+.side-section {
+  display: grid;
+  gap: 6px;
+}
+
+.side-section p {
+  margin: 0;
+}
+
+.detect-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.detect-list dd {
+  margin: 0;
+}
+
+.code-line {
+  display: block;
+  padding: 8px 10px;
+  font: 12px var(--mono);
+  background: var(--code-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+
+.legend {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.striped-list {
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.striped-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.striped-list > div:nth-child(odd) {
+  background: var(--stripe);
+}
+
+.striped-list dd {
+  margin: 0;
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.big-number {
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--heading);
+}
+
+.priority-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.priority-dot.high {
+  background: var(--prio-high);
+}
+
+.priority-dot.medium {
+  background: var(--prio-medium);
+}
+
+.priority-dot.resolved {
+  background: var(--prio-low);
+}
+
+.pre-wrap {
+  white-space: pre-wrap;
+}
+
+.onboarding {
+  display: grid;
+  gap: 18px;
+  padding: 32px;
+  margin: 0;
+}
+
+.onboarding h2 {
+  font-size: 22px;
+}
+
+.waiting {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.waiting strong {
+  color: var(--fatal);
+}
+
+.waiting p {
+  margin: 2px 0 0;
+}
+
+.pulse {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--fatal);
+  animation: pulse 1.6s ease-out infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--fatal) 60%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 10px transparent;
+  }
+}
+
+.sdk-guide {
+  display: grid;
+  gap: 10px;
+}
+
+.sdk-guide p {
+  margin: 0;
+}
+
+.sdk-guide-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sdk-guide .snippet {
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+/* ── Create and edit ── */
+
+.intro-bar {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.monitor-new {
+  max-width: 1460px;
+  display: grid;
+  gap: 14px;
+}
+
+.monitor-new p {
+  margin: 0;
+}
+
+.type-options {
+  display: grid;
+  gap: 12px;
+}
+
+.type-option {
+  display: grid;
+  grid-template-columns: auto 1fr minmax(0, 480px);
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.type-option.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.type-option input {
+  accent-color: var(--accent);
+}
+
+.type-text {
+  display: grid;
+  gap: 4px;
+}
+
+.type-text strong {
+  font-size: 15px;
+  color: var(--heading);
+}
+
+.type-art {
+  width: 100%;
+  height: 56px;
+}
+
+.art-good {
+  fill: var(--good);
+}
+
+.art-bad {
+  fill: var(--bad);
+}
+
+.art-meh {
+  fill: var(--meh);
+}
+
+.art-band {
+  fill: var(--danger-soft);
+}
+
+.art-threshold {
+  stroke: var(--bad);
+  stroke-dasharray: 2 2;
+  stroke-width: 0.5;
+}
+
+.art-area {
+  fill: var(--accent);
+}
+
+/* A page with a step footer fills the column, so a short page's footer sits at the bottom as Sentry's does. */
+.main:has(> .form-footer) {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A scrolling column must not squeeze the top bar or sections to fit. */
+.main:has(> .form-footer) > * {
+  flex-shrink: 0;
+}
+
+.main > .form-footer {
+  margin-top: auto;
+}
+
+.builder-select {
+  width: 100%;
+}
+
+.form-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg);
+}
+
+.form-footer button {
+  height: 34px;
+  padding: 0 14px;
+}
+
+.title-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.title-input input {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--heading);
+  height: 28px;
+  padding: 0 4px;
+  field-sizing: content;
+  min-width: 100px;
+}
+
+.crumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitor-form {
+  display: grid;
+  gap: 18px;
+  padding-bottom: 24px;
+}
+
+.sticky-preview {
+  position: sticky;
+  top: 44px;
+  z-index: 1;
+  background: var(--bg);
+  padding-top: 4px;
+}
+
+.schedule-preview {
+  position: relative;
+  height: 138px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.schedule-preview.invalid {
+  height: auto;
+  padding: 14px 16px;
+  border-color: var(--meh);
+  background: color-mix(in srgb, var(--meh) 12%, var(--bg));
+}
+
+.preview-labels span,
+.preview-notes span {
+  position: absolute;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.preview-labels span {
+  top: 18px;
+  color: var(--muted);
+  padding-left: 6px;
+  border-left: 1px solid var(--border-soft);
+  height: 120px;
+}
+
+.preview-tick {
+  position: absolute;
+  top: 50px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 2px;
+}
+
+.preview-tick.ok {
+  background: var(--good);
+}
+
+.preview-tick.fail {
+  background: var(--fatal);
+}
+
+.preview-tick.fail-sub,
+.preview-tick.ok-sub {
+  border: 1px solid var(--fatal);
+  background:
+    linear-gradient(
+        45deg,
+        var(--hatch-bad) 25%,
+        transparent 25%,
+        transparent 50%,
+        var(--hatch-bad) 50%,
+        var(--hatch-bad) 75%,
+        transparent 75%
+      )
+      0 0 / 3px 3px,
+    var(--bg);
+}
+
+.preview-tick.ok-sub {
+  border-color: var(--good);
+  background:
+    linear-gradient(
+        45deg,
+        var(--hatch-good) 25%,
+        transparent 25%,
+        transparent 50%,
+        var(--hatch-good) 50%,
+        var(--hatch-good) 75%,
+        transparent 75%
+      )
+      0 0 / 3px 3px,
+    var(--bg);
+}
+
+.open-period {
+  position: absolute;
+  top: 78px;
+  height: 18px;
+  padding: 0 6px;
+  background: var(--fatal);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.preview-notes span {
+  top: 108px;
+}
+
+.metric-preview {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.preview-axis {
+  display: flex;
+  justify-content: space-between;
+}
+
+.form-section {
+  margin: 0;
+}
+
+.form-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 18px;
+}
+
+.form-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-section-toggle .chevron {
+  display: inline-grid;
+  transform: rotate(-90deg);
+  transition: transform 120ms;
+  color: var(--muted);
+}
+
+.form-section-toggle .chevron.open {
+  transform: none;
+}
+
+.form-section h3 {
+  font-size: 16px;
+}
+
+.form-section h5 {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--heading);
+}
+
+.form-section-body {
+  display: grid;
+  gap: 14px;
+  padding: 0 18px 18px 40px;
+}
+
+.form-section-body > p {
+  margin: -8px 0 0;
+}
+
+.form-section-body hr {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  margin: 4px 0;
+}
+
+.form-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: start;
+  padding: 6px 0;
+}
+
+/* Sentry rules a line between a section's fields. */
+.form-field + .form-field {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 14px;
+}
+
+.form-field-label {
+  display: grid;
+  gap: 2px;
+  font-weight: 500;
+}
+
+.form-field-label .small {
+  font-weight: 400;
+}
+
+.form-field-control > input,
+.form-field-control > select,
+.form-field-control > textarea,
+.form-section-body > input,
+.form-section-body > select {
+  width: 100%;
+}
+
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  resize: vertical;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 260px));
+  gap: 10px 16px;
+}
+
+.field-row label {
+  display: grid;
+  gap: 4px;
+  font-weight: 500;
+}
+
+.schedule-grid {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) 200px;
+  gap: 8px;
+}
+
+.schedule-grid.interval {
+  grid-template-columns: 120px auto minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+}
+
+.slider {
+  display: grid;
+  gap: 4px;
+}
+
+.slider output {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.slider input {
+  accent-color: var(--accent);
+}
+
+.slider-scale {
+  display: flex;
+  justify-content: space-between;
+}
+
+.choice-cards {
+  display: flex;
+  gap: 10px;
+}
+
+.choice-card {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 270px;
+}
+
+.choice-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.threshold-row {
+  display: grid;
+  grid-template-columns: 160px 80px 140px;
+  align-items: center;
+  gap: 10px;
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.instrument-choice {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.alert-links {
+  margin: 0;
+}
+
+.alert-links .empty-state {
+  padding: 24px;
+}
+
+.rule-choices {
+  margin: 0;
+  padding: 10px 16px 14px;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* ── Alerts ── */
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) 160px 160px 120px 120px;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 0 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.rule-row.head {
+  min-height: 42px;
+  border-top: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 500;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.rule-row a {
+  color: var(--heading);
+}
+
+.rule-projects {
+  display: flex;
+  gap: 4px;
+}
+
+.builder-block {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.builder-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+}
+
+.keyword {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.form-field-inline {
+  display: grid;
+  gap: 4px;
+  font-weight: 500;
+  max-width: 420px;
+}
+
+/* A field's own validation message, under its control. */
+.field-error {
+  grid-column: 1 / -1;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+input[aria-invalid="true"] {
+  border-color: var(--danger);
 }

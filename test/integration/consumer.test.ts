@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 
 import { EventBlobs } from "@/blobs/events";
 import { handleBatch, processMessages } from "@/consumer/handler";
-import { HOUR, monthBucket } from "@/shared/time";
+import { evaluateMetrics } from "@/cron/metric-evaluation";
+import { MetricEvaluationStore } from "@/db/metric-evaluation";
+import { MonitorStore } from "@/db/monitors";
+import { CreateMonitor } from "@/shared/monitors";
+import { HOUR, MINUTE, monthBucket } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
 import {
@@ -16,6 +20,7 @@ import {
   message,
   NOW,
 } from "./helpers";
+import { addMember } from "./notify-helpers";
 
 async function limitOf(projectId: number): Promise<{ until: number; reason: string } | null> {
   return env.DB.prepare(
@@ -65,6 +70,58 @@ function batchOf(body: QueueMessage, settled: Settled): MessageBatch<QueueMessag
 }
 
 describe("consumer", () => {
+  it("uses the canonical pending receipt after duplicate delivery and holds recovery across a gap", async () => {
+    const { id: projectId } = await createProject();
+    const store = new MonitorStore(env.DB);
+    const firstMinute = Math.floor(NOW / MINUTE) * MINUTE;
+
+    const settings = CreateMonitor.parse({
+      projectId,
+      name: "Pipeline coverage",
+      type: "metric",
+      config: { windowSeconds: 300, threshold: 1 },
+    });
+
+    const actor = await addMember(1);
+
+    const monitor = await store.create(1, settings, {
+      userId: actor.id,
+      time: firstMinute,
+      requestKey: null,
+    });
+
+    expect(monitor).not.toBeNull();
+    const event = message({ projectId, index: 10, event: errorEvent("canonical") });
+
+    const pending = env.DB.prepare(
+      "INSERT INTO metric_pending(project_id,event_id,received_at) VALUES (?1,?2,?3)",
+    );
+
+    await pending.bind(projectId, event.event_id, firstMinute + MINUTE).run();
+    await processMessages([{ ...event, received_at: firstMinute + 7 * MINUTE }], consumerDeps());
+    expect(
+      await env.DB.prepare("SELECT minute FROM metric_receipts WHERE project_id = ?1")
+        .bind(projectId)
+        .first(),
+    ).toEqual({ minute: firstMinute + MINUTE });
+
+    // Coverage starts a minute after the monitor (metric_capture_started), so
+    // the first covered five-minute window ends at minute six.
+    await evaluateMetrics(new MetricEvaluationStore(env.DB), firstMinute + 6 * MINUTE);
+    expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
+      health: "failing",
+      severity: "high",
+    });
+
+    await pending.bind(projectId, eventId(11), firstMinute + 6 * MINUTE).run();
+    await evaluateMetrics(new MetricEvaluationStore(env.DB), firstMinute + 11 * MINUTE);
+    expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
+      health: "unknown",
+      severity: "high",
+    });
+    expect((await groupsOf(projectId))[0]).toMatchObject({ status: "unresolved" });
+  });
+
   it("acks a committed batch even when deleting its spilled payloads fails", async () => {
     const project = await createProject();
     const settled = { acked: false, retried: false };
@@ -277,11 +334,15 @@ describe("consumer", () => {
     const store = consumerDeps();
 
     const failing = consumerDeps({
-      commit: async (writes, now) => {
+      commit: async (writes, now, inputs) => {
         // A second copy of an event row makes the events insert hit its primary key.
         const [first] = writes.events;
 
-        return store.commit({ ...writes, events: first === undefined ? [] : [first, first] }, now);
+        return store.commit(
+          { ...writes, events: first === undefined ? [] : [first, first] },
+          now,
+          inputs,
+        );
       },
     });
 
@@ -394,6 +455,54 @@ describe("consumer", () => {
     await processMessages([bad], consumerDeps());
 
     expect(await groupsOf(project.id)).toEqual([]);
+  });
+
+  it("releases the metric pending row of an event it drops", async () => {
+    const project = await createProject();
+
+    const bad = {
+      ...message({ projectId: project.id, index: 2, event: {} }),
+      payload: "{not json",
+    };
+
+    await env.DB.prepare(
+      "INSERT INTO metric_pending(project_id, event_id, received_at) VALUES (?1, ?2, ?3)",
+    )
+      .bind(project.id, bad.event_id, NOW)
+      .run();
+
+    await processMessages([bad], consumerDeps());
+
+    // Left behind, it would hold every metric window containing it as unknown.
+    expect(await count("metric_pending", project.id)).toBe(0);
+  });
+
+  it("fails a below-threshold metric when no events arrive, as Sentry does", async () => {
+    const { id: projectId } = await createProject();
+    const store = new MonitorStore(env.DB);
+    const minute = Math.floor(NOW / MINUTE) * MINUTE;
+    const actor = await addMember(1);
+
+    await store.create(
+      1,
+      CreateMonitor.parse({
+        projectId,
+        name: "Too quiet",
+        type: "metric",
+        config: { windowSeconds: 300, threshold: 5, comparator: "lt" },
+      }),
+      { userId: actor.id, time: minute, requestKey: null },
+    );
+
+    // A covered window with no events counts as zero. Paging on it stays off
+    // until MONITOR_BELOW_COUNT_PAGING is enabled (src/notify/jobs.ts).
+    await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 6 * MINUTE);
+
+    expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
+      health: "failing",
+      severity: "high",
+    });
+    expect(await groupsOf(projectId)).toEqual([expect.objectContaining({ status: "unresolved" })]);
   });
 
   it("still stores other projects' events when one project was deleted in flight", async () => {

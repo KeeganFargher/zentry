@@ -102,6 +102,11 @@ export function bucketLabel(bucket: number, step: number): string {
   return `${shortDate(bucket)}, ${hourOfDay(bucket)} – ${hourOfDay(bucket + step)}`;
 }
 
+/** "14:03", for timeline labels. */
+export function minuteTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
 /** "14:03:22.517", for breadcrumbs. */
 export function clockTime(timestamp: number): string {
   const time = new Date(timestamp).toLocaleTimeString(undefined, { hour12: false });

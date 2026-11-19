@@ -26,6 +26,8 @@ export type MailMessage = EmailReplyMessageBuilder & { to: string };
 
 export type NotifyDeps = {
   store: NotifyStore;
+  monitorAlertsPaused: boolean;
+  monitorBelowCountPaging: boolean;
   settings: NotificationSettingsStore;
   mail: MailStore;
   reports: ReportStore;

@@ -2,11 +2,27 @@
 // DESIGN.md §18. Shared because db/ produces these and core/ renders them.
 
 import type { IssueStatus, Level, NotificationType, Pair } from "./contract";
+import type { MonitorChannelName, MonitorTriggerName, NewMonitorRule } from "./monitor-alerts";
+
+export type MonitorDelivery = {
+  id: number;
+  groupId: number;
+  ruleId: string;
+  channel: MonitorChannelName;
+  transition: MonitorTriggerName;
+  monitorId: string;
+  ownerId: number | null;
+  environment: string;
+  periodId: number | null;
+  belowCount: number;
+  audience: NewMonitorRule["audience"];
+};
 
 export type AlertReason = "new_issue" | "regression";
 
 /** One row of the outbox, as the notify consumer handles it. */
 export type OutboxItem =
+  | { id: number; kind: "monitor"; transitionId: number }
   | { id: number; kind: AlertReason; groupId: number }
   | { id: number; kind: "status"; groupId: number; actorId: number | null; status: IssueStatus }
   | {

@@ -1,3 +1,4 @@
+import type { ApiMonitor } from "./monitors";
 // Types shared between the Worker and the UI. This file has no imports so
 // that the UI can depend on it without pulling in Worker code.
 
@@ -160,6 +161,7 @@ export type ApiKey = {
 };
 
 export type ApiIssue = {
+  monitorId?: string;
   id: number;
   shortId: string;
   projectId: number;
@@ -180,6 +182,102 @@ export type ApiIssue = {
   /** Whether the signed-in user has opened the issue since it last became active. */
   hasSeen: boolean;
   stats: StatPoint[];
+};
+
+export type { ApiMonitor, NewMonitor } from "./monitors";
+
+export type { ApiMonitorRule } from "./monitor-alerts";
+
+export type MonitorObservation = {
+  id: number;
+  time: number;
+  health: ApiMonitor["health"];
+  evidence: Json;
+  scope: string;
+  slot: number | null;
+  severity: ApiMonitor["severity"];
+};
+
+export type MonitorDeliveryState = {
+  id: number;
+  transition: string;
+  channel: string;
+  time: number;
+  suppression: string | null;
+};
+
+import type { CronCheckInView } from "./cron";
+
+export type { CronCheckInView, CronUnrecognized } from "./cron";
+
+export type { MonitorTimeline, TimelineBucket, TimelineStatus } from "./monitor-views";
+
+export type MonitorHistory = { observations: MonitorObservation[]; nextCursor: string | null };
+
+export type MonitorMember = { userId: number; email: string };
+
+export type MonitorAudit = {
+  version: number;
+  actorId: number | null;
+  time: number;
+  snapshot: Json;
+};
+
+export type MonitorScope = {
+  environment: string;
+  health: ApiMonitor["health"];
+  /** When the next check-in is expected, before its margin. */
+  nextAt: number | null;
+  lastCheckIn: number | null;
+  issueId: number | null;
+};
+
+export type MonitorCoverage = { successful: number; failed: number; unknown: number };
+
+export type MonitorIncidentPeriod = {
+  issueId: number;
+  scope: string;
+  openedAt: number;
+  closedAt: number | null;
+  disposition: string | null;
+};
+
+export type MonitorPreview =
+  | {
+      type: "metric";
+      count: number;
+      windowEnd: number;
+      points: { time: number; count: number; covered: boolean }[];
+      threshold: number;
+      warningThreshold: number | undefined;
+    }
+  | { type: "cron"; occurrences: number[] }
+  | {
+      type: "uptime";
+      outcome: "ok" | "failed" | "unknown";
+      httpStatus?: number | undefined;
+      durationMs?: number | undefined;
+      reason?: string | undefined;
+    };
+
+export type MonitorPreviewJob = {
+  type: "uptime_job";
+  id: string;
+  expiresAt: number;
+  status: "pending" | "complete" | "expired";
+  result?: Extract<MonitorPreview, { type: "uptime" }>;
+};
+
+export type MonitorDetail = {
+  monitor: ApiMonitor;
+  observations: MonitorObservation[];
+  nextCursor: string | null;
+  audit: MonitorAudit[];
+  scopes: MonitorScope[];
+  coverage: MonitorCoverage | null;
+  incidents: MonitorIncidentPeriod[];
+  deliveries: MonitorDeliveryState[];
+  checkIns: CronCheckInView[];
 };
 
 export type ApiIssueList = { issues: ApiIssue[]; nextCursor: string | null };

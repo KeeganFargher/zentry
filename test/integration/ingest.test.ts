@@ -27,6 +27,8 @@ function harness(overrides: Partial<IngestDeps> = {}): Harness {
     deps: {
       keys: new KeyCache((publicKey) => keyStore.findActive(publicKey)),
       usage: new UsageCache((organization, month) => usageStore.received(organization, month)),
+      allowCheckIn: async () => true,
+      recordCheckIn: async () => {},
       allow: async () => true,
       spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
       send: async (message) => {
