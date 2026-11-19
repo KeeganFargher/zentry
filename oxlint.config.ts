@@ -166,15 +166,14 @@ export default defineConfig({
       files: [
         "src/shared/json.ts",
         "src/shared/schema.ts",
+        // The uptime queue's job messages, and the probe Worker's request and reply.
         "src/cron/uptime.ts",
-        "src/db/monitors.ts",
         "src/uptime-probe.ts",
-        "src/shared/monitors.ts",
-        // These schemas validate alert rule requests and persisted rule configuration.
-        "src/shared/monitor-alerts.ts",
         "src/shared/uptime.ts",
-        "src/db/monitor-timeline.ts",
-        "src/db/monitor-previews.ts",
+        // Monitor configs from the API and from an SDK's check-in monitor_config.
+        "src/shared/monitors.ts",
+        // Alert rule requests and persisted rule configuration.
+        "src/shared/monitor-alerts.ts",
         "src/core/wire.ts",
         "src/core/envelope.ts",
         "src/ingest/handler.ts",

@@ -1,30 +1,35 @@
-import type { CronMonitorStore } from "@/db/cron-monitors";
-import type { MonitorStore } from "@/db/monitors";
-import type { UptimeMonitorStore } from "@/db/uptime-monitors";
+import { CronStore } from "@/db/cron-store";
+import { MonitorStore } from "@/db/monitors";
+import { UptimeMonitorStore } from "@/db/uptime-monitors";
 import { errorText, logError, logInfo } from "@/shared/log";
 import type { UptimeJob } from "@/shared/monitors";
-import { HOUR, MINUTE } from "@/shared/time";
+import { MINUTE } from "@/shared/time";
 
+import { evaluateCronDeadlines } from "./cron-deadlines";
 import { sweepOutbox } from "./notify";
 import type { NotifyCronDeps } from "./notify";
 import { dispatchUptime } from "./uptime";
 
 type MonitorTickDeps = {
-  cron: CronMonitorStore;
-  metric: MonitorStore;
-  uptime: UptimeMonitorStore;
+  db: D1Database;
   queue: Queue<UptimeJob>;
   notify: NotifyCronDeps;
 };
 
+/**
+ * The minute tick: metric windows, cron deadlines and uptime dispatch run
+ * independently, so one failing does not stop the others, then the outbox is
+ * swept and expired monitor data pruned.
+ */
 export async function evaluateMonitors(time: number, deps: MonitorTickDeps): Promise<void> {
+  const metric = new MonitorStore(deps.db);
   // Close receive-time windows two minutes behind the current tick.
   const windowEnd = Math.floor(time / MINUTE) * MINUTE - 2 * MINUTE;
 
   const results = await Promise.allSettled([
-    deps.metric.evaluateMetrics(windowEnd),
-    deps.cron.evaluate(time),
-    dispatchUptime(deps.uptime, time, deps.queue),
+    metric.evaluateMetrics(windowEnd),
+    evaluateCronDeadlines(new CronStore(deps.db), time),
+    dispatchUptime(new UptimeMonitorStore(deps.db), time, deps.queue),
   ]);
 
   const failures = results.flatMap((result) =>
@@ -32,10 +37,7 @@ export async function evaluateMonitors(time: number, deps: MonitorTickDeps): Pro
   );
 
   await sweepOutbox(deps.notify);
-
-  if (time % HOUR < MINUTE) {
-    await deps.metric.prune(time);
-  }
+  await metric.prune(time);
 
   if (failures.length > 0) {
     logError("monitor evaluation failed", { errors: failures.map(errorText), time });

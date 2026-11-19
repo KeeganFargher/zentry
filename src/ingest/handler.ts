@@ -29,8 +29,9 @@ export type IngestDeps = {
   allow: (publicKey: string) => Promise<boolean>;
   /** Stores an oversize payload and returns its key. */
   spill: (projectId: number, eventId: string, payload: string) => Promise<string>;
-  allowCheckIn: (publicKey: string) => Promise<boolean>;
-  recordCheckIn: (projectId: number, checkIn: MonitorCheckIn, now: number) => Promise<boolean>;
+  /** Keyed by project, monitor slug and environment, as Sentry limits check-ins. */
+  allowCheckIn: (key: string) => Promise<boolean>;
+  recordCheckIn: (projectId: number, checkIn: MonitorCheckIn, now: number) => Promise<void>;
   send: (message: QueueMessage) => Promise<void>;
   now: () => number;
 };

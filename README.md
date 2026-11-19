@@ -118,13 +118,20 @@ queue and expire after two minutes.
   time. Configure a 5-, 15-, or 60-minute window, exact environment and level
   filters, the comparison direction, medium severity, and recovery. The
   evaluator waits two minutes and holds an incident open when processing
-  coverage is incomplete. Collection begins with the first metric monitor.
-- **Cron** accepts Sentry SDK terminal check-ins and start/finish pairs. Create
-  the monitor before sending a check-in and match its configured slug and
-  environment. A valid first check-in arms missing-run detection. Crontab
-  schedules use the configured IANA timezone. They skip nonexistent times
-  and use the earlier occurrence when a local time repeats. Intervals use
-  elapsed time.
+  coverage is incomplete. Coverage begins one minute after the first metric
+  monitor. A "below" threshold counts a window with no events as zero, as
+  Sentry does; its alerts stay off while `MONITOR_BELOW_COUNT_PAGING=0`.
+- **Cron** follows Sentry's model. Every check-in is recorded whenever it
+  arrives, and each one moves the next expected check-in. A missing check-in
+  past its margin is recorded as missed, and a run past its maximum runtime
+  as timed out. Each environment is tracked separately and appears with its
+  first check-in. The SDK's slug is slugified as Sentry does, so
+  `withMonitor("Nightly Export")` finds `nightly-export`. A check-in with
+  `monitor_config` for an unknown slug creates the monitor. Other check-ins
+  that match no active monitor are accepted and listed as unrecognized.
+  Crontab schedules use the configured IANA timezone, skip nonexistent times
+  and use the earlier occurrence when a local time repeats. Minute and hour
+  intervals use elapsed time; day and longer intervals keep the wall clock.
 - **Uptime** sends GET or HEAD to operator-approved HTTPS origins from a
   separate Worker. Checks use a timeout, configurable success codes, and
   never follow redirects. Unknown coverage breaks confirmation streaks.

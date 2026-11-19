@@ -38,6 +38,8 @@ export type ApiDeps = {
   /** The origin the mobile app calls, put in the pairing QR code. */
   mobileApiUrl: string;
   uptimeOrigins: string;
+  /** The e2e shop's plain-HTTP origin; empty outside the end-to-end suite. */
+  uptimeFixtureOrigin: string;
   allowMonitorPreview: (key: string) => Promise<boolean>;
   monitorPreviews: MonitorPreviews;
   enqueueMonitorPreview: (id: string) => Promise<void>;

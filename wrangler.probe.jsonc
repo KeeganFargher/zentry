@@ -13,6 +13,8 @@
     "UPTIME_ORIGINS": "",
     "FIXTURE_ORIGIN": "",
     "UPTIME_PROBES_PAUSED": "0",
-    "UPTIME_BLOCKED_HOSTS": "",
+    // Zentry's own UI and ingest hosts, which no probe may call even if an
+    // approval names them. Replace with your hosts, as in wrangler.jsonc.
+    "UPTIME_BLOCKED_HOSTS": "zentry.example.com,ingest.zentry.example.com",
   },
 }

@@ -1,9 +1,9 @@
 import { z } from "zod";
 
 import { jsonText } from "@/shared/json";
-import { CreateMonitor, MonitorFields } from "@/shared/monitors";
+import { CreateMonitor, MAX_MONITORS_PER_ORGANIZATION, MonitorFields } from "@/shared/monitors";
 import type { ApiMonitor, NewMonitor } from "@/shared/monitors";
-import { DAY } from "@/shared/time";
+import { DAY, HOUR } from "@/shared/time";
 
 import { evaluateMetricQuery, previewMetricQuery } from "./metric-query";
 import { MonitorTimeline } from "./monitor-timeline";
@@ -43,13 +43,25 @@ const Row = MonitorFields.extend({
   }),
 );
 
+// Retention, from the plan: 14 days of observations and metric rollups, 30
+// days of check-ins, and 90 days of incidents, deliveries and audit.
+const HISTORY = 14 * DAY;
+const CHECK_IN_HISTORY = 30 * DAY;
+const INCIDENT_HISTORY = 90 * DAY;
+const PRUNE_BATCH = 5000;
+
 type Actor = { userId: number; time: number };
+
+/**
+ * A cron monitor's next expected check-in, counted from the change so a new or
+ * resumed schedule cannot miss slots retroactively. Null when there is nothing
+ * to re-plan: metric and uptime monitors, and cron edits that keep the timing.
+ */
+export type CronReplan = { nextCheckIn: number; nextCheckInLatest: number } | null;
 
 type Control = Actor & { version: number };
 
 type CreateIdentity = Actor & { requestKey: string | null };
-
-const MAX_MONITORS_PER_ORGANIZATION = 100;
 
 const COLUMNS =
   "id, project_id AS projectId, name, description, owner_id AS ownerId, muted_until AS mutedUntil, alert_rule_ids AS alertRuleIds, type, config, status, health, severity, version, evaluated_at AS evaluatedAt, (SELECT id FROM groups WHERE monitor_id = monitors.id ORDER BY status = 'unresolved' DESC, id LIMIT 1) AS issueId, notify, created_at AS createdAt";
@@ -123,19 +135,25 @@ export class MonitorStore {
 
   async edit(
     current: ApiMonitor,
-    edit: Control & { monitor: NewMonitor },
+    edit: Control & { monitor: NewMonitor; replan: CronReplan },
   ): Promise<ApiMonitor | null> {
-    const { monitor, version, userId, time } = edit;
-    const reset = JSON.stringify(monitor.config) !== JSON.stringify(current.config);
+    const { monitor, version, userId, time, replan } = edit;
+    const token = crypto.randomUUID();
+    const changed = JSON.stringify(monitor.config) !== JSON.stringify(current.config);
 
-    const row = await this.#db
+    // A metric or uptime config change redefines failure, so it starts a new
+    // generation and closes the open incident (monitor_invalidate_period). A
+    // cron edit keeps its environments, streaks and incidents, as on Sentry,
+    // and only re-plans the next expected check-in under the new schedule.
+    const reset = changed && monitor.type !== "cron";
+
+    const update = this.#db
       .prepare(`
       UPDATE OR IGNORE monitors
-      SET name = ?3, config = ?4, notify = ?5, version = version + 1,
+      SET name = ?3, config = ?4, notify = ?5, version = version + 1, write_token = ?12,
         description = ?7, owner_id = ?8, alert_rule_ids = ?9, changed_by = ?10, changed_at = ?11,
         severity = CASE WHEN ?6 THEN NULL ELSE severity END, health = CASE WHEN ?6 THEN 'awaiting_data' ELSE health END,
         evaluated_at = CASE WHEN ?6 THEN NULL ELSE evaluated_at END,
-        next_cron_at = CASE WHEN ?6 THEN NULL ELSE next_cron_at END,
         generation = generation + ?6,
         evaluation_after = CASE WHEN ?6 THEN ?11 ELSE evaluation_after END,
         successes = CASE WHEN ?6 THEN 0 ELSE successes END,
@@ -156,27 +174,71 @@ export class MonitorStore {
         JSON.stringify(monitor.alertRuleIds),
         userId,
         time,
-      )
-      .first();
+        token,
+      );
 
-    return row === null ? null : Row.parse(row);
+    const statements = [update];
+
+    if (replan !== null) {
+      // Bumping the revision fences any check-in write that read the old plan.
+      // The token makes this apply only if the update above won.
+      statements.push(
+        this.#db
+          .prepare(`UPDATE cron_environments SET next_checkin = ?3, next_checkin_latest = ?4,
+            revision = revision + 1, write_token = NULL
+          WHERE monitor_id = ?1 AND last_checkin IS NOT NULL
+            AND (SELECT write_token FROM monitors WHERE id = ?1) = ?2`)
+          .bind(current.id, token, replan.nextCheckIn, replan.nextCheckInLatest),
+      );
+    }
+
+    const [updated] = await this.#db.batch(statements);
+    const row = updated?.results[0];
+
+    return row === undefined ? null : Row.parse(row);
   }
 
   async setStatus(
     id: string,
-    change: Control & { status: ApiMonitor["status"] },
+    change: Control & { status: ApiMonitor["status"]; replan: CronReplan },
   ): Promise<ApiMonitor | null> {
-    const row = await this.#db
-      .prepare(`
-      UPDATE monitors SET status = ?3, version = version + 1, generation = generation + 1,
-        changed_by = ?4, changed_at = ?5, evaluation_after = ?5,
-        health = 'awaiting_data', severity = NULL, evaluated_at = NULL, next_cron_at = NULL,
-        successes = 0, failures = 0, lease_token = NULL, lease_expires = NULL
-      WHERE id = ?1 AND version = ?2 AND status != 'archived' AND status != ?3 RETURNING ${COLUMNS}`)
-      .bind(id, change.version, change.status, change.userId, change.time)
-      .first();
+    const token = crypto.randomUUID();
 
-    return row === null ? null : Row.parse(row);
+    const update = this.#db
+      .prepare(`
+        UPDATE monitors SET status = ?3, version = version + 1, generation = generation + 1,
+          write_token = ?6,
+          changed_by = ?4, changed_at = ?5, evaluation_after = ?5,
+          health = 'awaiting_data', severity = NULL, evaluated_at = NULL,
+          successes = 0, failures = 0, lease_token = NULL, lease_expires = NULL
+        WHERE id = ?1 AND version = ?2 AND status != 'archived' AND status != ?3 RETURNING ${COLUMNS}`)
+      .bind(id, change.version, change.status, change.userId, change.time, token);
+
+    const statements = [update];
+    const { replan } = change;
+
+    if (replan !== null) {
+      // A resumed cron monitor starts a fresh streak and expects its next
+      // check-in from now, so a job that stopped while paused is still missed.
+      // Outcomes of runs that started before the resume cannot move the new
+      // streak (last_decided). History and open incidents stay.
+      statements.push(
+        this.#db
+          .prepare(`UPDATE cron_environments SET status = 'active', health = 'awaiting_data',
+            failures = 0, successes = 0, last_decided = ?5,
+            next_checkin = CASE WHEN last_checkin IS NULL THEN NULL ELSE ?3 END,
+            next_checkin_latest = CASE WHEN last_checkin IS NULL THEN NULL ELSE ?4 END,
+            revision = revision + 1, write_token = NULL
+          WHERE monitor_id = ?1 AND (SELECT write_token FROM monitors WHERE id = ?1) = ?2`)
+          .bind(id, token, replan.nextCheckIn, replan.nextCheckInLatest, change.time),
+      );
+    }
+
+    const [updated] = await this.#db.batch(statements);
+
+    const row = updated?.results[0];
+
+    return row === undefined ? null : Row.parse(row);
   }
 
   async mute(id: string, input: Control & { until: number | null }): Promise<ApiMonitor | null> {
@@ -190,38 +252,69 @@ export class MonitorStore {
     return row === null ? null : Row.parse(row);
   }
 
+  /**
+   * Deletes expired monitor data. Runs every minute tick with a bounded batch
+   * per table, so it keeps pace with up to 7.2 million rows a day per table
+   * without a single long statement.
+   */
   async prune(now: number): Promise<void> {
     const db = this.#db;
+    const limit = PRUNE_BATCH;
+
+    const prune = (sql: string, before: number): D1PreparedStatement =>
+      db.prepare(sql).bind(before, limit);
 
     await db.batch([
-      db
-        .prepare(`DELETE FROM metric_receipts WHERE (project_id, event_id) IN
-        (SELECT project_id, event_id FROM metric_receipts WHERE minute < ?1 LIMIT 16000)`)
-        .bind(now - DAY),
-      db
-        .prepare(`DELETE FROM metric_minutes WHERE (project_id, minute, environment) IN
-        (SELECT project_id, minute, environment FROM metric_minutes WHERE minute < ?1 LIMIT 16000)`)
-        .bind(now - 14 * DAY),
-      db
-        .prepare(`DELETE FROM monitor_observations WHERE id IN
-        (SELECT id FROM monitor_observations WHERE evaluated_at < ?1 LIMIT 16000)`)
-        .bind(now - 14 * DAY),
-      db
-        .prepare(`DELETE FROM cron_receipts WHERE (monitor_id, environment, run_id, phase) IN
-        (SELECT monitor_id, environment, run_id, phase FROM cron_receipts WHERE received_at < ?1 LIMIT 16000)`)
-        .bind(now - 14 * DAY),
-      db
-        .prepare(`DELETE FROM cron_runs WHERE (monitor_id, environment, generation, slot) IN
-        (SELECT monitor_id, environment, generation, slot FROM cron_runs WHERE received_at < ?1 LIMIT 16000)`)
-        .bind(now - 14 * DAY),
-      db
-        .prepare(`DELETE FROM metric_level_minutes WHERE (project_id, minute, environment, level) IN
-        (SELECT project_id, minute, environment, level FROM metric_level_minutes WHERE minute < ?1 LIMIT 16000)`)
-        .bind(now - 14 * DAY),
-      db
-        .prepare(`DELETE FROM metric_pending WHERE (project_id, event_id) IN
-        (SELECT project_id, event_id FROM metric_pending WHERE received_at < ?1 LIMIT 16000)`)
-        .bind(now - 14 * DAY),
+      // Receipts dedupe redeliveries, so they outlive the events queue's retries.
+      prune(
+        `DELETE FROM metric_receipts WHERE (project_id, event_id) IN
+        (SELECT project_id, event_id FROM metric_receipts WHERE minute < ?1 LIMIT ?2)`,
+        now - DAY,
+      ),
+      prune(
+        `DELETE FROM metric_level_minutes WHERE (project_id, minute, environment, level) IN
+        (SELECT project_id, minute, environment, level FROM metric_level_minutes WHERE minute < ?1 LIMIT ?2)`,
+        now - HISTORY,
+      ),
+      // A pending row the consumer never cleared belongs to a message that was
+      // lost. After two hours, longer than the 60-minute window plus its lag,
+      // it is treated as never accepted rather than holding windows unknown.
+      prune(
+        `DELETE FROM metric_pending WHERE (project_id, event_id) IN
+        (SELECT project_id, event_id FROM metric_pending WHERE received_at < ?1 LIMIT ?2)`,
+        now - 2 * HOUR,
+      ),
+      prune(
+        `DELETE FROM monitor_observations WHERE id IN
+        (SELECT id FROM monitor_observations WHERE evaluated_at < ?1 LIMIT ?2)`,
+        now - HISTORY,
+      ),
+      prune(
+        `DELETE FROM cron_checkins WHERE id IN
+        (SELECT id FROM cron_checkins WHERE date_added < ?1 LIMIT ?2)`,
+        now - CHECK_IN_HISTORY,
+      ),
+      prune(
+        `DELETE FROM cron_unrecognized WHERE (project_id, slug, environment, reason) IN
+        (SELECT project_id, slug, environment, reason FROM cron_unrecognized WHERE last_seen < ?1 LIMIT ?2)`,
+        now - CHECK_IN_HISTORY,
+      ),
+      // Deliveries cascade with their transitions.
+      prune(
+        `DELETE FROM monitor_transitions WHERE id IN
+        (SELECT id FROM monitor_transitions WHERE happened_at < ?1 LIMIT ?2)`,
+        now - INCIDENT_HISTORY,
+      ),
+      prune(
+        `DELETE FROM monitor_periods WHERE id IN
+        (SELECT id FROM monitor_periods WHERE closed_at < ?1 LIMIT ?2)`,
+        now - INCIDENT_HISTORY,
+      ),
+      prune(
+        `DELETE FROM monitor_audit WHERE (monitor_id, version) IN
+        (SELECT monitor_id, version FROM monitor_audit WHERE happened_at < ?1 LIMIT ?2)`,
+        now - INCIDENT_HISTORY,
+      ),
     ]);
   }
 

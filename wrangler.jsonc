@@ -78,7 +78,9 @@
       "namespace_id": "1004",
       "simple": { "limit": 10, "period": 60 },
     },
-    { "name": "CHECK_IN_RL", "namespace_id": "1003", "simple": { "limit": 60, "period": 60 } },
+    // Per project, monitor slug and environment: Sentry's default of six
+    // check-ins a minute per monitor environment (options/defaults.py).
+    { "name": "CHECK_IN_RL", "namespace_id": "1003", "simple": { "limit": 6, "period": 60 } },
     { "name": "INGEST_RL", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } },
     // The mobile app's API on the public ingest host, per client address: the
     // pairing exchange and every device-token lookup cost a D1 read, and no
@@ -99,6 +101,8 @@
   "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   "vars": {
     "UPTIME_ORIGINS": "",
+    // Only the end-to-end suite sets this, to its loopback shop fixture.
+    "UPTIME_FIXTURE_ORIGIN": "",
     "INGEST_HOST": "ingest.zentry.example.com",
     "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
     "ACCESS_AUD": "replace-with-the-access-application-audience-tag",

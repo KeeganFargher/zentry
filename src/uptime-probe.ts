@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { jsonText } from "@/shared/json";
-import { approvedUptimeTarget, productionUptimeTarget } from "@/shared/uptime";
+import { approvedUptimeTarget, fixtureTarget, productionUptimeTarget } from "@/shared/uptime";
 
 type ProbeEnv = {
   UPTIME_ORIGINS: string;
@@ -32,8 +32,7 @@ export default {
     const { url, organizationId } = input.data;
     const target = new URL(url);
 
-    const fixture =
-      env.FIXTURE_ORIGIN === "http://localhost:5199" && target.origin === env.FIXTURE_ORIGIN;
+    const fixture = fixtureTarget(target, env.FIXTURE_ORIGIN);
 
     if (env.UPTIME_PROBES_PAUSED !== "0") {
       return Response.json({ outcome: "unknown", reason: "paused" });

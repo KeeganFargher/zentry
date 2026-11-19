@@ -99,6 +99,7 @@ export function apiDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     organizations: new OrganizationStore(env.DB),
     projects: new ProjectStore(env.DB),
     uptimeOrigins: "",
+    uptimeFixtureOrigin: "",
     allowMonitorPreview: async () => true,
     monitorPreviews: new MonitorPreviews(env.DB),
     enqueueMonitorPreview: async () => {},

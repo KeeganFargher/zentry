@@ -231,6 +231,9 @@ function queue(statement: D1PreparedStatement): Step {
   return { statement, queues: true };
 }
 
+const DELETE_PENDING = `DELETE FROM metric_pending WHERE (project_id, event_id) IN (
+  SELECT value->>'p', value->>'e' FROM json_each(?1))`;
+
 export class BatchStore {
   readonly #db: D1Database;
 
@@ -286,6 +289,11 @@ export class BatchStore {
     }));
   }
 
+  /** Clears the metric pending rows of events dropped before the commit. */
+  async release(inputs: EventKey[]): Promise<void> {
+    await this.#db.prepare(DELETE_PENDING).bind(JSON.stringify(inputs)).run();
+  }
+
   /**
    * E1 to E9, as one transaction. Returns how many notifications it queued in
    * the outbox, so the caller knows whether to wake the notify consumer.
@@ -302,12 +310,7 @@ export class BatchStore {
       write(db.prepare(UPDATE_GROUPS).bind(aggregates)),
       write(db.prepare(INSERT_EVENTS).bind(JSON.stringify(writes.events))),
       write(db.prepare(INSERT_METRIC_EVENTS).bind(JSON.stringify(writes.metricEvents), now)),
-      write(
-        db
-          .prepare(`DELETE FROM metric_pending WHERE (project_id, event_id) IN (
-        SELECT value->>'p', value->>'e' FROM json_each(?1))`)
-          .bind(JSON.stringify(inputs)),
-      ),
+      write(db.prepare(DELETE_PENDING).bind(JSON.stringify(inputs))),
       write(db.prepare(UPSERT_GROUP_STATS).bind(JSON.stringify(writes.groupStats))),
       write(db.prepare(UPSERT_TAGS).bind(JSON.stringify(writes.tags))),
       write(db.prepare(UPSERT_PROJECT_STATS).bind(JSON.stringify(writes.projectStats))),

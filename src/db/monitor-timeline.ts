@@ -5,7 +5,8 @@ import type {
   MonitorCoverage,
   MonitorIncidentPeriod,
   MonitorDeliveryState,
-  CronReceiptView,
+  CronCheckInView,
+  CronUnrecognized,
   MonitorObservation,
   MonitorScope,
 } from "@/shared/contract";
@@ -56,10 +57,11 @@ export class MonitorTimeline {
 
   async scopes(id: string): Promise<MonitorScope[]> {
     const { results } = await this.#db
-      .prepare(`SELECT s.environment, s.health, s.next_at AS nextAt,
-      g.id AS issueId FROM cron_scopes s LEFT JOIN groups g
-      ON g.monitor_id = s.monitor_id AND g.monitor_scope = s.environment
-      WHERE s.monitor_id = ?1 ORDER BY s.environment`)
+      .prepare(`SELECT e.environment, e.health, e.next_checkin AS nextAt,
+        e.last_checkin AS lastCheckIn, g.id AS issueId
+      FROM cron_environments e LEFT JOIN groups g
+        ON g.monitor_id = e.monitor_id AND g.monitor_scope = e.environment
+      WHERE e.monitor_id = ?1 ORDER BY e.environment`)
       .bind(id)
       .all<MonitorScope>();
 
@@ -89,15 +91,26 @@ export class MonitorTimeline {
     return results;
   }
 
-  async checkIns(id: string): Promise<CronReceiptView[]> {
+  async checkIns(id: string): Promise<CronCheckInView[]> {
     const { results } = await this.#db
-      .prepare(`SELECT r.environment, r.run_id AS runId, r.status,
-      r.received_at AS receivedAt, run.slot, r.duration_ms AS durationMs
-      FROM cron_receipts r LEFT JOIN cron_runs run ON run.monitor_id = r.monitor_id
-        AND run.environment = r.environment AND run.run_id = r.run_id
-      WHERE r.monitor_id = ?1 ORDER BY r.received_at DESC LIMIT 25`)
+      .prepare(`SELECT check_in_id AS checkInId, environment, status,
+        CASE status WHEN 'missed' THEN NULL ELSE date_added END AS startedAt,
+        completed_at AS completedAt, duration_ms AS durationMs, expected_at AS expectedAt
+      FROM cron_checkins WHERE monitor_id = ?1 ORDER BY date_added DESC, id DESC LIMIT 50`)
       .bind(id)
-      .all<CronReceiptView>();
+      .all<CronCheckInView>();
+
+    return results;
+  }
+
+  async unrecognized(organizationId: number): Promise<CronUnrecognized[]> {
+    const { results } = await this.#db
+      .prepare(`SELECT u.project_id AS projectId, u.slug, u.environment, u.reason, u.count,
+        u.last_seen AS lastSeen
+      FROM cron_unrecognized u JOIN projects p ON p.id = u.project_id
+      WHERE p.organization_id = ?1 ORDER BY u.last_seen DESC LIMIT 50`)
+      .bind(organizationId)
+      .all<CronUnrecognized>();
 
     return results;
   }

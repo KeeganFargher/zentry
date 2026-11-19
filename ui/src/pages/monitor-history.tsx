@@ -116,13 +116,16 @@ export function CronCheckIns({ detail }: { detail: MonitorDetail }): JSX.Element
       <h2>SDK check-ins</h2>
       {detail.checkIns.length === 0 && <p className="muted">Waiting for the first check-in.</p>}
       <ul>
-        {detail.checkIns.map(({ runId, status, environment, receivedAt, slot, durationMs }) => (
-          <li key={`${environment}:${runId}:${status}`}>
-            {new Date(receivedAt).toLocaleString()} · {environment} · {status} ·{" "}
-            {slot === null ? "Unscheduled" : new Date(slot).toLocaleString()}
-            {durationMs === null ? "" : ` · ${durationMs} ms`}
-          </li>
-        ))}
+        {detail.checkIns.map(
+          ({ checkInId, status, environment, startedAt, expectedAt, durationMs }) => (
+            <li key={checkInId}>
+              {startedAt === null ? "Not sent" : new Date(startedAt).toLocaleString()} ·{" "}
+              {environment} · {status.replaceAll("_", " ")} · expected{" "}
+              {expectedAt === null ? "—" : new Date(expectedAt).toLocaleString()}
+              {durationMs === null ? "" : ` · ${durationMs} ms`}
+            </li>
+          ),
+        )}
       </ul>
     </section>
   );

@@ -75,6 +75,7 @@ export function consumerDeps(overrides: Partial<ConsumerDeps> = {}): ConsumerDep
     readState: (keys) => store.readState(keys),
     readStored: (keys) => store.readStored(keys),
     commit: (writes, now, inputs) => store.commit(writes, now, inputs),
+    release: (inputs) => store.release(inputs),
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),

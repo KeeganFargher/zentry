@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { MonitorPreviews } from "@/db/monitor-previews";
 import type { ProbeRequest, ProbeResult, UptimeMonitorStore } from "@/db/uptime-monitors";
+import { errorText, logError } from "@/shared/log";
 import type { UptimeJob } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
@@ -40,28 +41,63 @@ export async function handleUptimeBatch(
     binding,
   }: { store: UptimeMonitorStore; previews: MonitorPreviews; binding: Pick<Fetcher, "fetch"> },
 ): Promise<void> {
-  await Promise.all(
+  // Settled one by one, so one failing message does not retry its batch.
+  // A failure before the probe is claimed is retried; after the claim,
+  // runJob acknowledges it instead, because a retry cannot probe again.
+  await Promise.allSettled(
     batch.messages.map(async (message) => {
-      const job = Job.parse(message.body);
-
-      if ("previewId" in job) {
-        await runPreview(previews, binding, job.previewId);
+      try {
+        await runJob(Job.parse(message.body), { store, previews, binding });
         message.ack();
-
-        return;
+      } catch (cause) {
+        logError("uptime job failed before its probe; retrying", { error: errorText(cause) });
+        message.retry();
       }
-
-      const config = await store.start(job, Date.now());
-
-      // Once an attempt is claimed, retrying the message must not repeat the
-      // target request. If persistence fails, the expired lease records a gap.
-      if (config !== null) {
-        await store.finish(job, await requestProbe(binding, config), Date.now());
-      }
-
-      message.ack();
     }),
   );
+}
+
+async function runJob(
+  job: z.output<typeof Job>,
+  deps: { store: UptimeMonitorStore; previews: MonitorPreviews; binding: Pick<Fetcher, "fetch"> },
+): Promise<void> {
+  if ("previewId" in job) {
+    await runPreview(deps.previews, deps.binding, job.previewId);
+
+    return;
+  }
+
+  const config = await deps.store.start(job, Date.now());
+
+  if (config === null) {
+    return;
+  }
+
+  // Once an attempt is claimed, retrying the message must not repeat the
+  // target request. If saving the result fails, the expired lease records the
+  // slot as a coverage gap on the next tick.
+  try {
+    await deps.store.finish(job, await probeOrUnknown(deps.binding, config), Date.now());
+  } catch (cause) {
+    logError("uptime result was not saved; the slot will be a gap", { error: errorText(cause) });
+  }
+}
+
+/**
+ * The probe Worker failing is Zentry's failure, not the target's, so it is an
+ * unknown result: it resets the streak without counting as downtime.
+ */
+async function probeOrUnknown(
+  binding: Pick<Fetcher, "fetch">,
+  input: ProbeRequest,
+): Promise<ProbeResult> {
+  try {
+    return await requestProbe(binding, input);
+  } catch (cause) {
+    logError("uptime probe service failed", { error: errorText(cause) });
+
+    return { outcome: "unknown", reason: "probe_unavailable" };
+  }
 }
 
 async function runPreview(
@@ -75,12 +111,7 @@ async function runPreview(
     return;
   }
 
-  const result = await requestProbe(binding, configuration).catch((): ProbeResult => ({
-    outcome: "unknown",
-    reason: "network",
-  }));
-
-  await store.finish(id, result, Date.now());
+  await store.finish(id, await probeOrUnknown(binding, configuration), Date.now());
 }
 
 async function requestProbe(

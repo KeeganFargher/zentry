@@ -14,6 +14,7 @@ interface __BaseEnv_Env {
 	APP_API_RL: RateLimit;
 	ASSETS: Fetcher;
 	UPTIME_ORIGINS: string;
+	UPTIME_FIXTURE_ORIGIN: string;
 	INGEST_HOST: string;
 	ACCESS_TEAM_DOMAIN: string;
 	ACCESS_AUD: string;
@@ -39,7 +40,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "UPTIME_ORIGINS" | "INGEST_HOST" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "RETENTION_DAYS" | "MAX_STORED_PER_GROUP_HOUR" | "MONITOR_ALERTS_PAUSED" | "MONITOR_BELOW_COUNT_PAGING" | "APP_URL" | "MOBILE_API_URL" | "EMAIL_FROM" | "DEV_USER_EMAIL" | "EMAIL_SIGNING_KEY">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "UPTIME_ORIGINS" | "UPTIME_FIXTURE_ORIGIN" | "INGEST_HOST" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "RETENTION_DAYS" | "MAX_STORED_PER_GROUP_HOUR" | "MONITOR_ALERTS_PAUSED" | "MONITOR_BELOW_COUNT_PAGING" | "APP_URL" | "MOBILE_API_URL" | "EMAIL_FROM" | "DEV_USER_EMAIL" | "EMAIL_SIGNING_KEY">> {}
 }
 declare module "*.txt" {
 	const value: string;

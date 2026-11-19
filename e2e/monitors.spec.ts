@@ -1,7 +1,7 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { setTimeout as wait } from "node:timers/promises";
 
-import type { ApiMonitor, MonitorHistory, MonitorPreviewJob, MonitorDetail } from "@contract";
+import type { ApiMonitor, MonitorDetail, MonitorHistory, MonitorPreviewJob } from "@contract";
 import { expect, test } from "@playwright/test";
 import type { APIRequestContext } from "@playwright/test";
 import * as Sentry from "@sentry/node";
@@ -42,7 +42,7 @@ test("covered metric windows filter SDK errors and open at medium priority", asy
   page,
   request,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const fixture = await newProject(request, "Metric tiers");
 
   const created = await request.post(MONITORS, {
@@ -61,7 +61,9 @@ test("covered metric windows filter SDK errors and open at medium priority", asy
   });
 
   expect(created.status(), await created.text()).toBe(201);
-  const firstCoveredMinute = Math.ceil(Date.now() / 60_000) * 60_000;
+  // Coverage starts a minute after the monitor, once every ingest isolate's
+  // cached list of captured projects has had time to include this project.
+  const firstCoveredMinute = Math.ceil((Date.now() + 60_000) / 60_000) * 60_000;
   await wait(Math.max(0, firstCoveredMinute + 50 - Date.now()));
 
   await openShop(page, fixture, { environment: "production" });
@@ -83,7 +85,7 @@ test("an SDK check-in changes the health of its configured cron monitor", async 
       projectId: fixture.project.id,
       name: "Nightly import",
       type: "cron",
-      config: { slug: "nightly", environments: ["production"], intervalMinutes: 1440 },
+      config: { slug: "nightly", schedule: { type: "crontab", crontab: "0 3 * * *" } },
     },
   });
 
@@ -118,7 +120,7 @@ test("an uptime monitor runs a probe of an approved endpoint", async ({ request 
     projectId: project.id,
     name: "Fixture service",
     type: "uptime",
-    config: { url: "http://localhost:5199/", intervalMinutes: 1 },
+    config: { url: `${SHOP_URL}/`, intervalMinutes: 1 },
   };
 
   const denied = await request.post(MONITORS, {
@@ -228,7 +230,9 @@ async function checkIn(
   expect(response.ok(), await response.text()).toBe(true);
 }
 
-test("cron deduplicates check-ins and only recovers at an eligible slot", async ({ request }) => {
+test("a failed run opens a cron issue once and the next successful run resolves it", async ({
+  request,
+}) => {
   const fixture = await newProject(request, "Cron recovery");
 
   const created = await request.post(MONITORS, {
@@ -236,35 +240,35 @@ test("cron deduplicates check-ins and only recovers at an eligible slot", async 
       projectId: fixture.project.id,
       name: "Export",
       type: "cron",
-      config: {
-        slug: "export",
-        environments: ["production"],
-        intervalMinutes: 1,
-      },
+      config: { slug: "export", schedule: { type: "interval", count: 1, unit: "hour" } },
     },
   });
 
   expect(created.status(), await created.text()).toBe(201);
+  const { id } = await contractJson<ApiMonitor>(created);
 
-  const started = Date.now();
   const run = { id: crypto.randomUUID(), slug: "export" };
   await checkIn(request, fixture, { ...run, status: "in_progress" });
   await checkIn(request, fixture, { ...run, status: "error" });
+  // An SDK retry of the same result changes nothing.
   await checkIn(request, fixture, { ...run, status: "error" });
   const [open] = await waitForIssues(request, fixture, { issues: 1, events: 1 });
 
   expect(open).toMatchObject({ status: "unresolved", title: "Export" });
 
-  await checkIn(request, fixture, { ...run, id: crypto.randomUUID(), status: "ok" });
-
-  const [stillOpen] = await waitForIssues(request, fixture, { issues: 1, events: 1 });
-  expect(stillOpen?.status).toBe("unresolved");
-
-  await wait(Math.max(0, started + 30_500 - Date.now()));
+  // A run is recorded whenever it reports; there is no window it must land in.
   await checkIn(request, fixture, { ...run, id: crypto.randomUUID(), status: "ok" });
 
   const [resolved] = await waitForIssues(request, fixture, { issues: 1, events: 1 });
   expect(resolved).toMatchObject({ id: open?.id, status: "resolved" });
+
+  // The issue's incident period opened on the failure and closed on recovery.
+  const detail = await contractJson<MonitorDetail>(await request.get(`${MONITORS}${id}/`));
+  const [period] = detail.incidents;
+
+  expect(detail.incidents).toHaveLength(1);
+  expect(period?.disposition).toBe("recovered");
+  expect(period?.closedAt).toBeGreaterThanOrEqual(period?.openedAt ?? Number.POSITIVE_INFINITY);
 });
 
 test("cron detects a missed schedule and a run that exceeds its runtime", async ({ request }) => {
@@ -278,8 +282,7 @@ test("cron detects a missed schedule and a run that exceeds its runtime", async 
         type: "cron",
         config: {
           slug,
-          environments: ["production"],
-          intervalMinutes: slug === "missing" ? 1 : 60,
+          schedule: { type: "interval", count: slug === "missing" ? 1 : 60, unit: "minute" },
           maxRuntimeMinutes: 1,
         },
       },
@@ -375,7 +378,7 @@ test("a rejected check-in does not discard the error in its envelope", async ({ 
   await waitForIssues(request, fixture, { issues: 1, events: 1 });
 });
 
-test("cron tracks environments separately and rejects a completion past its runtime", async ({
+test("cron creates environments as their check-ins arrive and tracks them separately", async ({
   request,
 }) => {
   const fixture = await newProject(request, "Scoped cron");
@@ -385,12 +388,7 @@ test("cron tracks environments separately and rejects a completion past its runt
       projectId: fixture.project.id,
       name: "Scoped export",
       type: "cron",
-      config: {
-        slug: "scoped-export",
-        environments: ["production", "staging"],
-        intervalMinutes: 30,
-        maxRuntimeMinutes: 1,
-      },
+      config: { slug: "scoped-export", schedule: { type: "interval", count: 30, unit: "minute" } },
     },
   });
 
@@ -398,7 +396,7 @@ test("cron tracks environments separately and rejects a completion past its runt
   const { id } = await contractJson<ApiMonitor>(response);
   const run = { id: crypto.randomUUID(), slug: "scoped-export" };
   await checkIn(request, fixture, { ...run, status: "in_progress" });
-  await checkIn(request, fixture, { ...run, status: "ok", duration: 61 });
+  await checkIn(request, fixture, { ...run, status: "error", duration: 61 });
   await checkIn(request, fixture, {
     ...run,
     id: crypto.randomUUID(),
@@ -413,12 +411,20 @@ test("cron tracks environments separately and rejects a completion past its runt
       { environment: "production", health: "failing" },
       { environment: "staging", health: "healthy", issueId: null },
     ],
+    checkIns: expect.arrayContaining([
+      expect.objectContaining({
+        environment: "production",
+        status: "error",
+        checkInId: run.id.replaceAll("-", ""),
+        durationMs: 61_000,
+      }),
+    ]),
     observations: expect.arrayContaining([
       expect.objectContaining({
         scope: "production",
         evidence: expect.objectContaining({
-          outcome: "timed_out",
-          runId: run.id.replaceAll("-", ""),
+          outcome: "error",
+          checkInId: run.id.replaceAll("-", ""),
         }),
       }),
     ]),
@@ -464,7 +470,7 @@ test("uptime records a skipped slot and resets its consecutive failure count", a
     });
 });
 
-test("real JavaScript and captured Python SDK envelopes arm the configured cron scopes", async ({
+test("real JavaScript and captured Python SDK envelopes record runs in their environments", async ({
   request,
 }) => {
   const fixture = await newProject(request, "Stock SDK check-ins");
@@ -474,11 +480,7 @@ test("real JavaScript and captured Python SDK envelopes arm the configured cron 
       projectId: fixture.project.id,
       type: "cron",
       name: "Stock SDK",
-      config: {
-        slug: "stock-sdk",
-        environments: ["node-sdk", "python-fixture"],
-        intervalMinutes: 60,
-      },
+      config: { slug: "stock-sdk", schedule: { type: "interval", count: 1, unit: "hour" } },
     },
   });
 
@@ -658,40 +660,57 @@ test("uptime previews use the private queue and leave live monitor state untouch
   await expect(list.json()).resolves.toEqual([]);
 });
 
-test("a later cron success waits for an overlapping run and closes its incident in chronological order", async ({
+test("withMonitor creates its monitor from monitor_config and an unknown slug is listed", async ({
   request,
 }) => {
-  test.setTimeout(45_000);
-  const fixture = await newProject(request, "Overlapping runs");
-  const slug = "periodic";
+  const fixture = await newProject(request, "SDK-created cron");
 
-  const created = await request.post(MONITORS, {
-    data: {
-      projectId: fixture.project.id,
-      type: "cron",
-      name: "Periodic",
-      config: { slug, intervalMinutes: 1, maxRuntimeMinutes: 1, environments: ["production"] },
-    },
+  const client = Sentry.init({
+    dsn: fixture.key.dsn,
+    environment: "production",
+    defaultIntegrations: false,
   });
 
-  expect(created.status(), await created.text()).toBe(201);
-  const { id } = await contractJson<ApiMonitor>(created);
-  const started = Date.now();
+  if (client === undefined) {
+    throw new Error("Sentry Node SDK did not initialize");
+  }
 
-  await checkIn(request, fixture, { id: crypto.randomUUID(), slug, status: "in_progress" });
-  await wait(Math.max(0, started + 30_500 - Date.now()));
-  await checkIn(request, fixture, { id: crypto.randomUUID(), slug, status: "ok" });
+  await Sentry.withMonitor("Report Builder", async () => {}, {
+    schedule: { type: "crontab", value: "*/5 * * * *" },
+    checkinMargin: 2,
+    maxRuntime: 10,
+    timezone: "UTC",
+  });
+  Sentry.captureCheckIn({ monitorSlug: "never-configured", status: "ok" });
+  expect(await client.close(5000)).toBe(true);
 
-  const path = `${MONITORS}${id}/`;
-  const before = await request.get(path);
-  await expect(before.json()).resolves.toMatchObject({ observations: [], incidents: [] });
-  await tick(request, started + 65_000);
-  const result = await contractJson<MonitorDetail>(await request.get(path));
-  expect(result.observations.map(({ health }) => health)).toEqual(["healthy", "failing"]);
-  const period = result.incidents[0];
+  const list = await request.get(MONITORS, { params: { project: fixture.project.id } });
 
-  expect(period).toBeDefined();
-  expect(period?.closedAt).toBeGreaterThan(period?.openedAt ?? 0);
+  await expect(list.json()).resolves.toMatchObject([
+    {
+      type: "cron",
+      name: "report-builder",
+      health: "healthy",
+      config: {
+        slug: "report-builder",
+        schedule: { type: "crontab", crontab: "*/5 * * * *" },
+        graceMinutes: 2,
+        maxRuntimeMinutes: 10,
+      },
+    },
+  ]);
+
+  const unrecognized = await request.get(`${MONITORS}unrecognized-check-ins/`);
+
+  await expect(unrecognized.json()).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        projectId: fixture.project.id,
+        slug: "never-configured",
+        reason: "unknown_slug",
+      }),
+    ]),
+  );
 });
 
 test("the cron preview returns upcoming occurrences for a timezone-aware crontab", async ({
@@ -706,8 +725,7 @@ test("the cron preview returns upcoming occurrences for a timezone-aware crontab
       name: "Local clock",
       config: {
         slug: "local-clock",
-        environments: ["production"],
-        expression: "30 2 * * *",
+        schedule: { type: "crontab", crontab: "30 2 * * *" },
         timezone: "America/New_York",
       },
     },

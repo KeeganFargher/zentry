@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { nextCronOccurrence } from "@/core/cron-schedule";
+import { nextCheckIn } from "@/core/cron-schedule";
 import type { MonitorPreview, MonitorPreviewJob } from "@/shared/contract";
 import { jsonText } from "@/shared/json";
 import { CreateMonitor } from "@/shared/monitors";
@@ -107,7 +107,7 @@ async function readSignalPreview(
   let time = context.now;
 
   for (let index = 0; index < 5; index += 1) {
-    time = nextCronOccurrence(body.config, time);
+    time = nextCheckIn(body.config.schedule, body.config.timezone, time);
     occurrences.push(time);
   }
 

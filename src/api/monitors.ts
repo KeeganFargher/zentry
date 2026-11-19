@@ -1,11 +1,12 @@
 import { z } from "zod";
 
-import { nextCronOccurrence } from "@/core/cron-schedule";
+import { nextCheckIn } from "@/core/cron-schedule";
+import type { CronReplan } from "@/db/monitors";
 import type { MonitorHistory } from "@/shared/contract";
 import { CreateMonitor } from "@/shared/monitors";
-import type { NewMonitor } from "@/shared/monitors";
-import { DAY } from "@/shared/time";
-import { approvedUptimeTarget, productionUptimeTarget } from "@/shared/uptime";
+import type { CronSettings, NewMonitor } from "@/shared/monitors";
+import { DAY, MINUTE } from "@/shared/time";
+import { approvedUptimeTarget, fixtureTarget, productionUptimeTarget } from "@/shared/uptime";
 
 import type { ApiContext, Handler } from "./context";
 import {
@@ -38,7 +39,9 @@ export function validateMonitor(context: ApiContext, monitor: NewMonitor): strin
 
   if (monitor.type === "uptime") {
     const target = new URL(monitor.config.url);
-    const localFixture = isLocal(context.url) && target.origin === "http://localhost:5199";
+
+    const localFixture =
+      isLocal(context.url) && fixtureTarget(target, context.deps.uptimeFixtureOrigin);
 
     if (
       target.hostname === context.deps.ingestHost ||
@@ -52,7 +55,7 @@ export function validateMonitor(context: ApiContext, monitor: NewMonitor): strin
     monitor.config.url = target.href;
   }
 
-  return monitor.type === "cron" ? validateCron(monitor, context.now) : undefined;
+  return undefined;
 }
 
 function applicationTarget(target: URL, context: ApiContext, localFixture: boolean): boolean {
@@ -80,17 +83,32 @@ function validateMetric(
   return undefined;
 }
 
-function validateCron(
-  monitor: Extract<NewMonitor, { type: "cron" }>,
-  now: number,
-): string | undefined {
-  try {
-    nextCronOccurrence(monitor.config, now);
-  } catch {
-    return "invalid crontab or timezone";
+/**
+ * The next expected check-in for a cron monitor's environments, counted from
+ * now so a new or resumed schedule cannot miss slots retroactively.
+ */
+function cronPlan(config: CronSettings, now: number): NonNullable<CronReplan> {
+  const next = nextCheckIn(config.schedule, config.timezone, now);
+
+  return { nextCheckIn: next, nextCheckInLatest: next + config.graceMinutes * MINUTE };
+}
+
+/**
+ * A re-plan only when the edit changes when check-ins are expected. Changing
+ * thresholds or the runtime keeps the current expectation, so an edit cannot
+ * push back a miss that is already due.
+ */
+/** The settings that decide when a check-in is expected. */
+function timing({ schedule, timezone, graceMinutes }: CronSettings): string {
+  return JSON.stringify({ schedule, timezone, graceMinutes });
+}
+
+function editReplan(current: NewMonitor, edited: NewMonitor, now: number): CronReplan {
+  if (current.type !== "cron" || edited.type !== "cron") {
+    return null;
   }
 
-  return undefined;
+  return timing(current.config) === timing(edited.config) ? null : cronPlan(edited.config, now);
 }
 
 function conflict(): Response {
@@ -162,6 +180,10 @@ export const listMonitors: Handler = async (context) => {
 
   return Response.json(await context.deps.monitors.list(context.organizationId, scope));
 };
+
+/** Check-ins accepted for no monitor, so a misnamed slug is visible. */
+export const unrecognizedCheckIns: Handler = async (context) =>
+  Response.json(await context.deps.monitors.timeline.unrecognized(context.organizationId));
 
 export const getMonitor: Handler = async (context, args) => {
   const [id] = readParams(args, MonitorId);
@@ -241,6 +263,7 @@ export const editMonitor: Handler = async (context, args) => {
     version,
     userId: context.user.id,
     time: context.now,
+    replan: editReplan(current, monitor, context.now),
   });
 
   return updated === null ? conflict() : Response.json(updated);
@@ -259,10 +282,13 @@ export const setMonitorStatus: Handler = async (context, args) => {
     return notFound();
   }
 
+  const resumesCron = current.type === "cron" && status.status === "active";
+
   const updated = await context.deps.monitors.setStatus(id, {
     ...status,
     userId: context.user.id,
     time: context.now,
+    replan: resumesCron ? cronPlan(current.config, context.now) : null,
   });
 
   return updated === null ? conflict() : Response.json(updated);

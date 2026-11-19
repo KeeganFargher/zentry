@@ -206,14 +206,9 @@ export type MonitorDeliveryState = {
   suppression: string | null;
 };
 
-export type CronReceiptView = {
-  environment: string;
-  runId: string;
-  status: string;
-  receivedAt: number;
-  slot: number | null;
-  durationMs: number | null;
-};
+import type { CronCheckInView } from "./cron";
+
+export type { CronCheckInView, CronUnrecognized } from "./cron";
 
 export type MonitorHistory = { observations: MonitorObservation[]; nextCursor: string | null };
 
@@ -229,7 +224,9 @@ export type MonitorAudit = {
 export type MonitorScope = {
   environment: string;
   health: ApiMonitor["health"];
+  /** When the next check-in is expected, before its margin. */
   nextAt: number | null;
+  lastCheckIn: number | null;
   issueId: number | null;
 };
 
@@ -278,7 +275,7 @@ export type MonitorDetail = {
   coverage: MonitorCoverage | null;
   incidents: MonitorIncidentPeriod[];
   deliveries: MonitorDeliveryState[];
-  checkIns: CronReceiptView[];
+  checkIns: CronCheckInView[];
 };
 
 export type ApiIssueList = { issues: ApiIssue[]; nextCursor: string | null };

@@ -45,6 +45,7 @@ import {
   monitorHistory,
   muteMonitor,
   setMonitorStatus,
+  unrecognizedCheckIns,
 } from "./monitors";
 import {
   getIssueSubscription,
@@ -101,6 +102,7 @@ const ROUTES: Route<Handler>[] = [
   route("POST", `/organizations/${ORG}/monitor-previews`, previewMonitor),
   route("GET", `/organizations/${ORG}/monitor-previews/([0-9a-f-]+)`, getMonitorPreview),
   route("GET", `/organizations/${ORG}/monitors`, listMonitors),
+  route("GET", `/organizations/${ORG}/monitors/unrecognized-check-ins`, unrecognizedCheckIns),
   route("GET", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, getMonitor),
   route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)`, editMonitor),
   route("PUT", `/organizations/${ORG}/monitors/([0-9a-f-]+)/status`, setMonitorStatus),

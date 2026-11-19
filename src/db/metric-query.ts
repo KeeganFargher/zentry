@@ -60,7 +60,11 @@ export const evaluateMetricQuery = `WITH due AS MATERIALIZED (
         )
         UPDATE monitors SET evaluated_at = ?1, severity = nextSeverity,
           last_result = json_object('count', decisions.count, 'windowEnd', ?1,
-            'windowStart', decisions.windowStart, 'coverage', decisions.covered, 'severity', nextSeverity),
+            'windowStart', decisions.windowStart, 'coverage', decisions.covered, 'severity', nextSeverity,
+            'comparator', json_extract(decisions.config, '$.comparator'),
+            'threshold', json_extract(decisions.config, '$.threshold'),
+            'warningThreshold', json_extract(decisions.config, '$.warningThreshold'),
+            'recoveryThreshold', json_extract(decisions.config, '$.recoveryThreshold')),
           health = CASE
             WHEN decisions.started_at > decisions.windowStart THEN 'awaiting_data'
             WHEN NOT decisions.covered THEN 'unknown'

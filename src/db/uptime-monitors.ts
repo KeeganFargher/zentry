@@ -9,12 +9,24 @@ export type ProbeResult = {
   outcome: "ok" | "failed" | "unknown";
   httpStatus?: number | undefined;
   durationMs?: number | undefined;
-  reason?: "policy" | "timeout" | "network" | "status" | "budget" | "paused" | undefined;
+  reason?:
+    | "policy"
+    | "timeout"
+    | "network"
+    | "status"
+    | "budget"
+    | "paused"
+    | "probe_unavailable"
+    | undefined;
 };
 
 export type ProbeRequest = { config: UptimeSettings; organizationId: number };
 
 const Config = jsonText(UptimeConfig);
+
+// Probes leased per minute tick, overall and per organization.
+const UPTIME_CLAIMS_PER_TICK = 100;
+const UPTIME_CLAIMS_PER_ORGANIZATION = 25;
 
 export class UptimeMonitorStore {
   readonly #db: D1Database;
@@ -23,21 +35,40 @@ export class UptimeMonitorStore {
     this.#db = db;
   }
 
+  /**
+   * Leases the uptime monitors due in this slot. The longest-unclaimed go
+   * first and each organization gets at most UPTIME_CLAIMS_PER_ORGANIZATION
+   * per tick, so a backlog rotates through every monitor instead of always
+   * favouring the lowest IDs, and one organization cannot take every slot.
+   */
   async claim(claim: Claim): Promise<{ id: string }[]> {
     await this.#markGaps(claim);
 
     const { results } = await this.#db
       .prepare(`
-      UPDATE monitors SET lease_token = ?2, lease_expires = ?3, slot = ?1, probe_started = 0
+      UPDATE monitors SET lease_token = ?2, lease_expires = ?3, slot = ?1, probe_started = 0, claimed_at = ?1
       WHERE id IN (
-        SELECT id FROM monitors
-        WHERE type = 'uptime' AND status = 'active' AND created_at <= ?1
-          AND (lease_expires IS NULL OR lease_expires <= ?4)
-          AND (evaluated_at IS NULL OR evaluated_at + json_extract(config,'$.intervalMinutes') * 60000 <= ?1)
-        ORDER BY evaluated_at, id LIMIT 100
+        SELECT id FROM (
+          SELECT m.id, m.claimed_at, ROW_NUMBER() OVER (
+            PARTITION BY p.organization_id ORDER BY m.claimed_at IS NOT NULL, m.claimed_at, m.id
+          ) AS turn
+          FROM monitors m JOIN projects p ON p.id = m.project_id
+          WHERE m.type = 'uptime' AND m.status = 'active' AND m.created_at <= ?1
+            AND (m.lease_expires IS NULL OR m.lease_expires <= ?4)
+            AND (m.evaluated_at IS NULL OR m.evaluated_at + json_extract(m.config,'$.intervalMinutes') * 60000 <= ?1)
+        )
+        WHERE turn <= ?5
+        ORDER BY claimed_at IS NOT NULL, claimed_at, id LIMIT ?6
       )
       RETURNING id`)
-      .bind(claim.slot, claim.token, claim.now + MINUTE, claim.now)
+      .bind(
+        claim.slot,
+        claim.token,
+        claim.now + MINUTE,
+        claim.now,
+        UPTIME_CLAIMS_PER_ORGANIZATION,
+        UPTIME_CLAIMS_PER_TICK,
+      )
       .all<{ id: string }>();
 
     return results;

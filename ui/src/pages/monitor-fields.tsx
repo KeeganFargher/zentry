@@ -6,12 +6,6 @@ type FieldsProps = { initial: ApiMonitor | undefined };
 const WINDOWS = [300, 900, 3600];
 const INTERVALS = [1, 5, 10, 20, 30, 60];
 
-function cronText(
-  schedule: { intervalMinutes: number } | { expression: string; timezone: string },
-): { expression: string; timezone: string } {
-  return "expression" in schedule ? schedule : { expression: "", timezone: "UTC" };
-}
-
 function MetricWindow({ value }: { value: number }): JSX.Element {
   return (
     <label>
@@ -107,8 +101,10 @@ function NumberField({
 
 function StreakFields({
   settings,
+  max,
 }: {
   settings: { failureThreshold: number; recoveryThreshold: number };
+  max: number;
 }): JSX.Element {
   return (
     <>
@@ -116,80 +112,93 @@ function StreakFields({
         label="Failures to open"
         name="failures"
         min={1}
-        max={10}
+        max={max}
         value={settings.failureThreshold}
       />
       <NumberField
         label="Successes to recover"
         name="recoveries"
         min={1}
-        max={10}
+        max={max}
         value={settings.recoveryThreshold}
       />
     </>
   );
 }
 
-function cronInterval(schedule: { intervalMinutes: number } | { expression: string }): number {
-  return "intervalMinutes" in schedule ? schedule.intervalMinutes : 1440;
+const INTERVAL_UNITS = ["minute", "hour", "day", "week", "month", "year"] as const;
+
+type CronSchedule = Extract<ApiMonitor, { type: "cron" }>["config"]["schedule"];
+
+function CronScheduleFields({ schedule }: { schedule: CronSchedule }): JSX.Element {
+  const crontab = schedule.type === "crontab" ? schedule.crontab : "0 0 * * *";
+  const interval = schedule.type === "interval" ? schedule : { count: 1, unit: "day" };
+
+  return (
+    <>
+      <label>
+        Schedule type
+        <select name="scheduleType" defaultValue={schedule.type}>
+          <option value="crontab">Crontab</option>
+          <option value="interval">Interval</option>
+        </select>
+      </label>
+      <label>
+        Crontab <input name="crontab" defaultValue={crontab} />
+      </label>
+      <NumberField label="Every" name="intervalCount" min={1} max={1000} value={interval.count} />
+      <label>
+        Interval unit
+        <select name="intervalUnit" defaultValue={interval.unit}>
+          {INTERVAL_UNITS.map((unit) => (
+            <option key={unit} value={unit}>
+              {unit}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
 }
 
+const CRON_DEFAULTS = {
+  slug: "",
+  schedule: { type: "crontab", crontab: "0 0 * * *" },
+  timezone: "UTC",
+  graceMinutes: 1,
+  maxRuntimeMinutes: 30,
+  failureThreshold: 1,
+  recoveryThreshold: 1,
+} satisfies Extract<ApiMonitor, { type: "cron" }>["config"];
+
 function CronFields({ initial }: FieldsProps): JSX.Element {
-  const config = initial?.type === "cron" ? initial.config : undefined;
-
-  const {
-    slug = "",
-    environments = ["production"],
-    graceMinutes = 1,
-    maxRuntimeMinutes = 30,
-  } = config ?? {};
-
-  const schedule = config ?? { intervalMinutes: 1440 };
-
-  const { expression, timezone } = cronText(schedule);
+  const config = initial?.type === "cron" ? initial.config : CRON_DEFAULTS;
 
   return (
     <>
       <label>
         SDK monitor slug{" "}
-        <input name="slug" required defaultValue={slug} readOnly={initial !== undefined} />
+        <input name="slug" required defaultValue={config.slug} readOnly={initial !== undefined} />
       </label>
+      <CronScheduleFields schedule={config.schedule} />
       <label>
-        Environments <input name="environments" required defaultValue={environments.join(", ")} />
+        Timezone <input name="timezone" defaultValue={config.timezone} />
       </label>
       <NumberField
-        label="Interval (minutes)"
-        name="interval"
-        min={1}
-        max={10080}
-        value={cronInterval(schedule)}
-      />
-      <label>
-        Crontab{" "}
-        <input
-          name="expression"
-          defaultValue={expression}
-          placeholder="Optional, overrides interval"
-        />
-      </label>
-      <label>
-        Crontab timezone <input name="timezone" defaultValue={timezone} />
-      </label>
-      <NumberField
-        label="Start grace (minutes)"
+        label="Grace period (minutes)"
         name="grace"
         min={1}
-        max={1440}
-        value={graceMinutes}
+        max={40320}
+        value={config.graceMinutes}
       />
       <NumberField
         label="Maximum runtime (minutes)"
         name="runtime"
         min={1}
-        max={1440}
-        value={maxRuntimeMinutes}
+        max={10080}
+        value={config.maxRuntimeMinutes}
       />
-      <StreakFields settings={config ?? { failureThreshold: 1, recoveryThreshold: 1 }} />
+      <StreakFields settings={config} max={720} />
     </>
   );
 }

@@ -28,22 +28,24 @@ function field(data: FormData, name: string): string {
 }
 
 function cronSettings(data: FormData): Json {
-  const expression = field(data, "expression");
+  const schedule =
+    field(data, "scheduleType") === "interval"
+      ? {
+          type: "interval",
+          count: Number(field(data, "intervalCount")),
+          unit: field(data, "intervalUnit"),
+        }
+      : { type: "crontab", crontab: field(data, "crontab") };
 
-  const scope = {
+  return {
     slug: field(data, "slug"),
-    environments: field(data, "environments")
-      .split(",")
-      .map((name) => name.trim()),
+    schedule,
+    timezone: field(data, "timezone"),
     graceMinutes: Number(field(data, "grace")),
     failureThreshold: Number(field(data, "failures")),
     recoveryThreshold: Number(field(data, "recoveries")),
     maxRuntimeMinutes: Number(field(data, "runtime")),
   };
-
-  return expression === ""
-    ? { ...scope, intervalMinutes: Number(field(data, "interval")) }
-    : { ...scope, expression, timezone: field(data, "timezone") };
 }
 
 function signal(data: FormData, type: ApiMonitor["type"]): Json {

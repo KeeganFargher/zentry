@@ -2,15 +2,15 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { processMessages } from "@/consumer/handler";
-import { nextCronOccurrence } from "@/core/cron-schedule";
 import { signUnsubscribe } from "@/core/unsubscribe";
 import { sweepOutbox } from "@/cron/notify";
-import { CronMonitorStore } from "@/db/cron-monitors";
+import { CronStore } from "@/db/cron-store";
 import { DeviceStore } from "@/db/devices";
 import { IssueStore } from "@/db/issues";
 import { MonitorRuleStore } from "@/db/monitor-rules";
 import { MonitorStore } from "@/db/monitors";
 import { NotificationSettingsStore } from "@/db/notify-settings";
+import { receiveCheckIn } from "@/ingest/cron-receive";
 import { flushDigest } from "@/notify/alerts";
 import type { MailDeps } from "@/notify/deps";
 import { drainOutbox } from "@/notify/handler";
@@ -643,7 +643,7 @@ describe("notification settings API", () => {
   });
 });
 
-it("delivers one email and device link per transition and fences a throttled incident's recovery", async () => {
+it("delivers one email and device link per transition and never throttles a recovery", async () => {
   const { organizationId, projectId, alice } = await setup();
   const harness = notifyHarness();
   const devices = new DeviceStore(env.DB);
@@ -681,7 +681,7 @@ it("delivers one email and device link per transition and fences a throttled inc
     notify: true,
     alertRuleIds: [rule.id],
     type: "cron",
-    config: { slug: "batch", intervalMinutes: 1, environments: ["production"] },
+    config: { slug: "batch", schedule: { type: "interval", count: 1, unit: "minute" } },
   });
 
   const monitor = await new MonitorStore(env.DB).create(organizationId, configuration, {
@@ -694,12 +694,13 @@ it("delivers one email and device link per transition and fences a throttled inc
     throw new Error("monitor was not created");
   }
 
-  const cron = new CronMonitorStore(env.DB, nextCronOccurrence);
+  const cron = new CronStore(env.DB);
 
+  // Each check-in is sent twice, as an SDK retry would; the copy changes nothing.
   const attempt = async (offset: number, status: "ok" | "error"): Promise<void> => {
     const data = CheckIn.parse({ check_in_id: crypto.randomUUID(), monitor_slug: "batch", status });
-    expect(await cron.record(projectId, data, NOW + offset * MINUTE)).toBe(true);
-    expect(await cron.record(projectId, data, NOW + offset * MINUTE)).toBe(true);
+    await receiveCheckIn(cron, { projectId, checkIn: data, now: NOW + offset * MINUTE });
+    await receiveCheckIn(cron, { projectId, checkIn: data, now: NOW + offset * MINUTE });
     await drainAll(harness);
   };
 
@@ -720,5 +721,69 @@ it("delivers one email and device link per transition and fences a throttled inc
   ]);
   const timeline = await new MonitorStore(env.DB).timeline.deliveries(monitor.id);
 
-  expect(timeline.filter(({ suppression }) => suppression === "throttled")).toHaveLength(4);
+  // The second failure is throttled on both channels. Its recovery is not
+  // throttled, but it reaches nobody: no one was told about that failure.
+  expect(timeline.filter(({ suppression }) => suppression === "throttled")).toHaveLength(2);
+});
+
+it("pages a high-priority rule when a medium incident escalates, and sends its recovery", async () => {
+  const { organizationId, projectId, alice } = await setup();
+  const harness = notifyHarness();
+  const minute = Math.floor(NOW / MINUTE) * MINUTE;
+
+  const rule = await new MonitorRuleStore(env.DB).create(
+    organizationId,
+    MonitorRule.parse({
+      name: "High only",
+      channels: ["email"],
+      triggers: ["failure", "recovery"],
+      priority: "high",
+      audience: { kind: "owner" },
+    }),
+  );
+
+  if (rule === null) {
+    throw new Error("monitor alert rule was not created");
+  }
+
+  const monitors = new MonitorStore(env.DB);
+
+  await monitors.create(
+    organizationId,
+    CreateMonitor.parse({
+      projectId,
+      name: "Checkout errors",
+      ownerId: alice.id,
+      notify: true,
+      alertRuleIds: [rule.id],
+      type: "metric",
+      config: { windowSeconds: 300, threshold: 3, warningThreshold: 1 },
+    }),
+    { time: minute, userId: alice.id, requestKey: null },
+  );
+
+  // Counts per minute, written as the consumer's rollup would.
+  const count = async (at: number, value: number): Promise<void> => {
+    await env.DB.prepare(
+      `INSERT INTO metric_level_minutes (project_id, minute, environment, level, count)
+       VALUES (?1, ?2, 'production', 'error', ?3)`,
+    )
+      .bind(projectId, at, value)
+      .run();
+  };
+
+  // Medium, then high, then healthy, in three covered five-minute windows.
+  await count(minute + 2 * MINUTE, 1);
+  await monitors.evaluateMetrics(minute + 6 * MINUTE);
+  await drainAll(harness);
+  await count(minute + 8 * MINUTE, 3);
+  await monitors.evaluateMetrics(minute + 12 * MINUTE);
+  await drainAll(harness);
+  await monitors.evaluateMetrics(minute + 18 * MINUTE);
+  await drainAll(harness);
+
+  expect(harness.sent.map(({ subject }) => subject)).toEqual([
+    expect.stringContaining("failure"),
+    expect.stringContaining("recovery"),
+  ]);
 });

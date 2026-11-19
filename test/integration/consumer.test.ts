@@ -103,7 +103,9 @@ describe("consumer", () => {
         .first(),
     ).toEqual({ minute: firstMinute + MINUTE });
 
-    await store.evaluateMetrics(firstMinute + 5 * MINUTE);
+    // Coverage starts a minute after the monitor (metric_capture_started), so
+    // the first covered five-minute window ends at minute six.
+    await store.evaluateMetrics(firstMinute + 6 * MINUTE);
     expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
       health: "failing",
       severity: "high",
@@ -451,6 +453,54 @@ describe("consumer", () => {
     await processMessages([bad], consumerDeps());
 
     expect(await groupsOf(project.id)).toEqual([]);
+  });
+
+  it("releases the metric pending row of an event it drops", async () => {
+    const project = await createProject();
+
+    const bad = {
+      ...message({ projectId: project.id, index: 2, event: {} }),
+      payload: "{not json",
+    };
+
+    await env.DB.prepare(
+      "INSERT INTO metric_pending(project_id, event_id, received_at) VALUES (?1, ?2, ?3)",
+    )
+      .bind(project.id, bad.event_id, NOW)
+      .run();
+
+    await processMessages([bad], consumerDeps());
+
+    // Left behind, it would hold every metric window containing it as unknown.
+    expect(await count("metric_pending", project.id)).toBe(0);
+  });
+
+  it("fails a below-threshold metric when no events arrive, as Sentry does", async () => {
+    const { id: projectId } = await createProject();
+    const store = new MonitorStore(env.DB);
+    const minute = Math.floor(NOW / MINUTE) * MINUTE;
+    const actor = await addMember(1);
+
+    await store.create(
+      1,
+      CreateMonitor.parse({
+        projectId,
+        name: "Too quiet",
+        type: "metric",
+        config: { windowSeconds: 300, threshold: 5, comparator: "lt" },
+      }),
+      { userId: actor.id, time: minute, requestKey: null },
+    );
+
+    // A covered window with no events counts as zero. Paging on it stays off
+    // until MONITOR_BELOW_COUNT_PAGING is enabled (src/notify/jobs.ts).
+    await store.evaluateMetrics(minute + 6 * MINUTE);
+
+    expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
+      health: "failing",
+      severity: "high",
+    });
+    expect(await groupsOf(projectId)).toEqual([expect.objectContaining({ status: "unresolved" })]);
   });
 
   it("still stores other projects' events when one project was deleted in flight", async () => {

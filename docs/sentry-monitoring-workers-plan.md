@@ -106,8 +106,8 @@ Keep configuration, scheduling and incident state in the existing D1 database in
 | `monitor_scopes`                                        | `(monitor_id, scope_key)`, indexed next deadline, generation, health, streaks, most recent observation and active incident. A metric or uptime monitor usually has one scope. Cron has one per tracked environment.                                   |
 | `monitor_jobs`                                          | Unique logical job identity, due and expiry times, lease token/expiry, state, completion and retry count. Partial due/lease indexes and scheduled cleanup.                                                                                            |
 | `monitor_observations`                                  | Unique logical observation per revision/scope/slot, status, evidence and evaluator/finalization times. Timeline index on monitor, scope and scheduled time. Keep secrets, response bodies and raw telemetry out of this record.                       |
-| `cron_runs`, `cron_checkin_receipts`                    | Pair check-ins by monitor, scope and SDK check-in ID. Record scheduled, started, completed and received times, runtime, terminal result and dedupe identity. Index pending runtime deadlines.                                                         |
-| `metric_minutes`, ingestion dedupe and watermarks       | Key rollups by dataset, project, minute and bounded dimensions. Track input coverage as well as values. Dedupe identity lifetime must cover accepted ingest and queue replay horizons.                                                                |
+| `cron_environments`, `cron_checkins` (as built)         | Pair check-ins by monitor, scope and SDK check-in ID. Record scheduled, started, completed and received times, runtime, terminal result and dedupe identity. Index pending runtime deadlines.                                                         |
+| `metric_level_minutes`, receipts and pending inputs     | Key rollups by dataset, project, minute and bounded dimensions. Track input coverage as well as values. Dedupe identity lifetime must cover accepted ingest and queue replay horizons.                                                                |
 | `monitor_incident_periods`, alert rules and alert links | Stable issue association per scope, open/close times and disposition, state transition ID, rule attachments and a unique notification intent per transition/rule/channel/recipient. Keep issue and transition evidence after detailed samples expire. |
 
 Use foreign keys and tenant-scoped queries. Add explicit lifecycle handling for project deletion, including pending jobs and retained evidence. Start with 14 days of full observations, 7 days of job diagnostics and 90 days of hourly/daily summaries and incident periods, subject to load tests and the project’s data policy. Keep replay protection for the actual accepted replay horizon even where job diagnostics expire sooner. Use batched, indexed pruning. Count rows and index writes using D1 response metadata and check query plans before adding dimensions. D1’s paid per-database ceiling is 10 GB, and each database processes queries serially. [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) · [D1 billing metrics](https://developers.cloudflare.com/d1/platform/pricing/)
@@ -156,6 +156,41 @@ Cron monitors observe jobs run by the application, a CI platform or another sche
 For mixed envelopes, validate and route supported items independently while authenticating the envelope once. Return success after required work is durably accepted. A partial infrastructure failure can cause the SDK to resend the envelope, so dedupe each supported item using its native identity. Keep the legacy error store route and measure existing SDK error ingest latency during the rollout. Add a separate check-in work/burst budget and compatible SDK rate-limit outcomes. Treat check-ins from a public DSN as claims from the application. An environment allowlist, rate limits and diagnostic audit events limit the effect of fabricated runs. If a project needs stronger assurance, require a revocable server-side ingest credential for its cron monitors. A direct ping integration or management endpoint can follow if a real job needs it.
 
 **Example.** A 02:00 UTC job with three minutes of grace and 20 minutes of runtime starts at 02:02. The missing-start scanner sees that receipt and the runtime scanner waits until 02:22. If the completion was durably accepted before the deadline and the queue is slow, the deadline evaluator still sees the receipt. If the job never completes, the finalized result is timed out at 02:22. Two different environments have independent incident streaks.
+
+### Implementation notes after review (19 November 2026)
+
+The first implementation followed this section's slot-matching design and
+review found it diverges from Sentry in ways that break real jobs. These
+decisions were reversed to match Sentry's monitor consumer and clock tasks:
+
+- **Every check-in creates a row.** There is no early tolerance or eligibility
+  window. A heartbeat that arrives after its margin, a manual run and a late
+  run are recorded and shown next to the missed slot, instead of being
+  acknowledged and discarded.
+- **Each real check-in re-anchors the schedule**, from the minute its run
+  started, so a drifting interval job stays in step. A missed slot is
+  backdated to its expected time and does not move the anchor.
+- **Missed slots get one row each.** A tick catches up at most ten per
+  environment, and the next tick continues, rather than marking a backlog
+  unknown.
+- **Late results.** A late result after a timeout records its completion and
+  duration but stays timed out. A result for a run older than the latest
+  decided one is recorded without changing the streaks.
+- **Environments are created by their first check-in**, up to 20 per monitor,
+  instead of an allowlist. The SDK slug is slugified as Sentry does.
+- **SDK check-ins that cannot apply are still accepted.** Unknown slugs,
+  paused monitors and limits are counted under `cron_unrecognized` and listed
+  by the API. An unknown slug with `monitor_config` creates the monitor once.
+  The UI owns it after that, where Sentry would keep upserting it.
+- **Rate limits and bounds are Sentry's.** Six check-ins a minute per
+  monitor environment, a margin up to 28 days, a runtime up to 7 days,
+  thresholds up to 720, and minute to year intervals.
+- **Edits keep incidents.** Editing a cron monitor re-plans the next check-in
+  and keeps its streaks and open incidents, because a new margin does not fix
+  a failing job.
+
+The rules are pure functions in `src/core/cron-checkins.ts`. They are written
+through a compare-and-swap on `cron_environments` (`src/db/cron-write.ts`).
 
 ## 7. Uptime monitors
 

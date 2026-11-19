@@ -8,7 +8,6 @@ import { EventBlobs } from "@/blobs/events";
 import { SpillStore } from "@/blobs/spill";
 import { handleBatch } from "@/consumer/handler";
 import type { ConsumerDeps } from "@/consumer/handler";
-import { nextCronOccurrence } from "@/core/cron-schedule";
 import { evaluateMonitors } from "@/cron/monitors";
 import { runWeeklyReports, sweepOutbox } from "@/cron/notify";
 import type { NotifyCronDeps } from "@/cron/notify";
@@ -20,13 +19,13 @@ import { runSpikeProtection } from "@/cron/spike";
 import type { SpikeDeps } from "@/cron/spike";
 import { handleUptimeBatch } from "@/cron/uptime";
 import { BatchStore } from "@/db/batch";
-import { CronMonitorStore } from "@/db/cron-monitors";
+import { CronStore } from "@/db/cron-store";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
 import { MailStore } from "@/db/mail";
-import { enqueueMetricInput } from "@/db/metric-input";
+import { enqueueMetricInput, MetricCapture } from "@/db/metric-input";
 import { MonitorPreviews } from "@/db/monitor-previews";
 import { MonitorRuleStore } from "@/db/monitor-rules";
 import { MonitorStore } from "@/db/monitors";
@@ -42,6 +41,7 @@ import { TenancyStore } from "@/db/tenancy";
 import { UptimeMonitorStore } from "@/db/uptime-monitors";
 import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
+import { receiveCheckIn } from "@/ingest/cron-receive";
 import { handleIngest, matchIngestRoute } from "@/ingest/handler";
 import type { IngestDeps } from "@/ingest/handler";
 import { rejected } from "@/ingest/http";
@@ -57,6 +57,7 @@ import type { NotifyMessage, QueueMessage } from "@/shared/types";
 // Per-isolate caches, shared by every request the isolate serves.
 let keyCache: KeyCache | undefined;
 let usageCache: UsageCache | undefined;
+let metricCapture: MetricCapture | undefined;
 let accessVerifier: AccessVerifier | undefined;
 const sessions = new Sessions();
 
@@ -64,25 +65,25 @@ const sessions = new Sessions();
 const expo = new ExpoPush((input, init) => fetch(input, init));
 
 function ingestDeps(env: Env): IngestDeps {
-  const keyStore = new KeyStore(env.DB);
-  const spill = new SpillStore(env.BLOBS);
-
-  const usageStore = new UsageStore(env.DB);
-
-  keyCache ??= new KeyCache((publicKey) => keyStore.findActive(publicKey));
-  usageCache ??= new UsageCache((organizationId, month) =>
-    usageStore.received(organizationId, month),
+  // The caches outlive this request, so their lookups open their own stores.
+  keyCache ??= new KeyCache((publicKey) => new KeyStore(env.DB).findActive(publicKey));
+  usageCache ??= new UsageCache((organization, month) =>
+    new UsageStore(env.DB).received(organization, month),
   );
 
+  const capture = (metricCapture ??= new MetricCapture(env.DB));
+
   return {
-    allowCheckIn: async (publicKey) => (await env.CHECK_IN_RL.limit({ key: publicKey })).success,
+    allowCheckIn: async (key) => (await env.CHECK_IN_RL.limit({ key })).success,
     recordCheckIn: (projectId, checkIn, now) =>
-      new CronMonitorStore(env.DB, nextCronOccurrence).record(projectId, checkIn, now),
+      receiveCheckIn(new CronStore(env.DB), { projectId, checkIn, now }),
     keys: keyCache,
     usage: usageCache,
     allow: async (publicKey) => (await env.INGEST_RL.limit({ key: publicKey })).success,
-    spill: (projectId, eventId, payload) => spill.put(projectId, eventId, payload),
-    send: (message) => enqueueMetricInput(env.DB, env.EVENTS_Q, message),
+    spill: (projectId, eventId, payload) =>
+      new SpillStore(env.BLOBS).put(projectId, eventId, payload),
+    send: (message) =>
+      enqueueMetricInput({ db: env.DB, queue: env.EVENTS_Q, capture, now: Date.now() }, message),
     now: () => Date.now(),
   };
 }
@@ -179,6 +180,7 @@ function consumerDeps(env: Env): ConsumerDeps {
     readState: (keys) => store.readState(keys),
     readStored: (keys) => store.readStored(keys),
     commit: (writes, now, inputs) => store.commit(writes, now, inputs),
+    release: (inputs) => store.release(inputs),
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),
@@ -209,6 +211,7 @@ function apiDeps(env: Env): ApiDeps {
     notify: () => wakeNotify(env),
     emailEnabled: mailConfig(env) !== null,
     uptimeOrigins: env.UPTIME_ORIGINS,
+    uptimeFixtureOrigin: env.UPTIME_FIXTURE_ORIGIN,
     allowMonitorPreview: async (key) => (await env.MONITOR_PREVIEW_RL.limit({ key })).success,
     monitorPreviews: new MonitorPreviews(env.DB),
     enqueueMonitorPreview: (previewId) => env.UPTIME_Q.send({ previewId }).then(() => undefined),
@@ -363,9 +366,7 @@ export default {
   async scheduled(controller, env): Promise<void> {
     if (controller.cron === "* * * * *") {
       return evaluateMonitors(controller.scheduledTime, {
-        cron: new CronMonitorStore(env.DB, nextCronOccurrence),
-        metric: new MonitorStore(env.DB),
-        uptime: new UptimeMonitorStore(env.DB),
+        db: env.DB,
         queue: env.UPTIME_Q,
         notify: notifyCronDeps(env),
       });

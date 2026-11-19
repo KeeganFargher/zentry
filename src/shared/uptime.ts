@@ -30,6 +30,20 @@ export function approvedUptimeTarget(
   );
 }
 
+/**
+ * The end-to-end suite's shop fixture, which is served over plain HTTP. It is
+ * configured explicitly (UPTIME_FIXTURE_ORIGIN, FIXTURE_ORIGIN) and accepted
+ * only on a loopback host, so a production setting cannot open plain HTTP to
+ * a real address.
+ */
+export function fixtureTarget(target: URL, fixtureOrigin: string): boolean {
+  return (
+    fixtureOrigin !== "" &&
+    target.origin === fixtureOrigin &&
+    (target.hostname === "localhost" || target.hostname === "127.0.0.1")
+  );
+}
+
 export function productionUptimeTarget(target: URL): boolean {
   return (
     target.protocol === "https:" &&

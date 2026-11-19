@@ -31,7 +31,7 @@ export function rejected(status: number, detail: string): Response {
 /** The scope and reason code of a limit, as Relay writes them in X-Sentry-Rate-Limits. */
 export type LimitCause = {
   scope: "organization" | "project" | "key";
-  reason: "org_quota" | "project_quota" | "spike_protection" | "key_quota";
+  reason: "org_quota" | "project_quota" | "spike_protection" | "key_quota" | "monitor_rate_limit";
 };
 
 /**

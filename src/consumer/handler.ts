@@ -28,6 +28,8 @@ export type ConsumerDeps = {
   readStored: (keys: GroupHourKey[]) => Promise<GroupHourStored[]>;
   /** Returns how many notifications the commit queued in the outbox. */
   commit: (writes: BatchWrites, now: number, inputs: EventKey[]) => Promise<number>;
+  /** Clears the metric pending rows of events dropped before the commit. */
+  release: (inputs: EventKey[]) => Promise<void>;
   putBlobs: (blobs: EventBlob[]) => Promise<void>;
   loadSpill: (key: string) => Promise<string | null>;
   deleteSpill: (keys: string[]) => Promise<void>;
@@ -117,6 +119,14 @@ export async function processMessages(messages: QueueMessage[], deps: ConsumerDe
   const results = await Promise.all(messages.map((message) => prepare(message, deps)));
   const prepared = results.filter((result) => result !== null);
   const now = deps.now();
+
+  // A dropped event will never be counted. Releasing its pending row now
+  // stops it from holding every metric window that contains it as unknown.
+  const dropped = messages.filter((_, index) => results[index] === null);
+
+  if (dropped.length > 0) {
+    await deps.release(dropped.map((message) => ({ p: message.project_id, e: message.event_id })));
+  }
 
   if (prepared.length > 0) {
     const state = await deps.readState(batchKeys(prepared, now));
