@@ -3,18 +3,14 @@
 
 import type { Json, JsonObject, Pair } from "@/shared/contract";
 import { jsonKind, jsonText, JsonValue } from "@/shared/json";
+import { isSensitiveKey } from "@/shared/sensitive";
 
 import { FILTERED, scrubSecrets } from "./secrets";
 import { MAX_STRING, trimJson } from "./trim";
 
 export { FILTERED };
 
-const SENSITIVE_KEY =
-  /password|passwd|secret|api[_-]?key|access[_-]?key|auth|credentials|mysql_pwd|private[_-]?key|token|session|cookie|csrf|bearer/i;
-
-export function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEY.test(key);
-}
+export { isSensitiveKey };
 
 export function scrubText(text: string): string {
   return scrubSecrets(text);

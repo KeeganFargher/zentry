@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isSensitiveKey } from "./sensitive";
+
 export const ProbeResponse = z.object({
   outcome: z.enum(["ok", "failed", "unknown"]),
   httpStatus: z.int().optional(),
@@ -7,7 +9,19 @@ export const ProbeResponse = z.object({
   reason: z.enum(["policy", "timeout", "network", "status", "budget", "paused"]).optional(),
 });
 
-/** Registrations authorize a canonical origin or one exact path by organization. */
+/**
+ * A query string may pass an endpoint its arguments (`?id=…`), but no
+ * parameter may be named like a credential: the URL is stored in the
+ * monitor's settings and shown in the UI, so a token in it would leak.
+ */
+function credentialFree(target: URL): boolean {
+  return [...target.searchParams.keys()].every((name) => !isSensitiveKey(name));
+}
+
+/**
+ * Registrations authorize a canonical origin (any path and query on it) or
+ * one exact URL, by organization.
+ */
 export function approvedUptimeTarget(
   target: URL,
   organizationId: number,
@@ -17,7 +31,7 @@ export function approvedUptimeTarget(
     target.username !== "" ||
     target.password !== "" ||
     target.hash !== "" ||
-    target.search !== ""
+    !credentialFree(target)
   ) {
     return false;
   }

@@ -526,7 +526,7 @@ and by shape only to the message (template and formatted text), exception
 values and breadcrumb messages:
 
 - Any value under a key matching, case-insensitively,
-  `password|passwd|secret|api[_-]?key|access[_-]?key|auth|credentials|mysql_pwd|private[_-]?key|token|session|cookie|csrf|bearer`
+  `password|passwd|secret|api[_-]?key|access[_-]?key|auth|credentials?|mysql_pwd|private[_-]?key|token|session|cookie|csrf|bearer`
   becomes `"[Filtered]"`. `request.cookies` is replaced whole.
 - Inside any string, by shape (`core/secrets.ts`): card numbers (13–19
   digits, Luhn-checked), IBANs (mod-97), PEM private keys, the user and
