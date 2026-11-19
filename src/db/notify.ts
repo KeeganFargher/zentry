@@ -13,6 +13,7 @@ import type {
   ProjectNotice,
 } from "@/shared/notify";
 
+import { MonitorRoutingStore } from "./monitor-routing";
 import { toOutboxItem } from "./outbox";
 import type { OutboxEntry, OutboxRow } from "./outbox";
 
@@ -82,8 +83,11 @@ function toIssue(row: IssueRow): IssueNotice {
 export class NotifyStore {
   readonly #db: D1Database;
 
+  readonly monitorRouting: MonitorRoutingStore;
+
   constructor(db: D1Database) {
     this.#db = db;
+    this.monitorRouting = new MonitorRoutingStore(db);
   }
 
   /** The oldest unhandled rows. */

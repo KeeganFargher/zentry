@@ -1,4 +1,5 @@
 import { firstReport, laterReport, toWrite } from "@/core/cron-checkins";
+import { withCronIssues } from "@/core/monitor-issues";
 import type { CronMonitor, CronStore, UnrecognizedReason } from "@/db/cron-store";
 import type { CronWrite, StoredCheckIn } from "@/shared/cron";
 import { provisionedConfig } from "@/shared/monitors";
@@ -45,7 +46,13 @@ export async function receiveCheckIn(store: CronStore, receipt: Receipt): Promis
       overLimit =
         !read.exists && (await store.environmentCount(monitor.id)) >= MAX_ENVIRONMENTS_PER_MONITOR;
 
-      return overLimit ? null : plan(store, { monitor, checkIn, now, state: read.state });
+      if (overLimit) {
+        return null;
+      }
+
+      const write = await plan(store, { monitor, checkIn, now, state: read.state });
+
+      return write === null ? null : withCronIssues(write, read.issue, now);
     },
   );
 

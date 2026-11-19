@@ -3,10 +3,13 @@
 -- One migration for the whole feature: it has never been applied to a deployed
 -- database, so there is no earlier monitor schema to migrate from.
 --
--- Cron state transitions are decided in TypeScript (src/core/cron-checkins.ts)
--- and written with a compare-and-swap on cron_environments. The issue, incident
--- period and alert delivery chain below is shared by all three types and runs
--- as triggers on monitor_observations; see the notes on each.
+-- State transitions are decided in TypeScript: cron's in src/core/cron-checkins.ts,
+-- uptime's in src/core/uptime-results.ts, and the issue lifecycle all three share
+-- in src/core/monitor-issues.ts. Each writer stores a scope's observations and
+-- issue changes in one batch fenced by its own token (src/db/monitor-issues.ts),
+-- and the notify worker routes each transition to its alert rules
+-- (src/core/monitor-routing.ts). The triggers left here only keep rollups,
+-- metric capture and the settings audit in step.
 
 CREATE TABLE monitors (
   id               TEXT PRIMARY KEY NOT NULL,
@@ -212,18 +215,12 @@ CREATE INDEX monitor_observations_retention ON monitor_observations(evaluated_at
 CREATE UNIQUE INDEX monitor_observation_slot ON monitor_observations(monitor_id, scope, generation, slot)
   WHERE slot IS NOT NULL;
 
--- Metric and uptime record one observation per evaluation. Cron inserts its own.
-CREATE TRIGGER monitor_history AFTER UPDATE OF evaluated_at ON monitors
-WHEN NEW.type != 'cron' AND NEW.evaluated_at IS NOT NULL AND NEW.evaluated_at IS NOT OLD.evaluated_at
-BEGIN
-  INSERT INTO monitor_observations(monitor_id, evaluated_at, health, evidence, severity, generation, slot, scope)
-  VALUES(NEW.id, NEW.evaluated_at, NEW.health, COALESCE(NEW.last_result,'{}'), NEW.severity, NEW.generation,
-    NEW.evaluated_at, COALESCE(json_extract(NEW.config,'$.environment'),''));
-END;
-
 ALTER TABLE groups ADD COLUMN monitor_id TEXT REFERENCES monitors(id) ON DELETE SET NULL;
 ALTER TABLE groups ADD COLUMN monitor_scope TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX groups_by_monitor ON groups(monitor_id, monitor_scope) WHERE monitor_id IS NOT NULL;
+-- Stamped by the batch that last changed a monitor issue, so the batch's later
+-- statements apply only if the issue was still as it planned against.
+ALTER TABLE groups ADD COLUMN monitor_write_token TEXT;
 
 CREATE TABLE monitor_periods (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -235,69 +232,6 @@ CREATE TABLE monitor_periods (
 );
 CREATE UNIQUE INDEX monitor_period_open ON monitor_periods(group_id) WHERE closed_at IS NULL;
 CREATE INDEX monitor_periods_retention ON monitor_periods(closed_at) WHERE closed_at IS NOT NULL;
-
--- A failing observation opens or updates its scope's issue and period; a
--- healthy one resolves them. Only an observed failure counts as a sighting, so a
--- success that has not yet met the recovery streak does not bump the issue.
-CREATE TRIGGER monitor_observation_issue AFTER INSERT ON monitor_observations
-WHEN NEW.health IN ('healthy','failing')
-BEGIN
-  UPDATE projects SET next_short_id = next_short_id + 1
-  WHERE NEW.health = 'failing' AND id = (SELECT project_id FROM monitors WHERE id = NEW.monitor_id)
-    AND NOT EXISTS (SELECT 1 FROM groups WHERE monitor_id = NEW.monitor_id AND monitor_scope = NEW.scope);
-
-  INSERT INTO groups(project_id, short_id, primary_hash, title, level, metadata,
-    status, times_seen, first_seen, last_seen, created_at, monitor_id, monitor_scope)
-  SELECT p.id, p.next_short_id, 'monitor:' || m.id || ':' || NEW.scope, m.name,
-    CASE NEW.severity WHEN 'medium' THEN 'warning' ELSE 'error' END,
-    json_object('type',m.type,'value',NULL,'function',NULL,'filename',NULL,'logger',NULL),
-    'unresolved', 0, NEW.evaluated_at, NEW.evaluated_at, NEW.evaluated_at, m.id, NEW.scope
-  FROM monitors m JOIN projects p ON p.id = m.project_id
-  WHERE m.id = NEW.monitor_id AND NEW.health = 'failing'
-    AND NOT EXISTS (SELECT 1 FROM groups WHERE monitor_id = m.id AND monitor_scope = NEW.scope);
-
-  INSERT INTO activity(group_id, project_id, type, data, created_at)
-  SELECT id, project_id, CASE NEW.health WHEN 'healthy' THEN 'resolved' ELSE 'regressed' END,
-    NEW.evidence, NEW.evaluated_at
-  FROM groups WHERE monitor_id = NEW.monitor_id AND monitor_scope = NEW.scope AND (
-    (NEW.health = 'healthy' AND status = 'unresolved') OR (NEW.health = 'failing' AND status = 'resolved')
-  );
-
-  INSERT INTO monitor_periods(group_id, opened_at, evidence)
-  SELECT id, NEW.evaluated_at, NEW.evidence FROM groups
-  WHERE monitor_id = NEW.monitor_id AND monitor_scope = NEW.scope AND NEW.health = 'failing'
-  ON CONFLICT DO NOTHING;
-
-  UPDATE monitor_periods SET closed_at = NEW.evaluated_at, disposition = 'recovered'
-  WHERE closed_at IS NULL AND NEW.health = 'healthy' AND group_id IN (
-    SELECT id FROM groups WHERE monitor_id = NEW.monitor_id AND monitor_scope = NEW.scope
-  );
-
-  UPDATE groups SET
-    status = CASE NEW.health WHEN 'healthy' THEN 'resolved' ELSE 'unresolved' END,
-    substatus = CASE WHEN NEW.health = 'healthy' THEN NULL WHEN status = 'resolved' THEN 'regressed' ELSE substatus END,
-    level = CASE WHEN NEW.health = 'healthy' THEN level WHEN NEW.severity = 'medium' THEN 'warning' ELSE 'error' END,
-    resolved_at = CASE NEW.health WHEN 'healthy' THEN NEW.evaluated_at ELSE NULL END,
-    resolved_by = NULL,
-    last_seen = CASE WHEN NEW.health = 'failing' AND json_extract(NEW.evidence,'$.outcome') IS NOT 'ok'
-      THEN NEW.evaluated_at ELSE last_seen END,
-    times_seen = times_seen + (NEW.health = 'failing' AND json_extract(NEW.evidence,'$.outcome') IS NOT 'ok')
-  WHERE monitor_id = NEW.monitor_id AND monitor_scope = NEW.scope
-    AND (NEW.health = 'failing' OR status = 'unresolved');
-END;
-
--- A metric or uptime edit that redefines failure closes the incident, since
--- the old evidence no longer answers the new question. Cron edits keep the
--- generation and their incidents, as in Sentry: a new margin does not fix a job.
-CREATE TRIGGER monitor_invalidate_period AFTER UPDATE OF generation ON monitors
-WHEN NEW.generation != OLD.generation AND (NEW.config != OLD.config OR NEW.status = 'archived')
-BEGIN
-  UPDATE monitor_periods SET closed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER), disposition = 'configuration_changed'
-  WHERE closed_at IS NULL AND group_id IN (SELECT id FROM groups WHERE monitor_id = NEW.id);
-
-  UPDATE groups SET status = 'resolved', substatus = NULL, resolved_at = CAST(unixepoch('subsec') * 1000 AS INTEGER)
-  WHERE monitor_id = NEW.id AND status = 'unresolved';
-END;
 
 CREATE TABLE monitor_audit (
   monitor_id  TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
@@ -341,13 +275,17 @@ CREATE TABLE monitor_transitions (
   scope          TEXT NOT NULL,
   happened_at    INTEGER NOT NULL,
   type           TEXT NOT NULL CHECK (type IN ('failure','escalation','recovery')),
-  evidence       TEXT NOT NULL
+  evidence       TEXT NOT NULL,
+  -- When the notify worker wrote its deliveries; a scope routes in id order.
+  routed_at      INTEGER
 );
 -- Pruning observations and periods follows these foreign keys; without the
 -- indexes each delete would scan the transitions table.
 CREATE INDEX monitor_transitions_observation ON monitor_transitions(observation_id);
 CREATE INDEX monitor_transitions_period ON monitor_transitions(period_id);
 CREATE INDEX monitor_transitions_retention ON monitor_transitions(happened_at);
+CREATE INDEX monitor_transitions_unrouted ON monitor_transitions(monitor_id, scope, id)
+  WHERE routed_at IS NULL;
 
 -- `transition_type` is the transition as this rule sees it. For a rule that
 -- pages only on high priority, the first escalation to high in an incident is
@@ -368,77 +306,6 @@ CREATE INDEX monitor_delivery_throttle ON monitor_deliveries(group_id, rule_id, 
 -- An alert's last routed delivery, for the Alerts list (src/db/monitor-rules.ts).
 CREATE INDEX monitor_delivery_last ON monitor_deliveries(rule_id, happened_at DESC)
   WHERE suppression IS NULL;
-
--- Capture the transition before the issue trigger changes its previous state.
-CREATE TRIGGER monitor_group_transition AFTER UPDATE OF status, level ON groups
-WHEN NEW.monitor_id IS NOT NULL AND EXISTS(
-  SELECT 1 FROM monitors WHERE id = NEW.monitor_id AND status = 'active'
-) AND (NEW.status != OLD.status OR (NEW.status = 'unresolved' AND NEW.level = 'error' AND OLD.level = 'warning') OR (OLD.times_seen = 0 AND NEW.times_seen = 1))
-BEGIN
-  INSERT INTO monitor_transitions(observation_id, generation, period_id, monitor_id, scope, happened_at, type, evidence)
-  SELECT id, generation, (SELECT p.id FROM monitor_periods p WHERE group_id = NEW.id
-    AND (p.closed_at IS NULL OR (NEW.status = 'resolved' AND p.closed_at = NEW.resolved_at))
-    ORDER BY p.id DESC LIMIT 1), NEW.monitor_id, NEW.monitor_scope, evaluated_at, CASE
-    WHEN NEW.status = 'resolved' THEN 'recovery'
-    WHEN OLD.times_seen > 0 AND OLD.status = NEW.status THEN 'escalation'
-    ELSE 'failure' END,
-    json_set(evidence,'$.severity',CASE WHEN (CASE NEW.status WHEN 'resolved' THEN OLD.level ELSE NEW.level END) = 'warning'
-      THEN 'medium' ELSE 'high' END)
-  FROM monitor_observations WHERE monitor_id = NEW.monitor_id AND scope = NEW.monitor_scope
-    AND ((NEW.status = 'resolved' AND health = 'healthy' AND evaluated_at = NEW.resolved_at) OR
-         (NEW.status = 'unresolved' AND health = 'failing' AND evaluated_at = NEW.last_seen))
-  ORDER BY id DESC LIMIT 1;
-END;
-
--- One delivery row per linked rule and channel: suppressed with a reason, or
--- queued to the outbox. Recovery is never throttled, because a throttled
--- recovery would leave "failing" as the last thing anyone was told.
-CREATE TRIGGER monitor_transition_deliver AFTER INSERT ON monitor_transitions
-BEGIN
-  INSERT INTO monitor_deliveries (transition_id, group_id, rule_id, channel, happened_at, transition_type, suppression)
-  SELECT NEW.id, c.group_id, r.id, c.channel, NEW.happened_at, c.effective,
-    CASE
-      WHEN m.notify = 0 OR m.status != 'active' THEN 'disabled'
-      WHEN m.muted_until > NEW.happened_at THEN 'muted'
-      WHEN NOT json_extract(r.config,'$.enabled') THEN 'rule_disabled'
-      WHEN json_extract(r.config,'$.environment') IS NOT NULL AND json_extract(r.config,'$.environment') IS NOT COALESCE(NULLIF(NEW.scope,''),json_extract(m.config,'$.environment')) THEN 'environment'
-      WHEN json_extract(r.config,'$.priority') = 'high' AND NEW.type != 'recovery' AND json_extract(NEW.evidence,'$.severity') IS NOT 'high' THEN 'priority'
-      WHEN json_extract(r.config,'$.priority') = 'high' AND NEW.type = 'recovery' AND NOT c.paged THEN 'priority'
-      WHEN NOT EXISTS (SELECT 1 FROM json_each(r.config,'$.triggers') WHERE value = c.effective) THEN 'trigger'
-      WHEN c.effective != 'recovery' AND EXISTS (SELECT 1 FROM monitor_deliveries prior WHERE prior.group_id = c.group_id
-        AND prior.rule_id = r.id AND prior.channel = c.channel AND prior.transition_type = c.effective
-        AND prior.suppression IS NULL
-        AND prior.happened_at > NEW.happened_at - json_extract(r.config,'$.throttleSeconds') * 1000) THEN 'throttled'
-      ELSE NULL END
-  FROM (
-    SELECT g.id AS group_id, rule.id AS rule_id, channels.value AS channel,
-      -- Whether this rule already paged on this channel in the current incident period.
-      EXISTS (SELECT 1 FROM monitor_deliveries prior JOIN monitor_transitions t ON t.id = prior.transition_id
-        WHERE prior.group_id = g.id AND prior.rule_id = rule.id AND prior.channel = channels.value
-          AND prior.suppression IS NULL AND prior.transition_type IN ('failure','escalation')
-          AND t.period_id IS NEW.period_id) AS paged,
-      CASE WHEN json_extract(rule.config,'$.priority') = 'high' AND NEW.type = 'escalation'
-        AND NOT EXISTS (SELECT 1 FROM monitor_deliveries prior JOIN monitor_transitions t ON t.id = prior.transition_id
-          WHERE prior.group_id = g.id AND prior.rule_id = rule.id AND prior.channel = channels.value
-            AND prior.suppression IS NULL AND t.period_id IS NEW.period_id)
-        THEN 'failure' ELSE NEW.type END AS effective
-    FROM monitors mm JOIN projects p ON p.id = mm.project_id
-    JOIN groups g ON g.monitor_id = mm.id AND g.monitor_scope = NEW.scope
-    JOIN json_each(mm.alert_rule_ids) links
-    JOIN monitor_alert_rules rule ON rule.id = links.value AND rule.organization_id = p.organization_id
-    JOIN json_each(rule.config,'$.channels') channels
-    WHERE mm.id = NEW.monitor_id
-  ) c
-  JOIN monitors m ON m.id = NEW.monitor_id
-  JOIN monitor_alert_rules r ON r.id = c.rule_id;
-
-  INSERT INTO notify_outbox(kind, organization_id, project_id, group_id, data, created_at)
-  SELECT 'status', p.organization_id, m.project_id, d.group_id, json_object('monitorDeliveryId', d.id),
-    CAST(unixepoch('subsec') * 1000 AS INTEGER)
-  FROM monitor_deliveries d JOIN monitors m ON m.id = NEW.monitor_id
-  JOIN projects p ON p.id = m.project_id
-  WHERE d.transition_id = NEW.id AND d.suppression IS NULL;
-END;
 
 CREATE TABLE monitor_previews (
   id              TEXT PRIMARY KEY,

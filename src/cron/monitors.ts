@@ -1,4 +1,5 @@
 import { CronStore } from "@/db/cron-store";
+import { MetricEvaluationStore } from "@/db/metric-evaluation";
 import { MonitorStore } from "@/db/monitors";
 import { UptimeMonitorStore } from "@/db/uptime-monitors";
 import { errorText, logError, logInfo } from "@/shared/log";
@@ -6,6 +7,7 @@ import type { UptimeJob } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 
 import { evaluateCronDeadlines } from "./cron-deadlines";
+import { evaluateMetrics } from "./metric-evaluation";
 import { sweepOutbox } from "./notify";
 import type { NotifyCronDeps } from "./notify";
 import { dispatchUptime } from "./uptime";
@@ -27,7 +29,7 @@ export async function evaluateMonitors(time: number, deps: MonitorTickDeps): Pro
   const windowEnd = Math.floor(time / MINUTE) * MINUTE - 2 * MINUTE;
 
   const results = await Promise.allSettled([
-    metric.evaluateMetrics(windowEnd),
+    evaluateMetrics(new MetricEvaluationStore(deps.db), windowEnd),
     evaluateCronDeadlines(new CronStore(deps.db), time),
     dispatchUptime(new UptimeMonitorStore(deps.db), time, deps.queue),
   ]);

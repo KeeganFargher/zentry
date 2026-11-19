@@ -22,7 +22,7 @@ export type AlertReason = "new_issue" | "regression";
 
 /** One row of the outbox, as the notify consumer handles it. */
 export type OutboxItem =
-  | { id: number; kind: "monitor"; deliveryId: number }
+  | { id: number; kind: "monitor"; transitionId: number }
   | { id: number; kind: AlertReason; groupId: number }
   | { id: number; kind: "status"; groupId: number; actorId: number | null; status: IssueStatus }
   | {

@@ -22,6 +22,7 @@ import { nextMonthBucket } from "@/shared/time";
 import { withMail } from "./deps";
 import type { MailDeps, NotifyDeps } from "./deps";
 import { deliver, unsubscribeUrl } from "./mailer";
+import { routeTransitions } from "./monitor-routing";
 import { eachProvider } from "./providers";
 import type { ProviderSend } from "./providers";
 import { pushTo } from "./push";
@@ -151,17 +152,33 @@ function renderMonitorAlert(input: {
   });
 }
 
+/**
+ * Routes the transition (src/notify/monitor-routing.ts), then sends each of
+ * its deliveries that was not suppressed. Both are safe to repeat when the
+ * row retries.
+ */
 export async function handleMonitorAlert(deps: NotifyDeps, item: Job<"monitor">): Promise<void> {
+  const routing = deps.store.monitorRouting;
+
+  await routeTransitions(routing, item.transitionId, deps.now());
+
   if (deps.monitorAlertsPaused) {
-    await deps.store.suppressMonitorDelivery(item.deliveryId, "delivery_paused");
+    await routing.suppressAll(item.transitionId, "delivery_paused");
 
     return;
   }
 
-  const job = await deps.store.monitorDelivery(item.deliveryId, deps.now());
+  for (const deliveryId of await routing.deliveries(item.transitionId)) {
+    await sendMonitorDelivery(deps, deliveryId);
+  }
+}
+
+/** One routed delivery, checked again against the monitor and rule as they are now. */
+async function sendMonitorDelivery(deps: NotifyDeps, deliveryId: number): Promise<void> {
+  const job = await deps.store.monitorDelivery(deliveryId, deps.now());
 
   if (job === null) {
-    await deps.store.suppressMonitorDelivery(item.deliveryId, "changed_before_dispatch");
+    await deps.store.suppressMonitorDelivery(deliveryId, "changed_before_dispatch");
 
     return;
   }
@@ -181,7 +198,7 @@ export async function handleMonitorAlert(deps: NotifyDeps, item: Job<"monitor">)
   const targets = await monitorRecipients(deps, job, issue);
 
   if (targets.length === 0) {
-    await deps.store.suppressMonitorDelivery(item.deliveryId, "recipient_preferences");
+    await deps.store.suppressMonitorDelivery(deliveryId, "recipient_preferences");
 
     return;
   }

@@ -38,8 +38,10 @@ export const previewMetricQuery = `WITH RECURSIVE points(time) AS (
         COALESCE(${windowCovered("?2", "(SELECT started_at FROM metric_capture WHERE project_id = ?2)", { start: "time - ?4", end: "time" })}, 0) AS covered
       FROM points ORDER BY time`;
 
+// Each due monitor's next state. The writer applies it with a compare-and-swap
+// on evaluated_at, so a concurrent tick that read the same window writes once.
 export const evaluateMetricQuery = `WITH due AS MATERIALIZED (
-          SELECT id, project_id, config, severity, capture.started_at,
+          SELECT id, project_id, config, severity, evaluated_at, capture.started_at,
             ?1 - json_extract(config, '$.windowSeconds') * 1000 AS windowStart
           FROM monitors JOIN metric_capture capture USING(project_id)
           WHERE type = 'metric' AND status = 'active'
@@ -58,18 +60,19 @@ export const evaluateMetricQuery = `WITH due AS MATERIALIZED (
             ELSE severity
           END AS nextSeverity FROM windows
         )
-        UPDATE monitors SET evaluated_at = ?1, severity = nextSeverity,
-          last_result = json_object('count', decisions.count, 'windowEnd', ?1,
-            'windowStart', decisions.windowStart, 'coverage', decisions.covered, 'severity', nextSeverity,
-            'comparator', json_extract(decisions.config, '$.comparator'),
-            'threshold', json_extract(decisions.config, '$.threshold'),
-            'warningThreshold', json_extract(decisions.config, '$.warningThreshold'),
-            'recoveryThreshold', json_extract(decisions.config, '$.recoveryThreshold')),
-          health = CASE
-            WHEN decisions.started_at > decisions.windowStart THEN 'awaiting_data'
-            WHEN NOT decisions.covered THEN 'unknown'
+        SELECT id AS monitorId, evaluated_at AS previous, nextSeverity AS severity,
+          COALESCE(json_extract(config, '$.environment'), '') AS scope,
+          json_object('count', count, 'windowEnd', ?1,
+            'windowStart', windowStart, 'coverage', covered, 'severity', nextSeverity,
+            'comparator', json_extract(config, '$.comparator'),
+            'threshold', json_extract(config, '$.threshold'),
+            'warningThreshold', json_extract(config, '$.warningThreshold'),
+            'recoveryThreshold', json_extract(config, '$.recoveryThreshold')) AS evidence,
+          CASE
+            WHEN started_at > windowStart THEN 'awaiting_data'
+            WHEN NOT covered THEN 'unknown'
             WHEN nextSeverity IS NOT NULL THEN 'failing'
             ELSE 'healthy'
-          END
-        FROM decisions WHERE monitors.id = decisions.id
+          END AS health
+        FROM decisions
         `;

@@ -1,9 +1,11 @@
 import { z } from "zod";
 
+import { planIssues } from "@/core/monitor-issues";
+import { uptimeResult, uptimeSignal } from "@/core/uptime-results";
 import type { MonitorPreviews } from "@/db/monitor-previews";
 import type { ProbeRequest, ProbeResult, UptimeMonitorStore } from "@/db/uptime-monitors";
 import { errorText, logError } from "@/shared/log";
-import type { UptimeJob } from "@/shared/monitors";
+import type { ScheduledUptimeJob, UptimeJob } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 import type { NotifyMessage, QueueMessage } from "@/shared/types";
 import { ProbeResponse } from "@/shared/uptime";
@@ -77,10 +79,32 @@ async function runJob(
   // target request. If saving the result fails, the expired lease records the
   // slot as a coverage gap on the next tick.
   try {
-    await deps.store.finish(job, await probeOrUnknown(deps.binding, config), Date.now());
+    await saveCheck(deps.store, job, await probeOrUnknown(deps.binding, config));
   } catch (cause) {
     logError("uptime result was not saved; the slot will be a gap", { error: errorText(cause) });
   }
+}
+
+/** Decides the check against the monitor as it is now, then saves it if the lease is still this job's. */
+async function saveCheck(
+  store: UptimeMonitorStore,
+  job: ScheduledUptimeJob,
+  result: ProbeResult,
+): Promise<void> {
+  const finishing = await store.finishing(job, Date.now());
+
+  if (finishing === null) {
+    return;
+  }
+
+  const next = uptimeResult(finishing.streaks, result.outcome);
+  const plan = planIssues(finishing.issue, [uptimeSignal(next, result.outcome, finishing.slot)]);
+
+  await store.finish(
+    job,
+    { result, next, plan, scope: finishing.scope, slot: finishing.slot },
+    Date.now(),
+  );
 }
 
 /**

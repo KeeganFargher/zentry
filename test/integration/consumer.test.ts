@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { EventBlobs } from "@/blobs/events";
 import { handleBatch, processMessages } from "@/consumer/handler";
+import { evaluateMetrics } from "@/cron/metric-evaluation";
+import { MetricEvaluationStore } from "@/db/metric-evaluation";
 import { MonitorStore } from "@/db/monitors";
 import { CreateMonitor } from "@/shared/monitors";
 import { HOUR, MINUTE, monthBucket } from "@/shared/time";
@@ -105,14 +107,14 @@ describe("consumer", () => {
 
     // Coverage starts a minute after the monitor (metric_capture_started), so
     // the first covered five-minute window ends at minute six.
-    await store.evaluateMetrics(firstMinute + 6 * MINUTE);
+    await evaluateMetrics(new MetricEvaluationStore(env.DB), firstMinute + 6 * MINUTE);
     expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
       health: "failing",
       severity: "high",
     });
 
     await pending.bind(projectId, eventId(11), firstMinute + 6 * MINUTE).run();
-    await store.evaluateMetrics(firstMinute + 11 * MINUTE);
+    await evaluateMetrics(new MetricEvaluationStore(env.DB), firstMinute + 11 * MINUTE);
     expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
       health: "unknown",
       severity: "high",
@@ -494,7 +496,7 @@ describe("consumer", () => {
 
     // A covered window with no events counts as zero. Paging on it stays off
     // until MONITOR_BELOW_COUNT_PAGING is enabled (src/notify/jobs.ts).
-    await store.evaluateMetrics(minute + 6 * MINUTE);
+    await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 6 * MINUTE);
 
     expect((await store.list(1, { kind: "one", id: projectId }))[0]).toMatchObject({
       health: "failing",

@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { processMessages } from "@/consumer/handler";
 import { signUnsubscribe } from "@/core/unsubscribe";
+import { evaluateMetrics } from "@/cron/metric-evaluation";
 import { sweepOutbox } from "@/cron/notify";
 import { CronStore } from "@/db/cron-store";
 import { DeviceStore } from "@/db/devices";
 import { IssueStore } from "@/db/issues";
+import { MetricEvaluationStore } from "@/db/metric-evaluation";
 import { MonitorRuleStore } from "@/db/monitor-rules";
 import { MonitorStore } from "@/db/monitors";
 import { NotificationSettingsStore } from "@/db/notify-settings";
@@ -774,12 +776,12 @@ it("pages a high-priority rule when a medium incident escalates, and sends its r
 
   // Medium, then high, then healthy, in three covered five-minute windows.
   await count(minute + 2 * MINUTE, 1);
-  await monitors.evaluateMetrics(minute + 6 * MINUTE);
+  await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 6 * MINUTE);
   await drainAll(harness);
   await count(minute + 8 * MINUTE, 3);
-  await monitors.evaluateMetrics(minute + 12 * MINUTE);
+  await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 12 * MINUTE);
   await drainAll(harness);
-  await monitors.evaluateMetrics(minute + 18 * MINUTE);
+  await evaluateMetrics(new MetricEvaluationStore(env.DB), minute + 18 * MINUTE);
   await drainAll(harness);
 
   expect(harness.sent.map(({ subject }) => subject)).toEqual([

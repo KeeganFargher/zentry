@@ -628,7 +628,16 @@ test("an owner links a reusable alert, mutes the monitor, and sees configuration
   await expect(page.getByRole("button", { name: "Mute", exact: true })).toHaveText("Muted");
 
   await checkIn(request, fixture, { id: crypto.randomUUID(), slug: "muted-cron", status: "error" });
-  const detail = await request.get(`/api/0/organizations${new URL(page.url()).pathname}`);
+
+  // The notify worker routes the failure to its rules; the minute tick sweeps it there.
+  const detailUrl = `/api/0/organizations${new URL(page.url()).pathname}`;
+
+  await tick(request, Date.now());
+  await expect
+    .poll(async () => (await contractJson<MonitorDetail>(await request.get(detailUrl))).deliveries)
+    .toHaveLength(1);
+
+  const detail = await request.get(detailUrl);
 
   await page.reload();
   await page.getByText("Alert deliveries (1)").click();

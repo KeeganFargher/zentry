@@ -8,6 +8,7 @@ import type { CronSettings } from "@/shared/monitors";
 
 import { writeEnvironment } from "./cron-write";
 import type { EnvironmentRead, Plan, Target } from "./cron-write";
+import { issueStateOf, readIssueStates } from "./monitor-issues";
 
 const Config = jsonText(CronConfig);
 
@@ -123,13 +124,18 @@ export class CronStore {
       .bind(monitorId, environment)
       .first();
 
+    const issue = issueStateOf(await readIssueStates(this.#db, [monitorId]), {
+      monitorId,
+      scope: environment,
+    });
+
     if (row === null) {
-      return { exists: false, revision: 0, state: NEW_ENVIRONMENT };
+      return { exists: false, revision: 0, state: NEW_ENVIRONMENT, issue };
     }
 
     const { revision, ...state } = EnvironmentRow.parse(row);
 
-    return { exists: true, revision, state: state satisfies EnvironmentState };
+    return { exists: true, revision, state: state satisfies EnvironmentState, issue };
   }
 
   async environmentCount(monitorId: string): Promise<number> {

@@ -1,6 +1,8 @@
 // Cron check-in state, shared by the pure rules in src/core/cron-checkins.ts
 // and the D1 store in src/db/cron-store.ts.
 
+import type { IssuePlan } from "./monitor-issues";
+
 export type CheckInStatus = "in_progress" | "ok" | "error" | "missed" | "timeout";
 
 export type Outcome = Exclude<CheckInStatus, "in_progress">;
@@ -47,6 +49,9 @@ export type CronWrite = {
   rows: { row: CheckInRow; stored: StoredCheckIn | null }[];
   decisions: Decision[];
 };
+
+/** A cron write with the issue lifecycle planned for its decisions. */
+export type PlannedCronWrite = CronWrite & { issues: IssuePlan };
 
 export const NEW_ENVIRONMENT: EnvironmentState = {
   status: "active",

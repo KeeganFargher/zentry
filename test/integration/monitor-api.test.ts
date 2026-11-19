@@ -3,15 +3,18 @@ import { describe, expect, it } from "vitest";
 
 import { evaluateCronDeadlines } from "@/cron/cron-deadlines";
 import { CronStore } from "@/db/cron-store";
+import { MonitorRoutingStore } from "@/db/monitor-routing";
 import { MonitorStore } from "@/db/monitors";
 import { receiveCheckIn } from "@/ingest/cron-receive";
+import { drainOutbox } from "@/notify/handler";
+import { routeTransitions } from "@/notify/monitor-routing";
 import type { ApiMonitor, ApiMonitorRule, Json, MonitorTimeline } from "@/shared/contract";
 import { CheckIn, CreateMonitor } from "@/shared/monitors";
 import { MINUTE } from "@/shared/time";
 
 import { api } from "./api-helpers";
 import { createProject, NOW } from "./helpers";
-import { addMember } from "./notify-helpers";
+import { addMember, notifyHarness } from "./notify-helpers";
 
 // The API answers at NOW (10:30); an hourly monitor next expects 11:00.
 const HOUR = Math.floor(NOW / (60 * MINUTE)) * 60 * MINUTE;
@@ -49,6 +52,14 @@ async function hourlyMonitorWithAlert(): Promise<Fixture> {
   expect(created.status).toBe(201);
 
   return { projectId, monitor: await created.json<ApiMonitor>(), rule };
+}
+
+/**
+ * Lets the notify worker route the outbox: deliveries are written when a
+ * transition is routed, not when it happens.
+ */
+async function routeAlerts(): Promise<void> {
+  await drainOutbox(notifyHarness().deps);
 }
 
 /** One ok check-in at NOW, then the 11:00 run missed. */
@@ -175,6 +186,7 @@ describe("the monitor list and alerts", () => {
     expect((await ruleOf(fixture.rule.id)).lastTriggered).toBeNull();
 
     await missTheNextRun(fixture);
+    await routeAlerts();
 
     const transition = await env.DB.prepare(
       "SELECT happened_at AS at FROM monitor_transitions WHERE monitor_id = ?1",
@@ -199,6 +211,7 @@ describe("the monitor list and alerts", () => {
       body: { version: fixture.monitor.version, until: NOW + 24 * 60 * MINUTE },
     });
     await missTheNextRun(fixture);
+    await routeAlerts();
 
     const suppressed = await env.DB.prepare(
       "SELECT suppression FROM monitor_deliveries WHERE rule_id = ?1",
@@ -350,5 +363,80 @@ describe("a monitor's creator", () => {
     await env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(userId).run();
 
     expect((await store.find(1, monitor.id))?.creator).toEqual({ kind: "former_member" });
+  });
+});
+
+describe("routing a monitor's transitions", () => {
+  it("routes a scope's earlier transitions first, so a high-priority recovery knows it paged", async () => {
+    const { id: projectId } = await createProject();
+    const slug = `paged-${crypto.randomUUID().slice(0, 8)}`;
+
+    const rule = await (
+      await api("/organizations/default/monitor-alert-rules/", {
+        method: "POST",
+        body: {
+          name: "High only",
+          channels: ["email"],
+          triggers: ["failure", "recovery"],
+          audience: { kind: "project" },
+          priority: "high",
+        },
+      })
+    ).json<ApiMonitorRule>();
+
+    const monitor = await (
+      await api("/organizations/default/monitors/", {
+        method: "POST",
+        body: {
+          projectId,
+          type: "cron",
+          name: "Paged export",
+          alertRuleIds: [rule.id],
+          notify: true,
+          config: { slug, schedule: { type: "crontab", crontab: "0 * * * *" } },
+        },
+      })
+    ).json<ApiMonitor>();
+
+    await missTheNextRun({ projectId, monitor, rule });
+
+    const store = new CronStore(env.DB);
+
+    const recovered = CheckIn.parse({
+      check_in_id: crypto.randomUUID(),
+      monitor_slug: slug,
+      status: "ok",
+    });
+
+    await receiveCheckIn(store, { projectId, checkIn: recovered, now: HOUR + 65 * MINUTE });
+
+    const { results: transitions } = await env.DB.prepare(
+      "SELECT id, type FROM monitor_transitions WHERE monitor_id = ?1 ORDER BY id",
+    )
+      .bind(monitor.id)
+      .all<{ id: number; type: string }>();
+
+    expect(transitions.map(({ type }) => type)).toEqual(["failure", "recovery"]);
+
+    // Routing the recovery first routes the failure before it.
+    const recovery = transitions[1];
+
+    if (recovery === undefined) {
+      throw new Error("no recovery transition");
+    }
+
+    await routeTransitions(new MonitorRoutingStore(env.DB), recovery.id, HOUR + 66 * MINUTE);
+
+    const { results: deliveries } = await env.DB.prepare(
+      `SELECT transition_type AS type, suppression FROM monitor_deliveries
+       WHERE rule_id = ?1 ORDER BY id`,
+    )
+      .bind(rule.id)
+      .all<{ type: string; suppression: string | null }>();
+
+    expect(deliveries).toEqual([
+      { type: "failure", suppression: null },
+      { type: "recovery", suppression: null },
+    ]);
   });
 });

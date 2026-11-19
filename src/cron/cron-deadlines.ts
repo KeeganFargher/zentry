@@ -1,4 +1,5 @@
 import { catchupWrite, missedSlots, timedOut, toWrite } from "@/core/cron-checkins";
+import { withCronIssues } from "@/core/monitor-issues";
 import type { CronStore } from "@/db/cron-store";
 
 // Deadlines each minute tick finalizes per kind, and missed slots per
@@ -22,7 +23,9 @@ export async function evaluateCronDeadlines(store: CronStore, now: number): Prom
           return null;
         }
 
-        return toWrite({ change: timedOut(monitor.config, read.state, row), stored: row });
+        const write = toWrite({ change: timedOut(monitor.config, read.state, row), stored: row });
+
+        return write === null ? null : withCronIssues(write, read.issue, now);
       },
     );
   }
@@ -35,7 +38,9 @@ export async function evaluateCronDeadlines(store: CronStore, now: number): Prom
         newId: () => crypto.randomUUID().replaceAll("-", ""),
       });
 
-      return catchupWrite(missed);
+      const write = catchupWrite(missed);
+
+      return write === null ? null : withCronIssues(write, read.issue, now);
     });
   }
 }

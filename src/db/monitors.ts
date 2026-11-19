@@ -11,7 +11,8 @@ import {
 import type { ApiMonitor, NewMonitor } from "@/shared/monitors";
 import { DAY, HOUR } from "@/shared/time";
 
-import { evaluateMetricQuery, previewMetricQuery } from "./metric-query";
+import { previewMetricQuery } from "./metric-query";
+import { invalidationStatements } from "./monitor-issues";
 import { MonitorTimeline } from "./monitor-timeline";
 
 const Row = MonitorFields.extend({
@@ -150,7 +151,7 @@ export class MonitorStore {
     const changed = JSON.stringify(monitor.config) !== JSON.stringify(current.config);
 
     // A metric or uptime config change redefines failure, so it starts a new
-    // generation and closes the open incident (monitor_invalidate_period). A
+    // generation and closes the open incident (invalidationStatements). A
     // cron edit keeps its environments, streaks and incidents, as on Sentry,
     // and only re-plans the next expected check-in under the new schedule.
     const reset = changed && monitor.type !== "cron";
@@ -186,6 +187,10 @@ export class MonitorStore {
       );
 
     const statements = [update];
+
+    if (reset) {
+      statements.push(...invalidationStatements(this.#db, { id: current.id, token, time }));
+    }
 
     if (replan !== null) {
       // Bumping the revision fences any check-in write that read the old plan.
@@ -224,6 +229,11 @@ export class MonitorStore {
 
     const statements = [update];
     const { replan } = change;
+
+    // Archiving ends the incident; pausing and resuming keep it open.
+    if (change.status === "archived") {
+      statements.push(...invalidationStatements(this.#db, { id, token, time: change.time }));
+    }
 
     if (replan !== null) {
       // A resumed cron monitor starts a fresh streak and expects its next
@@ -338,9 +348,6 @@ export class MonitorStore {
       .all<{ time: number; count: number; covered: number }>();
 
     return results.map(({ time, count, covered }) => ({ time, count, covered: covered === 1 }));
-  }
-  async evaluateMetrics(windowEnd: number): Promise<void> {
-    await this.#db.prepare(evaluateMetricQuery).bind(windowEnd).run();
   }
   async list(
     organizationId: number,
