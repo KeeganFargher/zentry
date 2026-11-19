@@ -57,6 +57,18 @@ export type Palette = {
   okSoft: string;
   /** syntax.property: numbers and keywords in code and JSON. */
   literal: string;
+  /**
+   * The monitor timeline's ticks (Sentry's checkInTimeline colours, as the web
+   * UI's --good, --bad, --meh and --neutral-tick): a passing check, a failure,
+   * a missed check-in, and an unknown result.
+   */
+  tickGood: string;
+  tickBad: string;
+  tickMeh: string;
+  tickNeutral: string;
+  /** The stripes inside a hatched tick: a timeout, a failed uptime check, an unknown. */
+  hatchBad: string;
+  hatchNeutral: string;
   /** Text on an accent, success or danger fill. */
   onAccent: string;
 };
@@ -90,6 +102,12 @@ export const LIGHT: Palette = {
   warningText: "#A45200",
   okSoft: "#E2F7E3",
   literal: "#653DE9",
+  tickGood: "#58CD6F",
+  tickBad: "#C10000",
+  tickMeh: "#FFCE00",
+  tickNeutral: "#A29FAA",
+  hatchBad: "#FFC4BD",
+  hatchNeutral: "#DAD9DE",
   onAccent: "#FFFFFF",
 };
 
@@ -124,6 +142,12 @@ export const DARK: Palette = {
   warningText: "#FFCE00",
   okSoft: "#00F8001F",
   literal: "#ABA8F8",
+  tickGood: "#5ECE73",
+  tickBad: "#FF002B",
+  tickMeh: "#FFCE00",
+  tickNeutral: "#898294",
+  hatchBad: "#9A0116",
+  hatchNeutral: "#534D5E",
   onAccent: "#FFFFFF",
 };
 

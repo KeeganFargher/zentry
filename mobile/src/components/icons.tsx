@@ -9,6 +9,8 @@ import { usePalette } from "~/lib/preferences";
 
 const PATHS = {
   issues: "M2.5 3.5h11v9h-11zM2.5 8h3l1 1.5h3L10.5 8h3",
+  // Sentry's IconTimer stand-in for Monitors: a pulse line across a heartbeat.
+  monitors: "M1.5 8.5h3l1.5-4 3 8 1.5-4h4",
   projects: "M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z",
   search: "M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM10.6 10.6L14 14",
   user: "M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2.5 14c.6-2.6 2.8-4 5.5-4s4.9 1.4 5.5 4",

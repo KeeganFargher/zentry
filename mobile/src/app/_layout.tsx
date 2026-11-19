@@ -97,6 +97,8 @@ function Navigator(): JSX.Element | null {
         <Stack.Screen name="issues/[id]/index" options={{ headerShown: false }} />
         <Stack.Screen name="issues/[id]/events" options={{ title: "Events" }} />
         <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
+        {/* The screen names itself once the monitor has loaded. */}
+        <Stack.Screen name="monitors/[id]" options={{ title: "Monitor" }} />
       </Stack.Protected>
       <Stack.Protected guard={session === null}>
         <Stack.Screen name="pair" options={{ headerShown: false }} />

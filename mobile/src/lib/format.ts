@@ -87,6 +87,16 @@ export function shortDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** "5:35 PM", or "17:35" where the phone uses a 24-hour clock. */
+export function minuteTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** "Nov 19, 5:35 PM": a recent moment, short enough for a list line. */
+export function shortDateTime(timestamp: number): string {
+  return `${shortDate(timestamp)}, ${minuteTime(timestamp)}`;
+}
+
 export function hourOfDay(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString(undefined, { hour: "numeric" });
 }

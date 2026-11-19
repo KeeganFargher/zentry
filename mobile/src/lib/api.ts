@@ -11,17 +11,24 @@ import type {
   ApiIssueStats,
   ApiIssueSubscription,
   ApiMe,
+  ApiMonitor,
   ApiNotificationSettings,
   ApiPaired,
   ApiProject,
   ApiTag,
   IssueStatus,
   Json,
+  MonitorDetail,
+  MonitorMember,
+  MonitorTimeline,
   NotificationProvider,
   NotificationScope,
   NotificationType,
   NotificationValue,
 } from "@contract";
+
+/** A timeline's range, and how many buckets to split it into. */
+export type TimelineWindow = { since: number; until: number; buckets: number };
 
 export type NotificationChange = {
   provider: NotificationProvider;
@@ -154,6 +161,30 @@ export class Api {
 
   projects(org: string): Promise<ApiProject[]> {
     return this.#get(`/organizations/${org}/projects/`);
+  }
+
+  monitors(org: string): Promise<ApiMonitor[]> {
+    return this.#get(`/organizations/${org}/monitors/`);
+  }
+
+  /** The organization's members, to name who created a monitor. */
+  monitorMembers(org: string): Promise<MonitorMember[]> {
+    return this.#get(`/organizations/${org}/monitor-members/`);
+  }
+
+  monitor(org: string, id: string): Promise<MonitorDetail> {
+    return this.#get(`/organizations/${org}/monitors/${id}/`);
+  }
+
+  /** The monitor's ticks between two times, bucketed on the server. */
+  monitorTimeline(org: string, id: string, window: TimelineWindow): Promise<MonitorTimeline> {
+    const query = new URLSearchParams({
+      since: String(window.since),
+      until: String(window.until),
+      buckets: String(window.buckets),
+    });
+
+    return this.#get(`/organizations/${org}/monitors/${id}/timeline/?${query.toString()}`);
   }
 
   issues(org: string, query: URLSearchParams): Promise<ApiIssueList> {

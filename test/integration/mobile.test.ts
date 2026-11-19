@@ -164,6 +164,8 @@ describe("device tokens", () => {
     expect((await app("/organizations/default/projects/", { token })).status).toBe(200);
     expect((await app("/organizations/default/issues/", { token })).status).toBe(200);
     expect((await app("/organizations/default/notifications/", { token })).status).toBe(200);
+    expect((await app("/organizations/default/monitors/", { token })).status).toBe(200);
+    expect((await app("/organizations/default/monitor-members/", { token })).status).toBe(200);
 
     const create = await app("/organizations/default/projects/", {
       method: "POST",
@@ -174,6 +176,7 @@ describe("device tokens", () => {
     expect(create.status).toBe(403);
 
     const project = "/projects/default/anything";
+    const monitor = "/organizations/default/monitors/00000000-0000-4000-8000-000000000000";
 
     const webOnly: [method: string, path: string, body?: Json][] = [
       ["PUT", `${project}/`, { name: "x" }],
@@ -185,6 +188,12 @@ describe("device tokens", () => {
       ["PUT", "/organizations/default/limits/", { maxEventsPerMonth: 1 }],
       ["DELETE", "/organizations/default/issues/1/"],
       ["POST", "/me/pairings/"],
+      // Monitors are read-only on the phone.
+      ["POST", "/organizations/default/monitors/", { type: "cron" }],
+      ["PUT", `${monitor}/`, { version: 1 }],
+      ["PUT", `${monitor}/status/`, { status: "paused" }],
+      ["PUT", `${monitor}/mute/`, { minutes: 60 }],
+      ["GET", "/organizations/default/monitor-alert-rules/"],
     ];
 
     for (const [method, path, body] of webOnly) {

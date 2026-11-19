@@ -80,6 +80,10 @@ function OrganizationTabs(): JSX.Element {
           }}
         />
         <Tabs.Screen
+          name="monitors"
+          options={{ title: "Monitors", tabBarIcon: tabIcon("monitors") }}
+        />
+        <Tabs.Screen
           name="projects"
           options={{ title: "Projects", tabBarIcon: tabIcon("projects") }}
         />
