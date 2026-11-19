@@ -182,8 +182,8 @@ function Form({ org, context, mode, initial }: FormProps): JSX.Element {
   const editing = mode.kind === "edit";
   const project = context.projects.find(({ id }) => id === draft.projectId);
 
-  // The project select offers only these projects, and a stale one is
-  // refused before the form opens, so a miss here is a bug.
+  // The project select offers only these projects, and CreateMonitor and
+  // EditMonitor refuse a missing one before the form opens, so a miss here is a bug.
   if (project === undefined) {
     throw new Error(`Project ${draft.projectId} is not in the organization's projects`);
   }
@@ -302,6 +302,11 @@ export function EditMonitor({ org, id }: { org: string; id: string }): JSX.Eleme
   }
 
   const { monitor } = detail.data;
+
+  // The project may have been deleted since the monitor loaded; say so, as the detail page does.
+  if (!context.data.projects.some(({ id: projectId }) => projectId === monitor.projectId)) {
+    return <Notice loading={false} error="This monitor's project no longer exists." />;
+  }
 
   return (
     <Form

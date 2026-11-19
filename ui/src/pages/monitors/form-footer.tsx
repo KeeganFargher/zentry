@@ -7,7 +7,7 @@ import { useState } from "react";
 import type { JSX } from "react";
 
 import { useConfirm } from "~/components/overlays";
-import { api } from "~/lib/api";
+import { api, ApiFailure } from "~/lib/api";
 import { navigate } from "~/lib/router";
 import { toast } from "~/lib/toast";
 
@@ -42,18 +42,28 @@ function TestButton({ org, draft }: { org: string; draft: NewMonitor }): JSX.Ele
   const test = async (): Promise<void> => {
     setResult("Testing…");
 
-    try {
-      const preview = await api.previewMonitor(org, bodyOf(draft));
+    let preview: MonitorPreview;
 
-      // Only uptime drafts show this button, and an uptime draft previews as uptime.
-      if (preview.type !== "uptime") {
-        throw new Error(`An uptime test returned a ${preview.type} preview`);
+    try {
+      preview = await api.previewMonitor(org, bodyOf(draft));
+    } catch (cause) {
+      // The API's refusal (a bad URL, the rate limit) is the test's answer;
+      // anything else is a bug and surfaces.
+      if (!(cause instanceof ApiFailure)) {
+        throw cause;
       }
 
-      setResult(testText(preview));
-    } catch (cause) {
-      setResult(cause instanceof Error ? cause.message : "The test failed");
+      setResult(cause.message);
+
+      return;
     }
+
+    // Only uptime drafts show this button, and an uptime draft previews as uptime.
+    if (preview.type !== "uptime") {
+      throw new Error(`An uptime test returned a ${preview.type} preview`);
+    }
+
+    setResult(testText(preview));
   };
 
   return (
@@ -74,9 +84,11 @@ function EditActions({ org, monitor }: { org: string; monitor: ApiMonitor }): JS
     try {
       await api.setMonitorStatus(org, monitor, "archived");
     } catch (cause) {
-      toast(
-        `The monitor could not be deleted: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
+      if (!(cause instanceof ApiFailure)) {
+        throw cause;
+      }
+
+      toast(`The monitor could not be deleted: ${cause.message}`);
 
       return;
     }

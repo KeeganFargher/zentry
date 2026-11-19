@@ -208,7 +208,6 @@ function useSaveRule({ org, context, rule }: Omit<Props, "monitors">): Saving {
       setSaved(next);
       await saveLinks(org, { linked, ruleId: next.id });
       toast(rule === null ? "Alert created" : "Alert saved");
-      context.reloadRules();
       navigate(`/${org}/monitors/alerts/`);
     } catch (cause) {
       // Only the API's refusals are shown; anything else is a bug and surfaces.
@@ -219,6 +218,8 @@ function useSaveRule({ org, context, rule }: Omit<Props, "monitors">): Saving {
       setError(cause.message);
     } finally {
       setSaving(false);
+      // The rule may exist even when a link failed, so the Alerts list must see it.
+      context.reloadRules();
     }
   };
 

@@ -298,17 +298,16 @@ describe("the timeline for uptime and metric monitors", () => {
     ]);
   });
 
-  it("refuses more than 500 buckets", async () => {
+  it("accepts 500 buckets and refuses more", async () => {
     const monitor = await signalMonitor({
       type: "metric",
       config: { windowSeconds: 300, threshold: 10 },
     });
 
-    const response = await api(
-      timelineUrl(monitor.id, { since: HOUR, until: HOUR + 600 * MINUTE, buckets: 501 }),
-    );
+    const range = { since: HOUR, until: HOUR + 600 * MINUTE };
 
-    expect(response.status).toBe(400);
+    expect((await api(timelineUrl(monitor.id, { ...range, buckets: 500 }))).status).toBe(200);
+    expect((await api(timelineUrl(monitor.id, { ...range, buckets: 501 }))).status).toBe(400);
   });
 });
 
@@ -322,5 +321,34 @@ describe("monitor members", () => {
     await expect(response.json()).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ userId: member.id, email: member.email })]),
     );
+  });
+});
+
+describe("a monitor's creator", () => {
+  it("names the member who created it, and a former member once that user is deleted", async () => {
+    const { id: projectId } = await createProject();
+    const { id: userId } = await addMember(1);
+    const store = new MonitorStore(env.DB);
+
+    const monitor = await store.create(
+      1,
+      CreateMonitor.parse({
+        projectId,
+        name: "Created",
+        type: "metric",
+        config: { windowSeconds: 300, threshold: 10 },
+      }),
+      { userId, time: HOUR, requestKey: null },
+    );
+
+    if (monitor === null) {
+      throw new Error("monitor was not created");
+    }
+
+    expect(monitor.creator).toEqual({ kind: "member", userId });
+
+    await env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(userId).run();
+
+    expect((await store.find(1, monitor.id))?.creator).toEqual({ kind: "former_member" });
   });
 });
