@@ -70,6 +70,8 @@ async function gzip(text: string): Promise<ArrayBuffer> {
 
 const EVENT_ID = "9ec79c33ec9942ab8353589fcb2e04dc";
 
+const CHECK_IN = JSON.stringify({ check_in_id: EVENT_ID, monitor_slug: "nightly", status: "ok" });
+
 describe("ingest routing", () => {
   it("matches envelope and store paths with or without a trailing slash", () => {
     expect(matchIngestRoute(new URL("https://i.test/api/12/envelope/"))).toEqual({
@@ -240,6 +242,57 @@ describe("ingest bodies", () => {
     expect([session.status, await session.json()]).toEqual([200, {}]);
     expect([transaction.status, await transaction.json()]).toEqual([200, {}]);
     expect(sent).toEqual([]);
+  });
+
+  it("tells the SDK on every 200 to hold back what Zentry drops, and nothing it keeps", async () => {
+    const project = await projectWithKey();
+    const { deps } = harness();
+    const url = `https://i.test/api/${project.id}/envelope/?sentry_key=${project.key}`;
+    const store = `https://i.test/api/${project.id}/store/?sentry_key=${project.key}`;
+
+    const responses = [
+      // A real transaction item, as the SDKs send it.
+      await post(url, { body: '{}\n{"type":"transaction"}\n{"type":"transaction"}\n' }, deps),
+      await post(url, { body: envelope("{}", '{"type":"transaction"}') }, deps),
+      await post(url, { body: '{}\n{"type":"session"}\n{"sid":"1"}\n' }, deps),
+      await post(url, { body: envelope("{}", '{"message":"hi"}') }, deps),
+      await post(url, { body: `{}\n{"type":"check_in"}\n${CHECK_IN}\n` }, deps),
+      await post(store, { body: '{"message":"hi"}' }, deps),
+    ];
+
+    // The SDKs' data category names, not envelope item types. It never names
+    // error, default or monitor, which Zentry keeps, and is never empty,
+    // which would mean every category.
+    const limit =
+      "3600:transaction;span;session;internal;profile;profile_chunk;replay;attachment;" +
+      "feedback;log_item;trace_metric;metric_bucket;security:organization";
+
+    expect(
+      responses.map((response) => [response.status, response.headers.get("x-sentry-rate-limits")]),
+    ).toEqual(responses.map(() => [200, limit]));
+  });
+
+  it("keeps the dropped-category limit beside a check-in's limit in a mixed envelope", async () => {
+    const project = await projectWithKey();
+    const url = `https://i.test/api/${project.id}/envelope/?sentry_key=${project.key}`;
+    const body = `${envelope("{}", '{"message":"hi"}')}{"type":"check_in"}\n${CHECK_IN}\n`;
+    const allowed = harness();
+    const limited = harness({ allowCheckIn: async () => false });
+
+    const kept = await post(url, { body }, allowed.deps);
+    const refused = await post(url, { body }, limited.deps);
+
+    const keptLimits = kept.headers.get("x-sentry-rate-limits");
+    const refusedLimits = refused.headers.get("x-sentry-rate-limits");
+
+    expect(keptLimits).not.toBeNull();
+    expect(refusedLimits).not.toBeNull();
+    expect([kept.status, refused.status, limited.sent.length]).toEqual([200, 200, 1]);
+    expect(String(keptLimits).split(", ")).toHaveLength(1);
+    expect(String(refusedLimits).split(", ")).toEqual([
+      keptLimits,
+      "60:monitor:key:monitor_rate_limit",
+    ]);
   });
 
   it("refuses malformed input, unknown encodings and oversize bodies", async () => {

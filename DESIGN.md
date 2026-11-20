@@ -296,11 +296,24 @@ Item handling:
 |---|---|
 | `event` | Keep. At most one per envelope. |
 | `attachment`, `user_report`, `feedback` | Drop in v1. |
-| `transaction`, `span`, `session`, `sessions`, `client_report`, `profile`, `profile_chunk`, `replay_event`, `replay_recording`, `replay_video`, `check_in`, `statsd`, `metric_buckets`, `log`, `otel_log`, unknown | Drop. |
+| `check_in` | Keep, for cron monitors. At most one per envelope. |
+| `transaction`, `span`, `session`, `sessions`, `client_report`, `profile`, `profile_chunk`, `replay_event`, `replay_recording`, `replay_video`, `statsd`, `metric_buckets`, `log`, `otel_log`, unknown | Drop. |
 
 An event item whose JSON has `"type":"transaction"` is also dropped. An
 envelope with nothing kept returns `200 {}`. A 4xx here would make some SDKs
 log or retry.
+
+Every 200 also carries
+`X-Sentry-Rate-Limits: 3600:<dropped categories>:organization`, which tells
+the SDK to hold back the data categories Zentry drops for an hour. Each
+dropped item still costs a Worker request, and an SDK with tracing on sends a
+transaction for every request it serves: one .NET API sent about 400,000 a
+week while reporting a few thousand errors. The JS and .NET SDKs read the
+header on any status, and match it against the item's data category, not
+its item type, so the list uses category names (`internal` for client
+reports, `log_item`, `metric_bucket`); see `DROPPED_CATEGORIES` in
+`src/ingest/http.ts`. It never names `error`, `default` or `monitor`, which
+Zentry keeps. A check-in's own limit is appended to it, comma-separated.
 
 For `/store/`, the body is the event JSON.
 
@@ -340,8 +353,8 @@ would not.
 
 | Case | Status | Body and headers |
 |---|---|---|
-| Accepted | 200 | `{"id":"<event_id>"}` |
-| Nothing kept | 200 | `{}` |
+| Accepted | 200 | `{"id":"<event_id>"}`, `X-Sentry-Rate-Limits: 3600:<dropped categories>:organization` (§5.5) |
+| Nothing kept | 200 | `{}`, the same header |
 | Bad key | 401 | `{"detail":"…"}` |
 | Malformed | 400 | `{"detail":"…"}` |
 | Too large | 413 | `{"detail":"…"}` |
@@ -374,7 +387,8 @@ Every refusal is a `429` with `Retry-After` and
 `X-Sentry-Rate-Limits: <seconds>::<scope>:<reason>`, Relay's format
 (`relay-server/src/utils/rate_limits.rs`). The categories field is empty,
 which means all categories, so the SDK also pauses sessions and transactions;
-Zentry drops those, but each still costs a Worker request. Layers 1 to 3 apply
+Zentry drops those, but each still costs a Worker request (outside a limit,
+every 200 holds those back on its own, §5.5). Layers 1 to 3 apply
 to every envelope; layer 4 only to envelopes that carry an event.
 
 1. **Monthly cap.** `organizations.max_events_per_month` (default 1,000,000,
@@ -1776,6 +1790,10 @@ What changed when the design met running code. The code is the reference.
     Sentry's order and titles, hide `type`, sort their rows and format bytes,
     battery level, yes/no flags and start times. Relative times on this page
     read "5 minutes ago".
+- **Every 200 from ingest holds back the categories Zentry drops** (§5.5).
+  A plain `200 {}` for a transaction looked like success, so an SDK with
+  tracing on kept sending one per request it served: about 400,000 Worker
+  requests a week against a few thousand errors.
 
 **Known differences from the text above, left as they are**
 

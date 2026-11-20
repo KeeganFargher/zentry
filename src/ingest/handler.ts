@@ -269,8 +269,10 @@ async function receiveItems(input: EnvelopeInput, deps: IngestDeps): Promise<Res
     });
     const limit = checkIn.headers.get("x-sentry-rate-limits");
 
+    // Appended, not set: a 200 already limits the categories Zentry drops,
+    // and the header takes comma-separated limits.
     if (limit !== null && event.ok) {
-      event.headers.set("X-Sentry-Rate-Limits", limit);
+      event.headers.append("X-Sentry-Rate-Limits", limit);
     }
   }
 

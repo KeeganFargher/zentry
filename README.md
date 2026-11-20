@@ -258,7 +258,10 @@ In the Worker, from broadest to narrowest:
 | Full events stored per issue per hour | 100 | `MAX_STORED_PER_GROUP_HOUR` | (counted, not stored) |
 
 Every 429 carries `Retry-After` and `X-Sentry-Rate-Limits`, so the SDKs stop
-sending until it passes. The monthly cap is the ceiling on the bill: at the
+sending until it passes. Every 200 carries `X-Sentry-Rate-Limits` too, for
+the kinds Zentry drops (transactions, sessions, profiles, replays, logs and
+the like), so an SDK with tracing on does not spend a Worker request on each
+one (DESIGN.md §5.5). The monthly cap is the ceiling on the bill: at the
 default, a whole month costs about $6 (DESIGN.md §12). When it is reached,
 nothing is accepted until the next month starts; an owner can raise the cap
 on the Spend limits page to resume sooner (it takes effect within a minute).
