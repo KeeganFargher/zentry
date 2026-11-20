@@ -4,12 +4,11 @@
 
 import { extendWindow, intervalPassed, openWindow, secondsUntil } from "@/core/digest";
 import { alertEmail } from "@/core/email-alert";
+import type { AlertNotice } from "@/core/email-alert";
 import { digestEmail } from "@/core/email-messages";
 import type { DigestItem, DigestNotice } from "@/core/email-messages";
-import { alertPush, digestPush } from "@/core/push-messages";
 import type { UnsubscribeTarget } from "@/core/unsubscribe";
-import { errorText, logError } from "@/shared/log";
-import type { AlertReason, EventSummary, IssueNotice, ProjectNotice } from "@/shared/notify";
+import type { AlertReason, IssueNotice, ProjectNotice } from "@/shared/notify";
 
 import { withMail } from "./deps";
 import type { MailDeps, NotifyDeps } from "./deps";
@@ -19,6 +18,7 @@ import type { ProviderSend } from "./providers";
 import { pushTo } from "./push";
 import { recipients } from "./recipients";
 import type { Audience } from "./recipients";
+import { alertPushContent, digestPushContent, eventForEmail, eventReader } from "./summaries";
 
 export type AlertJob = { id: number; kind: AlertReason; groupId: number };
 
@@ -30,39 +30,20 @@ function unsubscribeTarget(userId: number, project: ProjectNotice): UnsubscribeT
   return { userId, type: "alerts", scope: "project", scopeId: project.id };
 }
 
-/**
- * The event the alert shows. Without it the alert still goes out, with only
- * the issue's own fields: the event may not have been stored (the per-issue
- * cap), may have aged out, or R2 may have failed to answer.
- */
-async function latestEvent(deps: MailDeps, issue: IssueNotice): Promise<EventSummary | null> {
-  try {
-    return await deps.latestEvent(issue);
-  } catch (cause) {
-    logError("alert event unreadable", { group_id: issue.id, error: errorText(cause) });
-
-    return null;
-  }
-}
-
-async function emailAlert(deps: MailDeps, item: DigestItem, key: string): Promise<void> {
-  const { project } = item.issue;
-  const event = await latestEvent(deps, item.issue);
+async function emailAlert(deps: MailDeps, notice: AlertNotice, key: string): Promise<void> {
+  const { project } = notice.issue;
 
   for (const recipient of await recipients(deps, alertAudience(project), "email")) {
     const link = await unsubscribeUrl(deps, unsubscribeTarget(recipient.userId, project));
 
-    const content = alertEmail(
-      { issue: item.issue, reason: item.reason, event },
-      { appUrl: deps.config.appUrl, unsubscribeUrl: link },
-    );
+    const content = alertEmail(notice, { appUrl: deps.config.appUrl, unsubscribeUrl: link });
 
     await deliver(deps, {
       ...content,
       key: `${key}:${recipient.userId}`,
       kind: "alerts",
       recipient,
-      groupId: item.issue.id,
+      groupId: notice.issue.id,
       unsubscribeUrl: link,
     });
   }
@@ -95,20 +76,25 @@ async function pushRecipients(deps: NotifyDeps, project: ProjectNotice): Promise
 /** One issue's alert to everyone who wants it, by email and push. `key` makes each send unique. */
 async function sendAlert(deps: NotifyDeps, item: DigestItem, key: string): Promise<void> {
   const mail = withMail(deps);
+  // Read when first needed and then shared: the email shows it, and the push
+  // summary is written from it. Nothing reads it when neither wants it.
+  const read = eventReader(deps, item.issue);
 
+  // The summary is written inside the push provider, so a Workers AI problem
+  // can never hold back the email.
   const push: ProviderSend = [
     "push",
     async () =>
       pushTo(deps, await pushRecipients(deps, item.issue.project), {
         key,
-        content: alertPush(item.issue, item.reason),
+        compose: () => alertPushContent(deps, item, read),
       }),
   ];
 
-  await eachProvider(
-    deps,
-    mail === null ? [push] : [["email", () => emailAlert(mail, item, key)], push],
-  );
+  const email = async (mailDeps: MailDeps): Promise<void> =>
+    emailAlert(mailDeps, { ...item, event: await eventForEmail(read, item.issue) }, key);
+
+  await eachProvider(deps, mail === null ? [push] : [["email", () => email(mail)], push]);
 }
 
 async function sendDigest(deps: NotifyDeps, digest: DigestNotice): Promise<void> {
@@ -119,7 +105,7 @@ async function sendDigest(deps: NotifyDeps, digest: DigestNotice): Promise<void>
     async () =>
       pushTo(deps, await pushRecipients(deps, digest.project), {
         key: `digest:${digest.project.id}:${digest.since}`,
-        content: digestPush(digest.items),
+        compose: () => digestPushContent(deps, digest.items),
       }),
   ];
 

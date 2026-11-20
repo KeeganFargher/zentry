@@ -315,7 +315,7 @@ export class IssueStore {
     return new Set(results.map((row) => row.id));
   }
 
-  /** Cascades to the issue's hashes, events, tags, stats, activity and seen marks. */
+  /** Cascades to the issue's hashes, events, tags, stats, activity, seen marks and push summary. */
   async delete(organizationId: number, issueId: number): Promise<void> {
     await this.#db
       .prepare(`DELETE FROM groups WHERE id = ?1 AND ${IN_ORGANIZATION} AND monitor_id IS NULL`)

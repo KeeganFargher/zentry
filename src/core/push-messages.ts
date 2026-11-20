@@ -3,7 +3,7 @@
 // detail is one tap away in the app, which `data` opens.
 
 import type { IssueStatus } from "@/shared/contract";
-import type { AlertReason, IssueNotice } from "@/shared/notify";
+import type { AlertReason, IssueNotice, IssueSummary } from "@/shared/notify";
 import type { PushContent } from "@/shared/push";
 
 import { clip, count, formatUtc } from "./email-messages";
@@ -12,7 +12,9 @@ import type { DigestItem, QuotaNotice, SpikeNotice } from "./email-messages";
 // Android shows about this much of a body before "…"; the rest only costs bytes
 // of the 4 KiB payload Expo allows.
 const MAX_BODY = 240;
-const DIGEST_LISTED = 3;
+
+/** A digest push lists this many issues; the rest are counted. */
+export const DIGEST_LISTED = 3;
 
 const ALERT_TITLES = { new_issue: "New issue", regression: "Regression" } satisfies {
   [reason in AlertReason]: string;
@@ -31,6 +33,72 @@ function issueBody(issue: IssueNotice): string {
   return clip(issue.culprit === "" ? issue.title : `${issue.title}\n${issue.culprit}`, MAX_BODY);
 }
 
+/**
+ * An alert with the summary Workers AI wrote (DESIGN.md §19.2), and the
+ * environment of the latest event: empty when it is unknown, as on
+ * EventSummary.
+ */
+export type SummarizedItem = DigestItem & { summary: IssueSummary; environment: string };
+
+/** One issue of a summarized digest. */
+export type DigestLine = { issue: IssueNotice; summary: IssueSummary };
+
+const COMPACT = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+/** 1.3K, 12.3K, 1.3M: a count that fits a lock screen line. */
+export function compactCount(value: number): string {
+  return COMPACT.format(value);
+}
+
+/**
+ * Zentry's own facts under the model's text. Nothing here comes from the
+ * model, so a crafted error cannot dress itself up as Zentry's judgement. The
+ * short id already names the project. The count only says something on a
+ * regression: a new issue has been seen about once.
+ */
+function factsLine(item: SummarizedItem): string {
+  const { issue } = item;
+
+  return [
+    issue.shortId,
+    ...(item.environment === "" ? [] : [item.environment]),
+    ...(item.reason === "regression" ? [`${compactCount(issue.timesSeen)} events`] : []),
+  ].join(" · ");
+}
+
+/** The model's headline and detail, then the facts line. */
+export function summaryPush(item: SummarizedItem): PushContent {
+  const { headline, detail } = item.summary;
+
+  return {
+    channel: "alerts",
+    title: item.reason === "regression" ? `Back again: ${headline}` : headline,
+    body: clip(`${detail}\n${factsLine(item)}`, MAX_BODY),
+    data: issueData(item.issue),
+  };
+}
+
+/** A digest listing each issue's headline instead of its title. */
+export function summaryDigestPush(items: DigestLine[], total: number): PushContent {
+  const [first] = items;
+
+  if (first === undefined) {
+    throw new Error("a digest push needs at least one issue");
+  }
+
+  const { project } = first.issue;
+  const listed = items.map((item) => `${item.issue.shortId} ${item.summary.headline}`);
+  const more = total - listed.length;
+
+  return {
+    channel: "alerts",
+    title: `${count(total)} issues in ${project.slug}`,
+    body: clip([...listed, ...(more > 0 ? [`and ${count(more)} more`] : [])].join("\n"), MAX_BODY),
+    data: { kind: "issues", organization: project.organization.slug, projectId: project.id },
+  };
+}
+
+/** Today's alert, from the issue's own title: sent when no summary could be written. */
 export function alertPush(issue: IssueNotice, reason: AlertReason): PushContent {
   return {
     channel: "alerts",

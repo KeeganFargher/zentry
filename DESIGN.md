@@ -820,7 +820,7 @@ what it left.
 ## 8. D1 schema
 
 `migrations/0001_init.sql`; the email tables are in §18 and the mobile app's
-(`device_pairings`, `devices`, `push_sends`) in §19. D1 enforces foreign keys. Tables with a composite
+(`device_pairings`, `devices`, `push_sends`, `issue_summaries`) in §19. D1 enforces foreign keys. Tables with a composite
 primary key are `WITHOUT ROWID`, so the key is the table and no second index
 is written.
 
@@ -1334,6 +1334,7 @@ fixed:
 | `db/` | Every SQL statement, behind typed functions | `shared` |
 | `blobs/` | Every R2 read and write, and all key construction | `shared` |
 | `push/` | Every request to Expo's push service (§19) | `shared` |
+| `ai/` | Every call to Workers AI: the push summaries (§19.2) | `shared` |
 | `ingest/` | HTTP ingest | `shared`, `core`, `db` |
 | `consumer/` | Queue handler | `shared`, `core`, `db`, `blobs` |
 | `api/` | Read API | `shared`, `core`, `db`, `blobs` |
@@ -1381,6 +1382,7 @@ const DOMAINS = [
   "db",
   "blobs",
   "push",
+  "ai",
   "ingest",
   "consumer",
   "api",
@@ -2112,6 +2114,56 @@ a project's issues, or settings. The app parses it with a schema on tap. On
 Android each type has its own notification channel (`alerts`, `workflow`,
 `spikeProtection`, `quota`), so it can be muted in the phone's settings.
 
+**Summaries.** An issue's title is often a bare exception type and a JSON
+blob, which says nothing on a lock screen. So alert pushes lead with a
+summary Workers AI writes: a headline (at most 50 characters) and one
+sentence (at most 140) on what broke, whether the fault looks like the
+developer's code or an outside service, and what it affects. The plan and the
+model eval are in `docs/push-summaries-plan.md` and
+`docs/push-summaries-eval.md`.
+
+- **Written once per issue,** the first time it is pushed, and stored in
+  `issue_summaries` (migration `0009`) with the prompt version, the model and
+  the event it came from. Later pushes reuse it, regressions included. A new
+  `PROMPT_VERSION` writes summaries again on their next push.
+- **Only what is pushed is summarized.** The text is composed after a phone
+  is claimed in `push_sends`, so nothing is asked when no phone wants the
+  push, or when a retry finds every push already sent. A digest summarizes
+  the 3 issues it lists.
+- **The model writes words, never decisions.** Whether and when a push goes
+  out is unchanged. The line under the summary (short id, environment, and
+  the event count on a regression) is Zentry's own data, so a crafted error
+  cannot pass its text off as Zentry's judgement. The prompt
+  (`src/core/issue-summary.ts`) leaves out user fields, tags, request bodies,
+  breadcrumbs and source lines, and tells the model the event is data, never
+  instructions.
+- **A failure sends the plain push.** An outage, the model's limit of 20
+  requests a minute, a retired model, or an answer that does not fit (the
+  parse in `src/ai/summaries.ts`) sends the push with the issue's title, as
+  before, and logs `push summary failed`. Nothing is stored, so the next push
+  tries again. This is the push path's one fallback, chosen deliberately: an
+  alert must not depend on Workers AI being up, and failing the row instead
+  would drop alerts after five attempts and leave a digest retrying forever.
+  The summary is written inside the push provider, so it never holds back
+  email.
+- **Everything else fails the row.** A D1 error, an R2 error reading the
+  event (it is read lazily, once, only when a summary is written), or a
+  missing `AI` binding throws, and the row is retried as any other failure.
+  A summary is never stored from the issue alone because R2 was down for a
+  moment. Only a missing event (sampled or aged out) writes from the issue
+  alone, and the row records `event_id` as null.
+- **Model:** `@cf/deepseek-ai/deepseek-v4.1-flash-1017`, reasoning `low`,
+  about $0.0007 and 4 s a summary. Length limits are in the prompt and the
+  parse, not in the JSON schema, whose constrained decoding cuts text off
+  mid-sentence. Workers AI retires models often; a retired one shows up as
+  every summary failing, and the replacement is chosen by rerunning the eval.
+- **Tests and CI** run without remote bindings: `remoteBindings: false` in
+  `vitest.config.ts`, where the notify tests inject a summarizer, and
+  `wrangler dev --local` for e2e, where summaries fail and pushes go out
+  plain. The AI binding always opens a remote session, and without
+  credentials `wrangler dev` would not start. `pnpm dev` does use it, so
+  local pushes need `wrangler login` and cost a few neurons.
+
 ### 19.3 The app
 
 - Expo SDK 58, Expo Router, TanStack Query. `mobile/` is its own pnpm root
@@ -2148,6 +2200,8 @@ Android each type has its own notification channel (`alerts`, `workflow`,
 - Owners signing out other members' phones, and Access revocation reaching
   phones directly.
 - A monochrome notification icon (Android shows the app icon's shape).
+- Push summaries in the app's issue list and in alert emails, and a way to
+  have an issue summarized again when its cause changes (§19.2).
 
 ---
 

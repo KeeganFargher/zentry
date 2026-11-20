@@ -7,6 +7,7 @@ const DOMAINS = [
   "db",
   "blobs",
   "push",
+  "ai",
   "ingest",
   "consumer",
   "api",
@@ -116,6 +117,8 @@ export default defineConfig({
     { files: ["src/blobs/**"], rules: { "no-restricted-imports": except("shared") } },
     // push is the Expo client, as blobs is the R2 one (DESIGN.md §19).
     { files: ["src/push/**"], rules: { "no-restricted-imports": except("shared") } },
+    // ai is the Workers AI client, as push is the Expo one (DESIGN.md §19.2).
+    { files: ["src/ai/**"], rules: { "no-restricted-imports": except("shared") } },
     {
       files: ["src/ingest/**"],
       rules: { "no-restricted-imports": except("shared", "core", "db") },
@@ -182,6 +185,8 @@ export default defineConfig({
         "src/db/**",
         "src/blobs/events.ts",
         "src/push/expo.ts",
+        // Workers AI's replies, and the summary the model wrote inside one.
+        "src/ai/summaries.ts",
         // A tapped push's data, which crossed Expo and FCM.
         "mobile/src/lib/push.ts",
         // The build's environment variables, set by CI or the person building.

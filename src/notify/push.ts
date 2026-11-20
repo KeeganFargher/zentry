@@ -10,8 +10,13 @@ import type { PushContent, PushTicket } from "@/shared/push";
 import type { NotifyDeps } from "./deps";
 import { SendDeferred } from "./providers";
 
-/** One push to fan out. `key` is unique to what it is about, as an email's is. */
-export type PushJob = { key: string; content: PushContent };
+/**
+ * One push to fan out. `key` is unique to what it is about, as an email's is.
+ * The content is built only once some phone still needs it, so an alert's
+ * Workers AI call is skipped when nobody has a phone or a retry finds every
+ * push already sent.
+ */
+export type PushJob = { key: string; compose: () => Promise<PushContent> };
 
 type Claimed = { target: PushTarget; key: string };
 
@@ -105,7 +110,15 @@ async function sendChunk(deps: NotifyDeps, chunk: Claimed[], content: PushConten
 export async function pushTo(deps: NotifyDeps, userIds: number[], job: PushJob): Promise<void> {
   const claimed = await claimAll(deps, await deps.devices.pushTargets(userIds), job);
 
+  if (claimed.length === 0) {
+    return;
+  }
+
+  // Composed after claiming: a throw here leaves the claims at 'sending',
+  // which a retry sends again (PushSendStore.claim).
+  const content = await job.compose();
+
   for (let start = 0; start < claimed.length; start += SEND_BATCH) {
-    await sendChunk(deps, claimed.slice(start, start + SEND_BATCH), job.content);
+    await sendChunk(deps, claimed.slice(start, start + SEND_BATCH), content);
   }
 }

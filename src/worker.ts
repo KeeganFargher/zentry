@@ -2,6 +2,7 @@
 // bindings. It builds the stores and hands typed functions to the four
 // handlers.
 
+import { IssueSummarizer } from "@/ai/summaries";
 import { apiDeps } from "@/api-deps";
 import type { ApiDeps } from "@/api/context";
 import { serveApi, Sessions, serveAppApi } from "@/api/router";
@@ -22,6 +23,7 @@ import { handleUptimeBatch } from "@/cron/uptime";
 import { BatchStore } from "@/db/batch";
 import { CronStore } from "@/db/cron-store";
 import { DeviceStore } from "@/db/devices";
+import { IssueSummaryStore } from "@/db/issue-summaries";
 import { KeyStore } from "@/db/keys";
 import { MailStore } from "@/db/mail";
 import { enqueueMetricInput, MetricCapture } from "@/db/metric-input";
@@ -96,6 +98,22 @@ function signingKey(env: Env): string {
   return secrets.EMAIL_SIGNING_KEY ?? "";
 }
 
+/**
+ * wrangler.production.jsonc is kept by hand, out of git, and a binding left
+ * out of it arrives as undefined whatever the generated type says. Without it
+ * every summary would fail quietly into a plain push, so the push fails
+ * instead, loudly, and is retried once the binding is there.
+ */
+function summarizer(env: Env): IssueSummarizer {
+  const bindings: Partial<Pick<Env, "AI">> = env;
+
+  if (bindings.AI === undefined) {
+    throw new Error("the AI binding is missing from the Wrangler config (README, Mobile app)");
+  }
+
+  return new IssueSummarizer(bindings.AI);
+}
+
 /** Asks for a flush of the project's digest window after `delaySeconds`. */
 async function flushLater(env: Env, projectId: number, delaySeconds: number): Promise<void> {
   await env.NOTIFY_Q.send({ kind: "digest", project_id: projectId } satisfies NotifyMessage, {
@@ -144,6 +162,8 @@ function notifyDeps(env: Env): NotifyDeps {
       issue.lastEventId === null
         ? null
         : new EventBlobs(env.BLOBS).summary(issue.project.id, issue.lastEventId),
+    summarize: (prompt) => summarizer(env).summarize(prompt),
+    summaries: new IssueSummaryStore(env.DB),
     scheduleDigest: (projectId, delaySeconds) => flushLater(env, projectId, delaySeconds),
     drainAgain: () => wakeNotify(env),
     config: mailConfig(env),

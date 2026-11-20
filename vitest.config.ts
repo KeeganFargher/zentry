@@ -10,6 +10,10 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
+        // Tests never reach Cloudflare: CI has no credentials, and the AI
+        // binding would otherwise spend neurons. Notify tests inject their own
+        // summarizer.
+        remoteBindings: false,
         miniflare: {
           // The probe Worker itself is exercised by the multi-Worker Playwright suite.
           serviceBindings: { UPTIME_PROBE: () => new Response(null, { status: 503 }) },

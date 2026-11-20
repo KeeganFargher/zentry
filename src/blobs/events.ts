@@ -11,6 +11,7 @@ export type EventBlob = { projectId: number; eventId: string; json: string };
 const MaybeText = lenient(z.string());
 
 const SummaryFrame = z.object({
+  module: MaybeText,
   filename: MaybeText,
   function: MaybeText,
   lineno: lenient(z.number()),
@@ -29,6 +30,14 @@ const SummaryUser = z
   .object({ id: lenient(Text), email: MaybeText, username: MaybeText, ip_address: MaybeText })
   .transform(({ ip_address: ipAddress, ...rest }) => ({ ...rest, ipAddress }));
 
+// Ingest stored it without its query string and scrubbed of credentials
+// (core/context.ts), so it can go to Workers AI as it is.
+const SummaryUrl = z.object({ url: MaybeText }).transform(({ url }) => url);
+
+const SummaryRuntime = z
+  .object({ runtime: lenient(z.object({ name: MaybeText })) })
+  .transform(({ runtime }) => runtime?.name ?? null);
+
 const SummaryMessage = z
   .object({ message: MaybeText, formatted: MaybeText })
   .transform((message) => message.formatted ?? message.message);
@@ -38,16 +47,22 @@ const SummaryMessage = z
  * stored by an older version keeps its alert, with whatever fields it has.
  */
 const StoredSummary: z.ZodType<EventSummary, string> = jsonText(
-  z.object({
-    eventId: z.string(),
-    timestamp: z.number(),
-    environment: z.string().catch(""),
-    release: MaybeText,
-    message: lenient(SummaryMessage).transform((message) => message ?? null),
-    exceptions: lenientList(SummaryException),
-    tags: lenientList(z.tuple([z.string(), z.string()])),
-    user: lenient(SummaryUser),
-  }),
+  z
+    .object({
+      eventId: z.string(),
+      timestamp: z.number(),
+      environment: z.string().catch(""),
+      release: MaybeText,
+      platform: MaybeText,
+      transaction: MaybeText,
+      request: lenient(SummaryUrl),
+      contexts: lenient(SummaryRuntime),
+      message: lenient(SummaryMessage).transform((message) => message ?? null),
+      exceptions: lenientList(SummaryException),
+      tags: lenientList(z.tuple([z.string(), z.string()])),
+      user: lenient(SummaryUser),
+    })
+    .transform(({ request, contexts, ...rest }) => ({ ...rest, url: request, runtime: contexts })),
 );
 
 const PUT_CONCURRENCY = 10;

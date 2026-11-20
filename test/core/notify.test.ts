@@ -153,6 +153,10 @@ describe("emails", () => {
       timestamp: NOW,
       environment: "Production",
       release: "1.0.0",
+      platform: "csharp",
+      transaction: null,
+      url: null,
+      runtime: null,
       message: "Failed to process the job",
       exceptions: [
         {
@@ -160,6 +164,7 @@ describe("emails", () => {
           value: page,
           frames: [
             {
+              module: null,
               filename: "lib.cs",
               function: "Lib",
               lineno: 3,
@@ -168,6 +173,7 @@ describe("emails", () => {
               contextLine: null,
             },
             {
+              module: null,
               filename: "Jobs.cs",
               function: "Run",
               lineno: 42,

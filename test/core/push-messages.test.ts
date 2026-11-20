@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { alertPush, digestPush, quotaPush, spikePush, workflowPush } from "@/core/push-messages";
+import {
+  alertPush,
+  compactCount,
+  digestPush,
+  quotaPush,
+  spikePush,
+  summaryDigestPush,
+  summaryPush,
+  workflowPush,
+} from "@/core/push-messages";
 import type { IssueNotice } from "@/shared/notify";
+
+const SUMMARY = {
+  headline: "Discord rate limit blocking price alerts",
+  detail: "Discord is rate limiting the webhook, so price alerts likely failed to send.",
+};
 
 const NOW = Date.UTC(2026, 10, 17, 10, 30);
 
@@ -63,6 +77,64 @@ describe("push messages", () => {
 
   it("refuses an empty digest, which would be a bug upstream", () => {
     expect(() => digestPush([])).toThrow(/at least one issue/);
+    expect(() => summaryDigestPush([], 0)).toThrow(/at least one issue/);
+  });
+
+  it("leads with the model's summary and puts Zentry's own facts under it", () => {
+    const push = summaryPush({
+      issue: { ...issue(48, "System.Exception"), timesSeen: 1300 },
+      reason: "new_issue",
+      summary: SUMMARY,
+      environment: "production",
+    });
+
+    expect(push).toEqual({
+      channel: "alerts",
+      title: "Discord rate limit blocking price alerts",
+      body: "Discord is rate limiting the webhook, so price alerts likely failed to send.\nAPI-48 · production",
+      data: { kind: "issue", organization: "acme", issueId: 48 },
+    });
+  });
+
+  it("marks a regression and counts its events, and skips an unknown environment", () => {
+    const push = summaryPush({
+      issue: { ...issue(48, "System.Exception"), timesSeen: 1300 },
+      reason: "regression",
+      summary: SUMMARY,
+      environment: "",
+    });
+
+    expect(push.title).toBe("Back again: Discord rate limit blocking price alerts");
+    expect(push.body.endsWith("\nAPI-48 · 1.3K events")).toBe(true);
+  });
+
+  it("lists headlines in a summarized digest and counts the issues left out", () => {
+    const items = [1, 2, 3].map((id) => ({
+      issue: issue(id, `Error ${id}`),
+      reason: "new_issue" as const,
+      summary: { headline: `Headline ${id}`, detail: "d" },
+      environment: "production",
+    }));
+
+    const push = summaryDigestPush(items, 5);
+
+    expect(push.title).toBe("5 issues in api");
+    expect(push.body).toBe("API-1 Headline 1\nAPI-2 Headline 2\nAPI-3 Headline 3\nand 2 more");
+  });
+
+  it.each([
+    [7, "7"],
+    [999, "999"],
+    [1000, "1K"],
+    [1300, "1.3K"],
+    [1950, "2K"],
+    [9999, "10K"],
+    [12_345, "12.3K"],
+    [999_999, "1M"],
+    [1_250_000, "1.3M"],
+    [1_000_000_000, "1B"],
+  ])("writes %i as %s", (value, text) => {
+    expect(compactCount(value)).toBe(text);
   });
 
   it("names who changed an issue, in the web UI's words", () => {

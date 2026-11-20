@@ -1,13 +1,14 @@
 // What the notify consumer receives. DESIGN.md §18.
 
 import type { DeviceStore } from "@/db/devices";
+import type { IssueSummaryStore } from "@/db/issue-summaries";
 import type { MailStore } from "@/db/mail";
 import type { NotifyStore } from "@/db/notify";
 import type { NotificationSettingsStore } from "@/db/notify-settings";
 import type { PushSendStore } from "@/db/pushes";
 import type { ReportStore } from "@/db/reports";
 import type { NotificationProvider } from "@/shared/contract";
-import type { EventSummary, IssueNotice } from "@/shared/notify";
+import type { EventSummary, IssueNotice, SummaryPrompt, SummaryResult } from "@/shared/notify";
 import type { PushMessage, PushResult, PushTicket } from "@/shared/push";
 
 export type MailConfig = {
@@ -38,6 +39,9 @@ export type NotifyDeps = {
   sendPush: (messages: PushMessage[]) => Promise<PushResult<PushTicket[]>>;
   /** The issue's latest stored event, for the alert's detail; null when gone. */
   latestEvent: (issue: IssueNotice) => Promise<EventSummary | null>;
+  /** Asks Workers AI for an issue's push summary (DESIGN.md §19.2). Never throws. */
+  summarize: (prompt: SummaryPrompt) => Promise<SummaryResult>;
+  summaries: IssueSummaryStore;
   /** Asks for a digest flush of the project after `delaySeconds`. */
   scheduleDigest: (projectId: number, delaySeconds: number) => Promise<void>;
   /** Asks for another drain, when one stopped with rows left. */

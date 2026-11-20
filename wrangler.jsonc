@@ -34,6 +34,11 @@
   // below, nothing is sent at all.
   "services": [{ "binding": "UPTIME_PROBE", "service": "zentry-uptime-probe" }],
   "send_email": [{ "name": "EMAIL" }],
+  // Workers AI writes the plain-language summary in each issue's push
+  // (DESIGN.md §19.2). It always runs remotely, so `wrangler dev` needs
+  // `wrangler login` and local pushes cost a few neurons. Tests and e2e turn
+  // remote bindings off; there every summary fails and pushes go out plain.
+  "ai": { "binding": "AI", "remote": true },
   // Signs unsubscribe links: `wrangler secret put EMAIL_SIGNING_KEY`, and a
   // line in .dev.vars for local development.
   "secrets": { "required": ["EMAIL_SIGNING_KEY"] },

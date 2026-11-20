@@ -37,6 +37,10 @@ Open <http://localhost:8787>, create a project, and copy its DSN into an
 app's `Sentry.init`. Events appear a few seconds later (the queue batches
 for up to five seconds).
 
+`pnpm dev` needs `pnpm wrangler login` first: the Workers AI binding that
+writes push summaries always runs remotely, and `wrangler dev` will not start
+without credentials. Each local push it summarizes costs a few neurons.
+
 `pnpm dev:ui` serves the UI with hot reload on another port and proxies the
 API to `pnpm dev`.
 
@@ -316,6 +320,16 @@ guards the UI host. Building it and setting up push are in
 
 For production, set `MOBILE_API_URL` in `wrangler.production.jsonc` to
 `https://<your ingest host>`, and apply the migrations (`pnpm migrate:remote`).
+
+Alert pushes lead with a two-line summary that Workers AI writes the first
+time an issue is pushed: what broke, and whether the fault looks like your
+code or an outside service. It needs the Workers Paid plan and the `ai`
+binding, so copy `"ai": { "binding": "AI", "remote": true }` from
+`wrangler.jsonc` into `wrangler.production.jsonc`. A summary costs about
+$0.0007, inside the free 10,000 neurons a day for a few hundred a month. When
+Workers AI fails, the push goes out with the issue's title, as before, and the
+failure is logged as `push summary failed`. DESIGN.md §19.2 has the details,
+and [docs/push-summaries-eval.md](docs/push-summaries-eval.md) why this model.
 
 ## Licences
 

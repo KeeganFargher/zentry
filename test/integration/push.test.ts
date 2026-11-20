@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { processMessages } from "@/consumer/handler";
+import { PROMPT_VERSION } from "@/core/issue-summary";
 import { checkPushReceipts } from "@/cron/push-receipts";
 import type { PushReceiptDeps } from "@/cron/push-receipts";
 import { DeviceStore } from "@/db/devices";
+import { IssueSummaryStore } from "@/db/issue-summaries";
 import { IssueStore } from "@/db/issues";
 import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
@@ -12,6 +14,7 @@ import { PushSendStore } from "@/db/pushes";
 import { flushDigest } from "@/notify/alerts";
 import { drainOutbox } from "@/notify/handler";
 import type { NotificationType } from "@/shared/contract";
+import type { AlertReason, IssueSummary } from "@/shared/notify";
 import type { PushReceipt } from "@/shared/push";
 import { DAY, MINUTE } from "@/shared/time";
 
@@ -24,7 +27,13 @@ import {
   message,
   NOW,
 } from "./helpers";
-import { addMember, errorWithCode, notifyHarness, outboxKinds } from "./notify-helpers";
+import {
+  addMember,
+  errorWithCode,
+  notifyHarness,
+  outboxKinds,
+  TEST_SUMMARY,
+} from "./notify-helpers";
 import type { Harness } from "./notify-helpers";
 
 let index = 0;
@@ -124,9 +133,14 @@ describe("push alerts", () => {
     const [group] = await groupsOf(projectId);
 
     expect(first?.channelId).toBe("alerts");
-    expect(first?.title).toMatch(/^New issue in p\d+-[a-z0-9]+ · P\d+-[A-Z0-9]+-1$/);
-    expect(first?.body).toContain("ValueError: boom");
+    expect(first?.title).toBe(TEST_SUMMARY.headline);
+    expect(first?.body).toMatch(
+      new RegExp(`^${TEST_SUMMARY.detail}\\nP\\d+-[A-Z0-9]+-1 · production$`, "u"),
+    );
     expect(first?.data).toMatchObject({ kind: "issue", issueId: group?.id });
+    // The model was asked once, from the stored event, for all three phones.
+    expect(harness.prompts).toHaveLength(1);
+    expect(harness.prompts[0]?.user).toContain('"value":"boom"');
     // Email still goes out alongside.
     expect(harness.sent).toHaveLength(2);
   });
@@ -339,9 +353,13 @@ describe("push kinds", () => {
     await flushDigest(harness.deps, projectId);
 
     expect(harness.pushed.map((push) => push.title)).toEqual([
-      expect.stringMatching(/^New issue in /),
+      TEST_SUMMARY.headline,
       expect.stringMatching(/^2 issues in /),
     ]);
+
+    expect(harness.pushed[1]?.body).toMatch(
+      new RegExp(`^P\\d+-[A-Z0-9]+-2 ${TEST_SUMMARY.headline}\\nP\\d+-[A-Z0-9]+-3 `, "u"),
+    );
   });
 
   it("never pushes the weekly report, with or without email", async () => {
@@ -387,6 +405,281 @@ async function bobFollowsEverything(organizationId: number, bobId: number): Prom
     NOW,
   );
 }
+
+/** Sends the alert, then fails to record it once: the alert is sent again. */
+class FailFirstRecord extends NotifyStore {
+  #failed = false;
+
+  override async recordAlert(groupId: number, reason: AlertReason, now: number): Promise<void> {
+    if (!this.#failed) {
+      this.#failed = true;
+
+      throw new Error("crashed before the alert was recorded");
+    }
+
+    await super.recordAlert(groupId, reason, now);
+  }
+}
+
+/** A summary store whose first lookup fails, as D1 might. */
+class FailFirstLookup extends IssueSummaryStore {
+  #failed = false;
+
+  override async get(groupId: number, promptVersion: number): Promise<IssueSummary | null> {
+    if (!this.#failed) {
+      this.#failed = true;
+
+      throw new Error("D1 is unavailable");
+    }
+
+    return super.get(groupId, promptVersion);
+  }
+}
+
+describe("push summaries", () => {
+  async function summaryRows(): Promise<number> {
+    const row = await env.DB.prepare(`SELECT count(*) AS n FROM issue_summaries`).first<{
+      n: number;
+    }>();
+
+    return row?.n ?? 0;
+  }
+
+  beforeEach(async () => {
+    await env.DB.prepare(`DELETE FROM issue_summaries`).run();
+  });
+
+  it("sends today's plain push and logs it when the model fails, and keeps nothing", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await phone(alice.id);
+    harness.replyToSummary(() => ({ ok: false, error: "Workers AI: 3021: rate limiting" }));
+    await send(projectId, "checkout");
+    await drainAll(harness);
+
+    expect(harness.pushed[0]?.title).toMatch(/^New issue in /);
+    expect(harness.pushed[0]?.body).toContain("ValueError: boom");
+    expect(harness.sent).toHaveLength(2);
+    expect(await summaryRows()).toBe(0);
+    expect(logged.mock.calls.flat().join("\n")).toContain("push summary failed");
+    logged.mockRestore();
+  });
+
+  it("writes an issue's summary once and reuses it when the issue regresses", async () => {
+    const { organizationId, projectId, alice } = await setup();
+    const harness = notifyHarness();
+
+    await phone(alice.id);
+    await send(projectId, "checkout");
+    await drainAll(harness);
+
+    const [group] = await groupsOf(projectId);
+
+    await new IssueStore(env.DB).setStatus({
+      organizationId,
+      issueIds: [group?.id ?? 0],
+      userId: alice.id,
+      status: "resolved",
+      now: NOW + MINUTE,
+    });
+
+    await env.DB.prepare(`DELETE FROM notify_outbox`).run();
+    await send(projectId, "checkout", NOW + 2 * MINUTE);
+    await drainAll(harness);
+    harness.advance(6 * MINUTE);
+    await flushDigest(harness.deps, projectId);
+
+    expect(harness.pushed.map((push) => push.title)).toEqual([
+      TEST_SUMMARY.headline,
+      `Back again: ${TEST_SUMMARY.headline}`,
+    ]);
+
+    expect(harness.pushed[1]?.body).toMatch(/\nP\d+-[A-Z0-9]+-1 · production · 2 events$/u);
+    expect(harness.prompts).toHaveLength(1);
+    expect(await summaryRows()).toBe(1);
+  });
+
+  it("does not ask the model when no phone wants the push", async () => {
+    const { projectId } = await setup();
+    const harness = notifyHarness();
+
+    await send(projectId, "checkout");
+    await drainAll(harness);
+
+    expect(harness.prompts).toEqual([]);
+    expect(harness.sent).toHaveLength(2);
+  });
+
+  it("does not ask the model again when a retry finds every push already sent", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await phone(alice.id);
+    // No summary is stored, so only the claimed push can stop a second call.
+    harness.replyToSummary(() => ({ ok: false, error: "Workers AI: 3021: rate limiting" }));
+    harness.deps.store = new FailFirstRecord(env.DB);
+    await send(projectId, "checkout");
+    await expect(drainOutbox(harness.deps)).rejects.toThrow(/notifications failed/);
+    await drainAll(harness);
+
+    expect(harness.pushed).toHaveLength(1);
+    expect(harness.prompts).toHaveLength(1);
+    logged.mockRestore();
+  });
+
+  it("retries instead of summarizing from less when the event cannot be read", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const read = harness.deps.latestEvent;
+    let failures = 1;
+
+    harness.deps.latestEvent = async (issue) => {
+      if (failures > 0) {
+        failures -= 1;
+
+        throw new Error("R2 is unavailable");
+      }
+
+      return read(issue);
+    };
+
+    await phone(alice.id);
+    await send(projectId, "checkout");
+    await expect(drainOutbox(harness.deps)).rejects.toThrow(/notifications failed/);
+
+    expect(harness.pushed).toEqual([]);
+    expect(harness.prompts).toEqual([]);
+
+    await drainAll(harness);
+
+    const row = await env.DB.prepare(`SELECT event_id FROM issue_summaries`).first<{
+      event_id: string | null;
+    }>();
+
+    expect(harness.pushed).toHaveLength(1);
+    expect(harness.prompts[0]?.user).toContain('"platform":"python"');
+    expect(row?.event_id).not.toBeNull();
+    logged.mockRestore();
+  });
+
+  it("sends exactly once after the summary store fails", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    harness.deps.summaries = new FailFirstLookup(env.DB);
+    await phone(alice.id);
+    await send(projectId, "checkout");
+    await expect(drainOutbox(harness.deps)).rejects.toThrow(/notifications failed/);
+    expect(harness.pushed).toEqual([]);
+
+    await drainAll(harness);
+
+    expect(harness.pushed.map((push) => push.title)).toEqual([TEST_SUMMARY.headline]);
+    logged.mockRestore();
+  });
+
+  it("writes a summary again when the prompt has changed since", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+
+    await phone(alice.id);
+    await send(projectId, "checkout");
+
+    const [group] = await groupsOf(projectId);
+
+    await new IssueSummaryStore(env.DB).put({
+      groupId: group?.id ?? 0,
+      promptVersion: PROMPT_VERSION - 1,
+      model: "an older model",
+      headline: "Old headline",
+      detail: "Old detail",
+      eventId: null,
+      createdAt: NOW,
+    });
+
+    await drainAll(harness);
+
+    expect(harness.pushed[0]?.title).toBe(TEST_SUMMARY.headline);
+    expect(harness.prompts).toHaveLength(1);
+    expect(await summaryRows()).toBe(1);
+  });
+
+  it("deletes the summary with its issue", async () => {
+    const { organizationId, projectId, alice } = await setup();
+    const harness = notifyHarness();
+
+    await phone(alice.id);
+    await send(projectId, "checkout");
+    await drainAll(harness);
+    expect(await summaryRows()).toBe(1);
+
+    const [group] = await groupsOf(projectId);
+
+    await new IssueStore(env.DB).delete(organizationId, group?.id ?? 0);
+
+    expect(await summaryRows()).toBe(0);
+  });
+
+  it("summarizes only the three issues a digest lists", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+
+    await phone(alice.id);
+    await send(projectId, "first");
+    await drainAll(harness);
+
+    for (const [offset, name] of ["second", "third", "fourth", "fifth"].entries()) {
+      await send(projectId, name, NOW + (offset + 1) * MINUTE);
+    }
+
+    harness.advance(4 * MINUTE);
+    await drainAll(harness);
+    harness.advance(5 * MINUTE);
+    await flushDigest(harness.deps, projectId);
+
+    expect(harness.pushed[1]?.title).toMatch(/^4 issues in /);
+    expect(harness.pushed[1]?.body.endsWith("\nand 1 more")).toBe(true);
+    // One for the first alert, then the digest's three listed issues.
+    expect(harness.prompts).toHaveLength(4);
+  });
+
+  it("sends the plain digest when any listed issue cannot be summarized", async () => {
+    const { projectId, alice } = await setup();
+    const harness = notifyHarness();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await phone(alice.id);
+    await send(projectId, "first");
+    await drainAll(harness);
+    await send(projectId, "second", NOW + MINUTE);
+    await send(projectId, "third", NOW + 2 * MINUTE);
+    harness.advance(2 * MINUTE);
+    await drainAll(harness);
+
+    let calls = 0;
+
+    harness.replyToSummary(() => {
+      calls += 1;
+
+      return calls === 1
+        ? { ok: true, summary: TEST_SUMMARY, model: "test-model" }
+        : { ok: false, error: "answer does not fit" };
+    });
+
+    harness.advance(5 * MINUTE);
+    await flushDigest(harness.deps, projectId);
+
+    expect(harness.pushed[1]?.title).toMatch(/^2 issues in /);
+    expect(harness.pushed[1]?.body).toMatch(/^P\d+-[A-Z0-9]+-2 ValueError: boom\n/u);
+    expect(logged.mock.calls.flat().join("\n")).toContain("push summary failed");
+    logged.mockRestore();
+  });
+});
 
 describe("workflow pushes", () => {
   it("does not push twice when a delivery is retried", async () => {
@@ -449,6 +742,9 @@ describe("workflow pushes", () => {
     expect(harness.pushed.map((push) => push.to)).toEqual([bobPhone.pushToken]);
     expect(harness.pushed[0]?.channelId).toBe("workflow");
     expect(harness.pushed[0]?.title).toContain(`${alice.email} resolved`);
+    // Alerts are off for both, so only the workflow push went out: it is a
+    // plain sentence and never asks the model.
+    expect(harness.prompts).toEqual([]);
   });
 });
 

@@ -2,12 +2,14 @@ import { env } from "cloudflare:workers";
 
 import { EventBlobs } from "@/blobs/events";
 import { DeviceStore } from "@/db/devices";
+import { IssueSummaryStore } from "@/db/issue-summaries";
 import { MailStore } from "@/db/mail";
 import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
 import { PushSendStore } from "@/db/pushes";
 import { ReportStore } from "@/db/reports";
 import type { MailMessage, NotifyDeps } from "@/notify/deps";
+import type { SummaryPrompt, SummaryResult } from "@/shared/notify";
 import type { PushMessage, PushResult, PushTicket } from "@/shared/push";
 
 import { NOW } from "./helpers";
@@ -22,12 +24,26 @@ const acceptAll: PushReply = (messages) => ({
   value: messages.map((_, index) => ({ status: "ok", id: `ticket-${index}` })),
 });
 
+/** What the fake Workers AI answers; by default the same summary for every issue. */
+export type SummaryReply = (prompt: SummaryPrompt) => SummaryResult;
+
+export const TEST_SUMMARY = {
+  headline: "Checkout is failing",
+  detail: "Likely your own code: the checkout handler raised an error.",
+};
+
+const summarizeAll: SummaryReply = () => ({ ok: true, summary: TEST_SUMMARY, model: "test-model" });
+
 export type Harness = {
   deps: NotifyDeps;
   sent: Sent[];
   pushed: PushMessage[];
   /** Replaces how the fake Expo answers. */
   replyToPush: (reply: PushReply) => void;
+  /** Every prompt the fake Workers AI was sent. */
+  prompts: SummaryPrompt[];
+  /** Replaces how the fake Workers AI answers. */
+  replyToSummary: (reply: SummaryReply) => void;
   scheduled: { projectId: number; delaySeconds: number }[];
   drains: number;
   /** Moves the clock the notify consumer sees. */
@@ -39,12 +55,17 @@ export function notifyHarness(fail: (to: string) => Error | null = () => null): 
   let clock = NOW;
   let sequence = 0;
   let pushReply = acceptAll;
+  let summaryReply = summarizeAll;
 
   const harness: Harness = {
     sent: [],
     pushed: [],
     replyToPush: (reply) => {
       pushReply = reply;
+    },
+    prompts: [],
+    replyToSummary: (reply) => {
+      summaryReply = reply;
     },
     scheduled: [],
     drains: 0,
@@ -87,6 +108,12 @@ export function notifyHarness(fail: (to: string) => Error | null = () => null): 
         issue.lastEventId === null
           ? null
           : new EventBlobs(env.BLOBS).summary(issue.project.id, issue.lastEventId),
+      summarize: async (prompt) => {
+        harness.prompts.push(prompt);
+
+        return summaryReply(prompt);
+      },
+      summaries: new IssueSummaryStore(env.DB),
       scheduleDigest: async (projectId, delaySeconds) => {
         harness.scheduled.push({ projectId, delaySeconds });
       },

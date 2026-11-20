@@ -63,6 +63,7 @@ export type IssueNotice = {
 };
 
 export type EventFrame = {
+  module: string | null;
   filename: string | null;
   function: string | null;
   lineno: number | null;
@@ -86,11 +87,31 @@ export type EventSummary = {
   timestamp: number;
   environment: string;
   release: string | null;
+  platform: string | null;
+  transaction: string | null;
+  /** The request's URL, which ingest stored without its query string. */
+  url: string | null;
+  /** The runtime's name, such as ".NET" or "node". */
+  runtime: string | null;
   message: string | null;
   exceptions: EventException[];
   tags: Pair[];
   user: EventUser | null;
 };
+
+/** What the model is asked: fixed instructions, and the issue as JSON. */
+export type SummaryPrompt = { system: string; user: string };
+
+/** A plain-language summary of an issue, for its push. DESIGN.md §19.2. */
+export type IssueSummary = { headline: string; detail: string };
+
+/**
+ * What the summarizer answers. A failure is a value, not a throw: the push
+ * then goes out in its plain form (DESIGN.md §19.2), so the caller must look.
+ */
+export type SummaryResult =
+  | { ok: true; summary: IssueSummary; model: string }
+  | { ok: false; error: string };
 
 export type Recipient = { userId: number; email: string };
 

@@ -80,7 +80,7 @@ async function fanOut(deps: NotifyDeps, audienceOf: AudienceOf, fanout: Fanout):
         await pushTo(
           deps,
           pushed.map((recipient) => recipient.userId),
-          { key: fanout.key, content },
+          { key: fanout.key, compose: async () => content },
         );
       },
     ]);
