@@ -287,6 +287,22 @@ Workers Logs are sampled at 10% (`head_sampling_rate` in `wrangler.jsonc`),
 because every logged invocation past 20 million a month is billed too. Raise
 it while debugging.
 
+## sentry-cli
+
+`sentry-cli` can check a token, list organizations, projects, issues, events
+and cron monitors, and resolve, mute or reopen issues. Make a token under
+Settings, sentry-cli; it carries Zentry's URL and the organization, so this is
+the whole setup:
+
+```bash
+export SENTRY_AUTH_TOKEN=sntrys_…
+sentry-cli issues list --project api
+```
+
+The DSN commands (`send-event`, `send-envelope`, `monitors run`) need only
+`SENTRY_DSN`. Releases, source maps and debug files are not supported. The
+design is DESIGN.md §20.
+
 ## Mobile app
 
 An Android app in `mobile/` shows issues and events, triages them, and gets

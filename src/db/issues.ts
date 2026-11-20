@@ -31,6 +31,16 @@ export type StatusChange = {
   now: number;
 };
 
+/** Which of a project's issues a bulk change applies to. Null means no filter. */
+export type ProjectSelection = {
+  projectId: number;
+  ids: number[] | null;
+  status: IssueStatus | null;
+  /** The status being set: issues already there are not counted or changed. */
+  target: IssueStatus;
+  limit: number;
+};
+
 export type IssueHour = { groupId: number; bucket: number; count: number; stored: number };
 
 export type TagCount = { key: string; value: string; count: number; total: number };
@@ -162,6 +172,50 @@ export class IssueStore {
       .first<IssueRow>();
 
     return row === null ? null : toRecord(row);
+  }
+
+  /**
+   * The ids of a project's issues that a bulk status change from sentry-cli
+   * would change: those named in `ids` (or all), with `status` (or any), and
+   * not already at `target`. Monitor issues are left out, as setStatus would
+   * skip them. Reads at most `limit` ids, so the caller can tell when more
+   * matched than it will change.
+   */
+  async projectIssueIds(selection: ProjectSelection): Promise<number[]> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT id FROM groups
+         WHERE project_id = ?1 AND monitor_id IS NULL AND status != ?4
+           AND (?2 IS NULL OR id IN (SELECT value FROM json_each(?2)))
+           AND (?3 IS NULL OR status = ?3)
+         ORDER BY id LIMIT ?5`,
+      )
+      .bind(
+        selection.projectId,
+        selection.ids === null ? null : JSON.stringify(selection.ids),
+        selection.status,
+        selection.target,
+        selection.limit,
+      )
+      .all<{ id: number }>();
+
+    return results.map((row) => row.id);
+  }
+
+  /**
+   * Which of `ids` are the project's own issues that a person may change
+   * (not a monitor's), so a bulk change can refuse the rest by name.
+   */
+  async changeableIn(projectId: number, ids: number[]): Promise<Set<number>> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT id FROM groups WHERE project_id = ?1 AND monitor_id IS NULL
+           AND id IN (SELECT value FROM json_each(?2))`,
+      )
+      .bind(projectId, JSON.stringify(ids))
+      .all<{ id: number }>();
+
+    return new Set(results.map((row) => row.id));
   }
 
   /** Resolves `API-42`: project slug (any case) and the per-project number. */

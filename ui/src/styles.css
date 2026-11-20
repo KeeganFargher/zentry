@@ -4133,3 +4133,10 @@ textarea {
 input[aria-invalid="true"] {
   border-color: var(--danger);
 }
+
+/* sentry-cli settings: the one-time view of a new token. */
+.cli-token-new .snippet {
+  margin: 8px 0;
+  word-break: break-all;
+  white-space: pre-wrap;
+}

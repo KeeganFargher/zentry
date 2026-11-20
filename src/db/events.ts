@@ -10,6 +10,8 @@ export type EventRef = { projectId: number; eventId: string; timestamp: number }
 /** The issue an event is looked up under. */
 export type IssueRef = { id: number; projectId: number };
 
+export type ProjectEventRow = { eventId: string; timestamp: number; title: string | null };
+
 export type Neighbours = { previous: string | null; next: string | null };
 
 type IdRow = { eventId: string };
@@ -40,6 +42,27 @@ export class EventStore {
       )
       .bind(issueId, after.timestamp, after.eventId, limit)
       .all<ApiEventRow>();
+
+    return results;
+  }
+
+  /**
+   * A project's events after `after`, newest first, for `sentry-cli events
+   * list`. Reads the events_by_project index in order.
+   */
+  async listForProject(
+    projectId: number,
+    after: EventCursor,
+    limit: number,
+  ): Promise<ProjectEventRow[]> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT event_id AS eventId, ts AS timestamp, title
+         FROM events WHERE project_id = ?1 AND ${OLDER}
+         ORDER BY ts DESC, event_id ASC LIMIT ?4`,
+      )
+      .bind(projectId, after.timestamp, after.eventId, limit)
+      .all<ProjectEventRow>();
 
     return results;
   }

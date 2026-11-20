@@ -1,9 +1,10 @@
 // Request and response helpers for the read API.
 //
 // Request input (JSON bodies, query strings, cursors) is validated by a schema
-// at the top of each handler. Our own UI is the only client, so input that does
-// not match is a bug worth surfacing: it is refused with a 400 that says what
-// was wrong, never coerced into a default.
+// at the top of each handler. Our own UI and app are the main clients, and
+// sentry-cli the other; input that does not match is a bug worth surfacing
+// either way: it is refused with a 400 that says what was wrong, never
+// coerced into a default.
 
 import { z } from "zod";
 
@@ -15,6 +16,14 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 /** True for requests to a local dev server. Never true behind a Cloudflare route. */
 export function isLocal(url: URL): boolean {
   return LOCAL_HOSTS.has(url.hostname);
+}
+
+/**
+ * The origin that SDKs and sentry-cli call: the ingest host, which Access does
+ * not guard, or the dev server itself when the request is local.
+ */
+export function ingestOrigin(url: URL, ingestHost: string): string {
+  return isLocal(url) ? url.origin : `https://${ingestHost}`;
 }
 
 export function notFound(): Response {

@@ -13,6 +13,7 @@ export type Route =
   | { name: "organizationSettings"; org: string }
   | { name: "notificationSettings"; org: string }
   | { name: "mobileSettings"; org: string }
+  | { name: "cliSettings"; org: string }
   | { name: "missing" };
 
 /** The pages under /:org/monitors/, laid out as Sentry's Monitors area. */
@@ -149,6 +150,10 @@ function settingsRoute(org: string, rest: string[]): Route {
 
   if (kind === "mobile" && project === undefined) {
     return { name: "mobileSettings", org };
+  }
+
+  if (kind === "cli" && project === undefined) {
+    return { name: "cliSettings", org };
   }
 
   return kind === "projects" && project !== undefined

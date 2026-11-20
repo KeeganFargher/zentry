@@ -2,7 +2,14 @@
 
 import { z } from "zod";
 
-import type { IssueCursor, IssueFilter, IssueHour, IssueRecord, IssueSort } from "@/db/issues";
+import type {
+  IssueCursor,
+  IssueFilter,
+  IssueHour,
+  IssueRecord,
+  IssueSort,
+  StatusChange,
+} from "@/db/issues";
 import type {
   ApiIssue,
   ApiIssueList,
@@ -14,7 +21,7 @@ import type {
 import { parseId } from "@/shared/ids";
 import { errorText, logError } from "@/shared/log";
 
-import type { ApiContext, Handler } from "./context";
+import type { ApiContext, ApiDeps, Handler } from "./context";
 import {
   CursorParam,
   encodeCursor,
@@ -165,26 +172,37 @@ export const listIssues: Handler = async (context) => {
   } satisfies ApiIssueList);
 };
 
+/**
+ * Changes the issues' status as `change.userId`, then wakes the notify
+ * consumer for the workflow emails. sentry-cli's bulk change uses it too, so
+ * a change from the CLI reads, emails and follows exactly like one in the UI.
+ */
+export async function applyStatus(deps: ApiDeps, change: StatusChange): Promise<number> {
+  const changed = await deps.issues.setStatus(change);
+
+  // The outbox rows are committed; a failure to wake the consumer only delays
+  // the emails until the hourly sweep, so it must not fail the request.
+  if (changed > 0) {
+    await deps.notify().catch((cause: unknown) => {
+      logError("could not wake the notify consumer", { error: errorText(cause) });
+    });
+  }
+
+  return changed;
+}
+
 async function changeStatus(
   context: ApiContext,
   issueIds: number[],
   status: IssueStatus,
 ): Promise<void> {
-  const changed = await context.deps.issues.setStatus({
+  await applyStatus(context.deps, {
     organizationId: context.organizationId,
     issueIds,
     status,
     userId: context.user.id,
     now: context.now,
   });
-
-  // The outbox rows are committed; a failure to wake the consumer only delays
-  // the emails until the hourly sweep, so it must not fail the request.
-  if (changed > 0) {
-    await context.deps.notify().catch((cause: unknown) => {
-      logError("could not wake the notify consumer", { error: errorText(cause) });
-    });
-  }
 }
 
 export const updateIssues: Handler = async (context) => {

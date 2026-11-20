@@ -5,6 +5,7 @@ import type { SigningKey } from "@/api/access";
 import type { ApiDeps } from "@/api/context";
 import { handleApi, Sessions } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
+import { CliTokenStore } from "@/db/cli-tokens";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
@@ -109,6 +110,7 @@ export function apiDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     blobs: new EventBlobs(env.BLOBS),
     notificationSettings: new NotificationSettingsStore(env.DB),
     devices: new DeviceStore(env.DB),
+    cliTokens: new CliTokenStore(env.DB),
     notify: async () => {},
     emailEnabled: true,
     ingestHost: "ingest.zentry.test",

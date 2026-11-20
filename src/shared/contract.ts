@@ -378,6 +378,10 @@ export type ApiDeviceList = { devices: ApiDevice[] };
 /** The app's reply from the pairing exchange. The token is shown only once. */
 export type ApiPaired = { token: string; device: ApiDevice; email: string };
 
+// ── sentry-cli tokens (DESIGN.md §20) ────────────────────────────────────
+
+export type { ApiCliToken, ApiCliTokenCreated, ApiCliTokenList } from "./cli-tokens";
+
 /**
  * The Android notification channel a push arrives on: one per type, so each
  * can be muted in the phone's settings. The weekly report is email only.

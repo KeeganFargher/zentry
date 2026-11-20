@@ -138,6 +138,7 @@ function ProjectLinks({ org, projects }: Omit<SubNavProps, "section">): JSX.Elem
         <SubLink to={`/${org}/settings/`} label="Spend limits" />
         <SubLink to={`/${org}/settings/notifications/`} label="Notifications" />
         <SubLink to={`/${org}/settings/mobile/`} label="Mobile app" />
+        <SubLink to={`/${org}/settings/cli/`} label="sentry-cli" />
         {projects.map((project) => (
           <SubLink
             key={project.id}

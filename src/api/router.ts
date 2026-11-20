@@ -1,14 +1,17 @@
-// The read API: /api/0/*. Works out who is calling (Cloudflare Access, or a
-// mobile app's device token), resolves the organization in the path, checks
-// membership, then dispatches.
+// The read API: /api/0/*. Works out who is calling (Cloudflare Access, a
+// mobile app's device token, or a sentry-cli token), resolves the
+// organization in the path, checks membership, then dispatches.
 
+import type { CliCaller } from "@/db/cli-tokens";
 import type { DeviceRecord } from "@/db/devices";
 import type { Membership, UserRecord } from "@/db/tenancy";
 import type { ApiMe } from "@/shared/contract";
-import { sha256Hex } from "@/shared/ids";
+import { CLI_TOKEN_PREFIX, sha256Hex } from "@/shared/ids";
 import { errorText, logError } from "@/shared/log";
 import { DAY, MINUTE } from "@/shared/time";
 
+import { cliCaller, dispatchCli } from "./cli-router";
+import { createCliToken, listCliTokens, revokeCliToken } from "./cli-tokens";
 import type { ApiDeps, Handler, UserContext, UserHandler } from "./context";
 import {
   createPairing,
@@ -55,6 +58,7 @@ import {
   updateNotificationSetting,
 } from "./notifications";
 import { getLimits, updateLimits } from "./organization";
+import { apiPattern, ID, ORG, SLUG } from "./paths";
 import {
   createKey,
   createProject,
@@ -70,20 +74,18 @@ import {
  * Who may call a route. A device token is a long-lived secret on a phone, on
  * a host Access does not guard, so it reaches only what the app needs:
  * reading and triaging issues, following them, notification settings,
- * reading monitors (never changing them), and its own sign-out. Everything else stays behind Access, and a new route is
- * web-only until it is marked app() (DESIGN.md §19.1).
+ * reading monitors (never changing them), and its own sign-out. Everything
+ * else stays behind Access, and a new route is web-only until it is marked
+ * app() (DESIGN.md §19.1). sentry-cli tokens never reach this table: they
+ * have their own, in cli-router.ts (§20).
  */
 type Reach = "web" | "any";
 
 type Route<H> = { method: string; pattern: RegExp; handler: H; reach: Reach };
 
-const ORG = String.raw`([\w-]+)`;
-const ID = String.raw`(\d+)`;
-const SLUG = String.raw`([\w-]+)`;
-
 /** A route for the web UI only. Closed to device tokens unless marked with app(). */
 function route<H>(method: string, path: string, handler: H): Route<H> {
-  return { method, pattern: new RegExp(`^/api/0${path}/?$`), handler, reach: "web" };
+  return { method, pattern: apiPattern(path), handler, reach: "web" };
 }
 
 /** Opens a route to the mobile app's device tokens too: a decision made route by route. */
@@ -134,6 +136,9 @@ const ROUTES: Route<Handler>[] = [
   app(route("GET", `/organizations/${ORG}/issues/${ID}/subscription`, getIssueSubscription)),
   app(route("PUT", `/organizations/${ORG}/issues/${ID}/subscription`, updateIssueSubscription)),
   app(route("GET", `/organizations/${ORG}/shortids/([\\w-]+)`, getShortId)),
+  route("GET", `/organizations/${ORG}/cli-tokens`, listCliTokens),
+  route("POST", `/organizations/${ORG}/cli-tokens`, createCliToken),
+  route("DELETE", `/organizations/${ORG}/cli-tokens/${ID}`, revokeCliToken),
 ];
 
 /** Routes about the caller, outside any organization. */
@@ -176,7 +181,15 @@ export class Sessions {
   }
 }
 
+/** Someone signed in through Access, or a phone acting for its user. */
 type Caller = { user: UserRecord; memberships: Membership[]; device: DeviceRecord | null };
+
+/**
+ * A sentry-cli token is its own kind of caller, never a Caller with no device:
+ * `device === null` means "signed in through Access" to every check below, so
+ * a token modelled that way would reach the whole web API.
+ */
+type Identified = { kind: "user"; caller: Caller } | { kind: "cli"; caller: CliCaller };
 
 async function me(context: UserContext): Promise<Response> {
   const memberships = await context.deps.tenancy.memberships(context.user.id);
@@ -222,23 +235,36 @@ async function deviceCaller(token: string, deps: ApiDeps): Promise<Caller | null
   return { user, memberships: await deps.tenancy.memberships(user.id), device };
 }
 
+async function bearerCaller(token: string, deps: ApiDeps): Promise<Identified | null> {
+  if (token.startsWith(CLI_TOKEN_PREFIX)) {
+    const caller = await cliCaller(token, deps);
+
+    return caller === null ? null : { kind: "cli", caller };
+  }
+
+  const caller = await deviceCaller(token, deps);
+
+  return caller === null ? null : { kind: "user", caller };
+}
+
 /**
- * An Authorization header always means a device token, even on localhost,
- * where the development email would otherwise sign in anything: a bad token
- * must fail there as it would in production. On the ingest host, which
- * Access does not guard, a device token is the only way in.
+ * An Authorization header always means a token (a CLI token by its prefix,
+ * otherwise a device token), even on localhost, where the development email
+ * would otherwise sign in anything: a bad token must fail there as it would
+ * in production. On the ingest host, which Access does not guard, a token is
+ * the only way in.
  */
 async function identify(
   request: Request,
   deps: ApiDeps,
   sessions: Sessions,
-): Promise<Caller | null> {
+): Promise<Identified | null> {
   const authorization = request.headers.get("authorization");
 
   if (authorization !== null) {
     const [, token] = BEARER.exec(authorization) ?? [];
 
-    return token === undefined ? null : deviceCaller(token, deps);
+    return token === undefined ? null : bearerCaller(token, deps);
   }
 
   if (new URL(request.url).hostname === deps.ingestHost) {
@@ -248,7 +274,7 @@ async function identify(
   const email = await deps.access.email(request, deps.now());
   const session = email === null ? null : await sessions.resolve(email, deps);
 
-  return session === null ? null : { ...session, device: null };
+  return session === null ? null : { kind: "user", caller: { ...session, device: null } };
 }
 
 type Matched<H> = { route: Route<H>; captures: string[] };
@@ -293,7 +319,12 @@ async function dispatch(request: Request, deps: ApiDeps, caller: Caller): Promis
     return forbidden("the mobile app cannot do this; use the web UI");
   }
 
-  const context = { ...base, organizationId: membership.id, role: membership.role };
+  const context = {
+    ...base,
+    organizationId: membership.id,
+    organizationSlug: membership.slug,
+    role: membership.role,
+  };
 
   return matched.route.handler(context, args);
 }
@@ -310,9 +341,15 @@ export async function handleApi(
       return await redeemPairing(request, deps);
     }
 
-    const caller = await identify(request, deps, sessions);
+    const identified = await identify(request, deps, sessions);
 
-    return caller === null ? unauthorized() : await dispatch(request, deps, caller);
+    if (identified === null) {
+      return unauthorized();
+    }
+
+    return identified.kind === "cli"
+      ? await dispatchCli(request, deps, identified.caller)
+      : await dispatch(request, deps, identified.caller);
   } catch (cause) {
     // Only input that failed its schema is the client's fault; anything else
     // is ours and must surface as a 500.

@@ -3,6 +3,8 @@
 
 import type {
   ApiActivity,
+  ApiCliTokenCreated,
+  ApiCliTokenList,
   ApiDeviceList,
   ApiEventDetail,
   ApiEventList,
@@ -129,6 +131,15 @@ export const api = {
 
   removeDevice: async (deviceId: number): Promise<void> => {
     await send("DELETE", `/me/devices/${deviceId}/`);
+  },
+
+  cliTokens: (org: string): Promise<ApiCliTokenList> => get(`/organizations/${org}/cli-tokens/`),
+
+  createCliToken: async (org: string, name: string): Promise<ApiCliTokenCreated> =>
+    read(await sendJson("POST", `/organizations/${org}/cli-tokens/`, { name })),
+
+  revokeCliToken: async (org: string, tokenId: number): Promise<void> => {
+    await send("DELETE", `/organizations/${org}/cli-tokens/${tokenId}/`);
   },
 
   limits: (org: string): Promise<ApiOrganizationLimits> => get(`/organizations/${org}/limits/`),

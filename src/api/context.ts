@@ -1,6 +1,7 @@
 // What every read-API handler receives.
 
 import type { EventBlobs } from "@/blobs/events";
+import type { CliCaller, CliTokenStore } from "@/db/cli-tokens";
 import type { DeviceRecord, DeviceStore } from "@/db/devices";
 import type { EventStore } from "@/db/events";
 import type { IssueStore } from "@/db/issues";
@@ -26,13 +27,15 @@ export type ApiDeps = {
   blobs: EventBlobs;
   notificationSettings: NotificationSettingsStore;
   devices: DeviceStore;
+  cliTokens: CliTokenStore;
   /** Wakes the notify consumer after a change that queued notifications. */
   notify: () => Promise<void>;
   /** False while no sender address is configured, so nothing is emailed. */
   emailEnabled: boolean;
   /**
    * Hostname SDKs send to; used to build DSNs. Cloudflare Access does not
-   * guard it, so the API there accepts device tokens only (DESIGN.md §19).
+   * guard it, so the API there accepts device and sentry-cli tokens only
+   * (DESIGN.md §19, §20).
    */
   ingestHost: string;
   /** The origin the mobile app calls, put in the pairing QR code. */
@@ -59,12 +62,30 @@ export type UserContext = {
 export type ApiContext = UserContext & {
   /** The organization named in the path, already checked for membership. */
   organizationId: number;
+  organizationSlug: string;
   /** The caller's role in that organization. */
   role: Membership["role"];
 };
 
 /** `args` are the path parameters after the organization slug. */
 export type Handler = (context: ApiContext, args: string[]) => Promise<Response>;
+
+/**
+ * A sentry-cli request (DESIGN.md §20). It is not a UserContext: CLI routes
+ * are a separate, Sentry-shaped surface, and keeping the types apart means no
+ * web handler can be wired to a token caller by mistake.
+ */
+export type CliContext = {
+  request: Request;
+  url: URL;
+  deps: ApiDeps;
+  /** The token's member and its one organization, which the path has already matched. */
+  caller: CliCaller;
+  now: number;
+};
+
+/** `args` are the path parameters after the organization slug, if the path has one. */
+export type CliHandler = (context: CliContext, args: string[]) => Promise<Response>;
 
 /** A route about the caller themselves, outside any organization. */
 export type UserHandler = (context: UserContext, args: string[]) => Promise<Response>;

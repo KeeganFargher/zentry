@@ -1,7 +1,8 @@
-// Composition root: the only file that touches bindings. It builds the
-// stores and hands typed functions to the four handlers.
+// Composition root: with src/api-deps.ts, the only code that touches
+// bindings. It builds the stores and hands typed functions to the four
+// handlers.
 
-import { AccessVerifier, fetchAccessKeys } from "@/api/access";
+import { apiDeps } from "@/api-deps";
 import type { ApiDeps } from "@/api/context";
 import { serveApi, Sessions, serveAppApi } from "@/api/router";
 import { EventBlobs } from "@/blobs/events";
@@ -21,23 +22,16 @@ import { handleUptimeBatch } from "@/cron/uptime";
 import { BatchStore } from "@/db/batch";
 import { CronStore } from "@/db/cron-store";
 import { DeviceStore } from "@/db/devices";
-import { EventStore } from "@/db/events";
-import { IssueStore } from "@/db/issues";
 import { KeyStore } from "@/db/keys";
 import { MailStore } from "@/db/mail";
 import { enqueueMetricInput, MetricCapture } from "@/db/metric-input";
 import { MonitorPreviews } from "@/db/monitor-previews";
-import { MonitorRuleStore } from "@/db/monitor-rules";
-import { MonitorStore } from "@/db/monitors";
 import { NotifyStore } from "@/db/notify";
 import { NotificationSettingsStore } from "@/db/notify-settings";
-import { OrganizationStore } from "@/db/organizations";
-import { ProjectStore } from "@/db/projects";
 import { PushSendStore } from "@/db/pushes";
 import { ReportStore } from "@/db/reports";
 import { RetentionStore } from "@/db/retention";
 import { SpikeStore } from "@/db/spike";
-import { TenancyStore } from "@/db/tenancy";
 import { UptimeMonitorStore } from "@/db/uptime-monitors";
 import { UsageStore } from "@/db/usage";
 import { KeyCache } from "@/ingest/auth";
@@ -58,7 +52,6 @@ import type { NotifyMessage, QueueMessage } from "@/shared/types";
 let keyCache: KeyCache | undefined;
 let usageCache: UsageCache | undefined;
 let metricCapture: MetricCapture | undefined;
-let accessVerifier: AccessVerifier | undefined;
 const sessions = new Sessions();
 
 // Wrapped, because the Workers runtime refuses a `fetch` called detached from the global.
@@ -190,34 +183,8 @@ function consumerDeps(env: Env): ConsumerDeps {
   };
 }
 
-function apiDeps(env: Env): ApiDeps {
-  accessVerifier ??= new AccessVerifier(
-    { teamDomain: env.ACCESS_TEAM_DOMAIN, audience: env.ACCESS_AUD, devEmail: env.DEV_USER_EMAIL },
-    fetchAccessKeys,
-  );
-
-  return {
-    access: accessVerifier,
-    tenancy: new TenancyStore(env.DB),
-    organizations: new OrganizationStore(env.DB),
-    projects: new ProjectStore(env.DB),
-    monitors: new MonitorStore(env.DB),
-    monitorRules: new MonitorRuleStore(env.DB),
-    issues: new IssueStore(env.DB),
-    events: new EventStore(env.DB),
-    blobs: new EventBlobs(env.BLOBS),
-    notificationSettings: new NotificationSettingsStore(env.DB),
-    devices: new DeviceStore(env.DB),
-    notify: () => wakeNotify(env),
-    emailEnabled: mailConfig(env) !== null,
-    uptimeFixtureOrigin: env.UPTIME_FIXTURE_ORIGIN,
-    allowMonitorPreview: async (key) => (await env.MONITOR_PREVIEW_RL.limit({ key })).success,
-    monitorPreviews: new MonitorPreviews(env.DB),
-    enqueueMonitorPreview: (previewId) => env.UPTIME_Q.send({ previewId }).then(() => undefined),
-    ingestHost: env.INGEST_HOST,
-    mobileApiUrl: env.MOBILE_API_URL.replace(/\/+$/, ""),
-    now: () => Date.now(),
-  };
+function readApiDeps(env: Env): ApiDeps {
+  return apiDeps(env, { notify: () => wakeNotify(env), emailEnabled: mailConfig(env) !== null });
 }
 
 function retentionDeps(env: Env): RetentionDeps {
@@ -332,17 +299,17 @@ export default {
     }
 
     // The ingest hostname is public, so besides ingest it serves only the API
-    // for the mobile app, where the router accepts device tokens alone
-    // (DESIGN.md §19). Access guards the UI hostname at the edge, so a phone
-    // could not reach the API there.
+    // for the mobile app and sentry-cli, where the router accepts their tokens
+    // alone (DESIGN.md §19, §20). Access guards the UI hostname at the edge,
+    // so neither could reach the API there.
     if (url.hostname === env.INGEST_HOST) {
       return url.pathname.startsWith("/api/0/")
-        ? serveAppApi(request, env.APP_API_RL, () => serveApi(request, apiDeps(env), sessions))
+        ? serveAppApi(request, env.APP_API_RL, () => serveApi(request, readApiDeps(env), sessions))
         : rejected(404, "not found");
     }
 
     return url.pathname.startsWith("/api/")
-      ? serveApi(request, apiDeps(env), sessions)
+      ? serveApi(request, readApiDeps(env), sessions)
       : env.ASSETS.fetch(request);
   },
 

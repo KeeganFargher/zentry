@@ -109,9 +109,10 @@ without them), Analytics Engine.
 zentry/
 ├─ wrangler.jsonc
 ├─ oxlint.config.ts  .oxfmtrc.json  tsconfig.json  lefthook.yml      # §16
-├─ migrations/0001_init.sql … 0005_notifications.sql      # §8, §6, §18
+├─ migrations/0001_init.sql … 0008_cli_tokens.sql        # §8, §6, §18, §19, §20
 ├─ src/
 │  ├─ worker.ts      # composition root: exports { fetch, queue, scheduled }
+│  ├─ api-deps.ts    # the read API's part of the composition root
 │  ├─ shared/        # no internal imports
 │  │    types  ids  time  json  schema  contract  plan  log  notify
 │  ├─ core/          # pure functions: no bindings, no I/O, no clock
@@ -123,11 +124,13 @@ zentry/
 │  ├─ db/            # the only place SQL lives
 │  │    keys  batch  projects  issues  events  tenancy  organizations
 │  │    usage  spike  retention  notify  notify-settings  mail  reports
+│  │    cli-tokens
 │  ├─ blobs/         events  spill            # the only place R2 keys are built
 │  ├─ ingest/        auth  body  handler  http  limits
 │  ├─ consumer/      handler
 │  ├─ api/           access  context  router  http  series  issues  events
-│  │                 projects  organization  notifications
+│  │                 projects  organization  notifications  paths
+│  │                 cli  cli-router  cli-tokens      # sentry-cli, §20
 │  ├─ cron/          retention  spike  notify
 │  └─ notify/        deps  handler  alerts  jobs  recipients  mailer  unsubscribe
 ├─ ui/               # Vite + React SPA, built to ui/dist
@@ -1189,10 +1192,11 @@ frame-based browser grouping. Sketch: a table
 `sourcemaps (project_id, debug_id, r2_key, created_at)` keyed by the debug id
 that Sentry's bundler plugins inject; the consumer resolves frames with a
 source-map library before grouping and marks them as resolved. Two open
-points: `sentry-cli`'s upload uses a chunked-assemble API that is sizeable to
-reimplement, so a small upload script of our own may be the practical route;
-and events that arrive before their maps are uploaded will group under the
-browser rule, so they land in a different issue from later ones.
+points: `sentry-cli`'s upload (which needs §20's tokens) uses a
+chunked-assemble API that is sizeable to reimplement, so a small upload
+script of our own may be the practical route; and events that arrive before
+their maps are uploaded will group under the browser rule, so they land in a
+different issue from later ones.
 
 **Attachments.** Keep `attachment` items in R2 under
 `attachments/{project_id}/{event_id}/{name}` with a size cap.
@@ -2012,11 +2016,12 @@ host** instead, which Access does not guard, with a **device token**:
 
 Rules the router enforces (`src/api/router.ts`):
 
-- An `Authorization` header always means a device token, on every host and
-  even on localhost, where `DEV_USER_EMAIL` would otherwise sign anything in.
-  A bad token is a 401, never a fall-through to Access.
-- On the ingest host only device tokens are accepted, and only `/api/0/*`
-  besides ingest itself. The Access header is never honoured there.
+- An `Authorization` header always means a token, on every host and even on
+  localhost, where `DEV_USER_EMAIL` would otherwise sign anything in: a
+  sentry-cli token when it starts with `sntrys_` (§20), otherwise a device
+  token. A bad token is a 401, never a fall-through to Access.
+- On the ingest host only tokens (device or sentry-cli) are accepted, and only
+  `/api/0/*` besides ingest itself. The Access header is never honoured there.
 - A device token is looked up on every request, not cached, so signing a
   phone out (deleting its row) takes effect at once. The user is read, never
   created: devices exist only for users who signed in through Access.
@@ -2125,3 +2130,117 @@ Android each type has its own notification channel (`alerts`, `workflow`,
 - Owners signing out other members' phones, and Access revocation reaching
   phones directly.
 - A monochrome notification icon (Android shows the app icon's shape).
+
+---
+
+## 20. sentry-cli
+
+`sentry-cli` works against Zentry for what Zentry has: checking a token,
+listing organizations, projects, issues, events and cron monitors, and
+resolving, muting and reopening issues. Its DSN commands (`send-event`,
+`send-envelope`, `monitors run`) go through ingest and need no token.
+Releases, deploys, source maps, debug files and the rest are not built; the
+API answers them with a 501 that lists what is supported.
+
+### 20.1 Tokens
+
+A member makes a token in the web UI (Settings, sentry-cli) for one
+organization. It acts as that member: a status change made with it is theirs
+in the activity feed, sends the same workflow emails and subscribes them to
+the issue, as the same change in the UI does. The scale can differ: the web's
+bulk change takes at most 100 issues, the CLI's up to 1,000 (§20.2), so one
+`issues resolve --all` can send a workflow notification per issue to each of
+its followers, and subscribes the token's member to every issue it changed.
+
+- **Format.** Sentry's organization-token shape, which sentry-cli parses
+  (`src/utils/auth_token/org_auth_token.rs`): `sntrys_`, padded base64 of
+  `{"iat","url","org"}`, `_`, unpadded base64 of 32 random bytes. The CLI
+  reads `url` and `org` out of the token, so `SENTRY_AUTH_TOKEN` is the whole
+  setup. The payload is readable by anyone holding the token; only the random
+  part is the secret.
+- **URL.** The ingest host, which Access does not guard (or the dev server's
+  own origin on localhost), worked out like a DSN. The CLI cannot pass Access,
+  so a token could not be used on the UI hostname anyway.
+- **Storage.** Only the SHA-256 of the token and its last four characters
+  (`cli_tokens`, migration 0008). The token is shown once.
+- **Checks.** Every request looks the token up together with its member's
+  membership of the token's organization, never cached, so revoking a token
+  ends it at once. A member lists and revokes only their own tokens.
+  `last_used_at` is written at most hourly.
+- **Offboarding.** A trigger deletes a member's tokens when their membership
+  row is deleted, so a member added back later does not get old tokens back.
+  But Zentry has no code that removes a member: today that is SQL by hand.
+  Losing Access does not reach tokens, as it does not reach phones (§19.1),
+  and an owner cannot see or revoke another member's tokens.
+- **No idle limit**, unlike phones (§19.1): a CI job may use a token once a
+  quarter, and a token that silently expired would fail the job that needs it.
+  The cost is that a token left in an old CI secret works until revoked. The
+  list shows when each token was last used.
+- Making, listing and revoking tokens are web-only.
+
+### 20.2 Routing
+
+An `Authorization: Bearer` header is a CLI token when it starts with
+`sntrys_`, otherwise a device token (§19.1). A CLI token is its own kind of
+caller with its own route table (`src/api/cli-router.ts`): it never reaches
+the web or app routes, and they never see it. That matters twice over. The
+web router treats "no device" as "signed in through Access", so a token
+modelled as a caller without a device would reach the whole web API. And the
+paths collide (`/organizations/{org}/projects/` is in both), but the CLI needs
+Sentry's response shapes where the UI and the app need ours.
+
+| Method and path | sentry-cli command |
+|---|---|
+| `GET /api/0/` | `info`, `login` |
+| `GET /api/0/organizations/` | `organizations list` (the token's organization only) |
+| `GET /api/0/organizations/{org}/projects/` | `projects list` |
+| `GET /api/0/organizations/{org}/monitors/` | `monitors list` (cron monitors; paused is `disabled`) |
+| `GET /api/0/projects/{org}/{project}/issues/` | `issues list` |
+| `PUT /api/0/projects/{org}/{project}/issues/` | `issues resolve`, `mute`, `unresolve` |
+| `GET /api/0/projects/{org}/{project}/events/` | `events list` |
+
+Responses follow the structs sentry-cli deserializes (`src/api/mod.rs`): bare
+arrays, string ids, ISO dates, every non-optional field present. Lists page
+100 at a time through Sentry's `Link` header (`rel="next"; results=…;
+cursor=…`), with the same keyset cursors as the web API.
+
+- **Search.** `issues list --query` takes the part of Sentry's syntax the
+  issue list can answer: `is:unresolved|resolved|ignored|muted|archived`,
+  `level:` with one of Sentry's levels, one `key:value` tag, and free text.
+  With no query every status is listed, as the CLI documents. Anything else
+  is a 400 rather than a search that quietly answers a different question:
+  quotes, negation, list and comparison values, a repeated `is:` or `level:`,
+  a second tag, and Sentry keys that are not tags (`assigned:`, `has:`,
+  `age:`, `timesSeen:` and the like), which as a tag would always find nothing.
+- **Bulk changes.** `--id` names up to 100 issues, `--status` selects by
+  status, and `--all` (sent as no filter at all) takes every issue in the
+  project. Because no filter means everything, the query is strict: an empty
+  value (`id=` from an unset shell variable), an unknown parameter or a
+  misspelling is a 400, never "change all". An `--id` that is not one of the
+  project's issues, or is a monitor's, is a 400 naming it, and nothing
+  changes. Issues already at the new status are left alone and not counted;
+  when none would change the answer is 204, as Sentry's. `muted` is our
+  `ignored`. More than 1,000 issues to change (Sentry's own bulk limit) is a
+  400 that changes nothing, where Sentry would change the first thousand.
+  `--next-release` and snoozing are 400s: Zentry has neither releases nor
+  snoozes. Monitor issues are left out of `--status` and `--all`, as in the
+  web UI's bulk change.
+- **Events.** `events list` reads a new index,
+  `events_by_project (project_id, ts DESC, event_id)`: one more index write per
+  stored event, against reading and sorting a project's every event. Building
+  it on a full production table is a one-off cost when 0008 is applied.
+  `--show-user` and `--show-tags` print "-": the index keeps only a one-line
+  user label, which would be mislabelled in any one of the CLI's user fields,
+  and the full user and tags are in R2, a read per event.
+
+The API on the ingest host is rate-limited per client address (§19.1), CLI
+calls included.
+
+### 20.3 Not done
+
+- Releases, deploys and commits; source maps and debug files (§13);
+  `issues resolve --next-release`; snoozing.
+- `events list --show-user/--show-tags`.
+- Token scopes: every token reaches every route above. Read-only tokens would
+  need a scope column and a check per route.
+- Removing members, owners revoking others' tokens, and token expiry.

@@ -12,6 +12,7 @@ import { api } from "~/lib/api";
 import { useResource } from "~/lib/resource";
 import { matchRoute, navigate, useUrl } from "~/lib/router";
 import type { Route } from "~/lib/router";
+import { CliSettings } from "~/pages/cli-settings";
 import { IssueDetail } from "~/pages/issue-detail";
 import { IssueEvents } from "~/pages/issue-events";
 import { IssueList } from "~/pages/issue-list";
@@ -44,6 +45,15 @@ function Page({ route }: { route: Route }): JSX.Element {
       return <Projects org={route.org} />;
     }
 
+    default: {
+      return <SettingsPage route={route} />;
+    }
+  }
+}
+
+/** The pages under /:org/settings/, split from Page to keep each switch small. */
+function SettingsPage({ route }: { route: Route }): JSX.Element {
+  switch (route.name) {
     case "settings": {
       return <ProjectSettings org={route.org} project={route.project} />;
     }
@@ -58,6 +68,10 @@ function Page({ route }: { route: Route }): JSX.Element {
 
     case "mobileSettings": {
       return <MobileSettings />;
+    }
+
+    case "cliSettings": {
+      return <CliSettings org={route.org} />;
     }
 
     default: {
