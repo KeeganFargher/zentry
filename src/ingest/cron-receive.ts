@@ -1,8 +1,9 @@
 import { firstReport, laterReport, toWrite } from "@/core/cron-checkins";
+import { timingReplan } from "@/core/cron-schedule";
 import { withCronIssues } from "@/core/monitor-issues";
 import type { CronMonitor, CronStore, UnrecognizedReason } from "@/db/cron-store";
 import type { CronWrite, StoredCheckIn } from "@/shared/cron";
-import { provisionedConfig } from "@/shared/monitors";
+import { provisionedConfig, reconfiguredConfig } from "@/shared/monitors";
 import type { MonitorCheckIn } from "@/shared/monitors";
 
 // Sentry creates an environment for any name an SDK sends. A public DSN can
@@ -66,15 +67,13 @@ async function monitorFor(store: CronStore, receipt: Receipt): Promise<Found> {
   const existing = await store.find(projectId, checkIn.slug);
 
   if (existing !== null) {
-    return { kind: "found", monitor: existing };
+    return reconfigured(store, existing, receipt);
   }
 
   if (checkIn.monitorConfig === undefined) {
     return { kind: "unrecognized", reason: "unknown_slug" };
   }
 
-  // Sentry upserts from monitor_config on every check-in. Zentry creates the
-  // monitor from it once; after that the monitor's settings belong to the UI.
   const config =
     checkIn.monitorConfig === "invalid"
       ? null
@@ -90,6 +89,45 @@ async function monitorFor(store: CronStore, receipt: Receipt): Promise<Found> {
   return created === null
     ? { kind: "unrecognized", reason: "monitor_limit" }
     : { kind: "found", monitor: created };
+}
+
+/**
+ * The monitor after applying a check-in's monitor_config, as Sentry upserts
+ * it on every check-in. The monitor is read again afterwards because a
+ * concurrent edit may have won, and the check-in must be planned against the
+ * settings that are actually stored. A config whose values are out of bounds
+ * leaves the monitor as it is: the check-in itself is still valid.
+ */
+async function reconfigured(
+  store: CronStore,
+  monitor: CronMonitor,
+  receipt: Receipt,
+): Promise<Found> {
+  const { projectId, checkIn, now } = receipt;
+
+  if (checkIn.monitorConfig === undefined || checkIn.monitorConfig === "invalid") {
+    return { kind: "found", monitor };
+  }
+
+  const config = reconfiguredConfig(monitor.config, checkIn.monitorConfig);
+
+  // Both sides are CronConfig output, so equal settings serialize alike.
+  if (config === null || JSON.stringify(config) === JSON.stringify(monitor.config)) {
+    return { kind: "found", monitor };
+  }
+
+  await store.reconfigure(monitor, {
+    config,
+    replan: timingReplan(monitor.config, config, now),
+    now,
+  });
+
+  const current = await store.find(projectId, checkIn.slug);
+
+  // Archived between the two reads: there is no longer a monitor to record against.
+  return current === null
+    ? { kind: "unrecognized", reason: "unknown_slug" }
+    : { kind: "found", monitor: current };
 }
 
 type Planning = {

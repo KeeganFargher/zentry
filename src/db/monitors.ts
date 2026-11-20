@@ -70,6 +70,23 @@ export type CronReplan = { nextCheckIn: number; nextCheckInLatest: number } | nu
 
 type Control = Actor & { version: number };
 
+/**
+ * Moves a cron monitor's environments to a new expected check-in. Bumping the
+ * revision fences any check-in write that read the old plan, and the token
+ * makes it apply only if the monitor update batched before it won.
+ */
+export function replanStatement(
+  db: D1Database,
+  input: { monitorId: string; token: string; replan: NonNullable<CronReplan> },
+): D1PreparedStatement {
+  return db
+    .prepare(`UPDATE cron_environments SET next_checkin = ?3, next_checkin_latest = ?4,
+      revision = revision + 1, write_token = NULL
+    WHERE monitor_id = ?1 AND last_checkin IS NOT NULL
+      AND (SELECT write_token FROM monitors WHERE id = ?1) = ?2`)
+    .bind(input.monitorId, input.token, input.replan.nextCheckIn, input.replan.nextCheckInLatest);
+}
+
 type CreateIdentity = Actor & { requestKey: string | null };
 
 const COLUMNS =
@@ -193,16 +210,7 @@ export class MonitorStore {
     }
 
     if (replan !== null) {
-      // Bumping the revision fences any check-in write that read the old plan.
-      // The token makes this apply only if the update above won.
-      statements.push(
-        this.#db
-          .prepare(`UPDATE cron_environments SET next_checkin = ?3, next_checkin_latest = ?4,
-            revision = revision + 1, write_token = NULL
-          WHERE monitor_id = ?1 AND last_checkin IS NOT NULL
-            AND (SELECT write_token FROM monitors WHERE id = ?1) = ?2`)
-          .bind(current.id, token, replan.nextCheckIn, replan.nextCheckInLatest),
-      );
+      statements.push(replanStatement(this.#db, { monitorId: current.id, token, replan }));
     }
 
     const [updated] = await this.#db.batch(statements);

@@ -258,6 +258,170 @@ describe("unrecognized check-ins", () => {
     expect(created?.creator).toEqual({ kind: "sdk" });
   });
 
+  it("updates an existing monitor from monitor_config, as Sentry upserts it", async () => {
+    const { projectId, organizationId, monitor } = await hourlyMonitor({ failureThreshold: 3 });
+
+    await receiveCheckIn(store, { projectId, checkIn: checkIn({ status: "ok" }), now: T0 });
+    await receiveCheckIn(store, {
+      projectId,
+      checkIn: checkIn({
+        status: "in_progress",
+        monitor_config: {
+          schedule: { type: "crontab", value: "30 * * * *" },
+          checkin_margin: 5,
+        },
+      }),
+      now: T0 + 10 * MINUTE,
+    });
+
+    const updated = (await new MonitorStore(env.DB).list(organizationId, { kind: "all" })).find(
+      ({ id }) => id === monitor.id,
+    );
+
+    expect(updated?.version).toBe(monitor.version + 1);
+    expect(updated?.config).toEqual({
+      ...monitor.config,
+      schedule: { type: "crontab", crontab: "30 * * * *" },
+      graceMinutes: 5,
+      // Not sent by the SDK, so the value set on the monitor stays.
+      failureThreshold: 3,
+    });
+    // The check-in that carried the change is planned under the new schedule.
+    expect(await scopes(monitor.id)).toEqual([
+      expect.objectContaining({ nextAt: T0 + 30 * MINUTE }),
+    ]);
+  });
+
+  it("leaves the monitor's version alone when monitor_config matches it", async () => {
+    const { projectId, organizationId, monitor } = await hourlyMonitor();
+
+    await receiveCheckIn(store, {
+      projectId,
+      checkIn: checkIn({
+        status: "ok",
+        monitor_config: { schedule: { type: "crontab", value: "0 * * * *" } },
+      }),
+      now: T0,
+    });
+
+    const listed = (await new MonitorStore(env.DB).list(organizationId, { kind: "all" })).find(
+      ({ id }) => id === monitor.id,
+    );
+
+    expect(listed?.version).toBe(monitor.version);
+  });
+
+  it("keeps the monitor and records the check-in when monitor_config is out of bounds", async () => {
+    const { projectId, organizationId, monitor } = await hourlyMonitor();
+
+    await receiveCheckIn(store, {
+      projectId,
+      checkIn: checkIn({
+        status: "ok",
+        monitor_config: { schedule: { type: "crontab", value: "not a schedule" } },
+      }),
+      now: T0,
+    });
+
+    const listed = (await new MonitorStore(env.DB).list(organizationId, { kind: "all" })).find(
+      ({ id }) => id === monitor.id,
+    );
+
+    expect(listed?.config).toEqual(monitor.config);
+    expect((await rows(monitor.id)).map(({ status }) => status)).toEqual(["ok"]);
+  });
+
+  it("re-plans every environment when monitor_config changes the timing", async () => {
+    const { projectId, monitor } = await hourlyMonitor();
+
+    await receiveCheckIn(store, {
+      projectId,
+      checkIn: checkIn({ status: "ok", environment: "staging" }),
+      now: T0,
+    });
+    // Production carries the new schedule; staging must follow it without its own check-in.
+    await receiveCheckIn(store, {
+      projectId,
+      checkIn: checkIn({
+        status: "ok",
+        environment: "production",
+        monitor_config: { schedule: { type: "crontab", value: "30 * * * *" } },
+      }),
+      now: T0 + 10 * MINUTE,
+    });
+
+    const byEnvironment = Object.fromEntries(
+      (await scopes(monitor.id)).map((scope) => [scope.environment, scope.nextAt]),
+    );
+
+    expect(byEnvironment).toEqual({ production: T0 + 30 * MINUTE, staging: T0 + 30 * MINUTE });
+  });
+
+  it("keeps the monitor and records the check-in when monitor_config is malformed", async () => {
+    const { projectId, organizationId, monitor } = await hourlyMonitor();
+
+    await receiveCheckIn(store, {
+      projectId,
+      checkIn: CheckIn.parse({
+        check_in_id: crypto.randomUUID(),
+        monitor_slug: "nightly-export",
+        status: "ok",
+        monitor_config: { schedule: { type: "fortnightly" } },
+      }),
+      now: T0,
+    });
+
+    const listed = (await new MonitorStore(env.DB).list(organizationId, { kind: "all" })).find(
+      ({ id }) => id === monitor.id,
+    );
+
+    expect(listed?.version).toBe(monitor.version);
+    expect((await rows(monitor.id)).map(({ status }) => status)).toEqual(["ok"]);
+  });
+
+  it("loses to a UI edit that bumped the version first", async () => {
+    const { projectId, userId, monitor } = await hourlyMonitor();
+    const monitors = new MonitorStore(env.DB);
+
+    // An environment with a check-in, so a re-plan that slipped past the fence would show.
+    await receiveCheckIn(store, { projectId, checkIn: checkIn({ status: "ok" }), now: T0 });
+    const read = await store.find(projectId, "nightly-export");
+
+    if (read === null) {
+      throw new Error("monitor not found");
+    }
+
+    await monitors.edit(monitor, {
+      version: monitor.version,
+      userId,
+      time: T0,
+      replan: null,
+      monitor: CreateMonitor.parse({
+        projectId,
+        name: "Renamed",
+        type: "cron",
+        config: { ...monitor.config, failureThreshold: 2 },
+      }),
+    });
+
+    const before = await scopes(monitor.id);
+
+    // A reconfiguration planned against the pre-edit read must not overwrite the edit, and its
+    // re-plan must be fenced out with it rather than moving the environments on its own.
+    await store.reconfigure(read, {
+      config: { ...read.config, schedule: { type: "crontab", crontab: "30 * * * *" } },
+      replan: { nextCheckIn: T0 + 999 * MINUTE, nextCheckInLatest: T0 + 1000 * MINUTE },
+      now: T0,
+    });
+
+    const after = await store.find(projectId, "nightly-export");
+
+    expect(after?.config.schedule).toEqual({ type: "crontab", crontab: "0 * * * *" });
+    expect(after?.config.failureThreshold).toBe(2);
+    expect(before).toHaveLength(1);
+    expect(await scopes(monitor.id)).toEqual(before);
+  });
+
   it("does not record check-ins for a paused monitor", async () => {
     const { projectId, organizationId, userId, monitor } = await hourlyMonitor();
 

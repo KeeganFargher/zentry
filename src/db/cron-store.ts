@@ -9,6 +9,8 @@ import type { CronSettings } from "@/shared/monitors";
 import { writeEnvironment } from "./cron-write";
 import type { EnvironmentRead, Plan, Target } from "./cron-write";
 import { issueStateOf, readIssueStates } from "./monitor-issues";
+import { replanStatement } from "./monitors";
+import type { CronReplan } from "./monitors";
 
 const Config = jsonText(CronConfig);
 
@@ -20,7 +22,13 @@ const ATTEMPTS = 5;
 // could otherwise fill the organization's monitor limit with junk slugs.
 const MAX_PROVISIONED_PER_PROJECT = 20;
 
-export type CronMonitor = { id: string; config: CronSettings; status: "active" | "paused" };
+export type CronMonitor = {
+  id: string;
+  config: CronSettings;
+  status: "active" | "paused";
+  /** Guards an SDK reconfiguration against a concurrent edit in the UI. */
+  version: number;
+};
 
 export type UnrecognizedReason =
   | "unknown_slug"
@@ -40,6 +48,7 @@ const MonitorRow = z.object({
   id: z.string(),
   config: Config,
   status: z.enum(["active", "paused"]),
+  version: z.int(),
 });
 
 const EnvironmentRow = z.object({
@@ -80,7 +89,7 @@ export class CronStore {
   /** The cron monitor with this slug. The query repeats the partial index's predicate so it is used. */
   async find(projectId: number, slug: string): Promise<CronMonitor | null> {
     const row = await this.#db
-      .prepare(`SELECT id, config, status FROM monitors
+      .prepare(`SELECT id, config, status, version FROM monitors
         WHERE project_id = ?1 AND json_extract(config, '$.slug') = ?2
           AND type = 'cron' AND status != 'archived'`)
       .bind(projectId, slug)
@@ -113,6 +122,34 @@ export class CronStore {
         MAX_PROVISIONED_PER_PROJECT,
       )
       .run();
+  }
+
+  /**
+   * Applies an SDK's monitor_config to an existing monitor, as Sentry upserts
+   * it on every check-in. Recorded as a version with no member, so the audit
+   * trail shows the SDK changed it. Loses to a concurrent edit that bumped the
+   * version first; the next check-in carrying the config tries again.
+   */
+  async reconfigure(
+    monitor: CronMonitor,
+    change: { config: CronSettings; replan: CronReplan; now: number },
+  ): Promise<void> {
+    const token = crypto.randomUUID();
+
+    const update = this.#db
+      .prepare(`UPDATE monitors SET config = ?3, version = version + 1, write_token = ?4,
+          changed_by = NULL, changed_at = ?5
+        WHERE id = ?1 AND version = ?2 AND type = 'cron' AND status != 'archived'`)
+      .bind(monitor.id, monitor.version, JSON.stringify(change.config), token, change.now);
+
+    await this.#db.batch(
+      change.replan === null
+        ? [update]
+        : [
+            update,
+            replanStatement(this.#db, { monitorId: monitor.id, token, replan: change.replan }),
+          ],
+    );
   }
 
   async environment(monitorId: string, environment: string): Promise<EnvironmentRead> {
@@ -215,7 +252,7 @@ export class CronStore {
   /** Open runs past their runtime deadline, oldest first. */
   async dueTimeouts(now: number, limit: number): Promise<{ id: number; monitor: CronMonitor }[]> {
     const { results } = await this.#db
-      .prepare(`SELECT c.id, m.id AS monitorId, m.config, m.status
+      .prepare(`SELECT c.id, m.id AS monitorId, m.config, m.status, m.version
         FROM cron_checkins c JOIN monitors m ON m.id = c.monitor_id
         WHERE c.status = 'in_progress' AND c.timeout_at <= ?1 AND m.status = 'active'
         ORDER BY c.timeout_at LIMIT ?2`)
@@ -237,7 +274,7 @@ export class CronStore {
     limit: number,
   ): Promise<{ environment: string; monitor: CronMonitor }[]> {
     const { results } = await this.#db
-      .prepare(`SELECT e.environment, m.id, m.config, m.status
+      .prepare(`SELECT e.environment, m.id, m.config, m.status, m.version
         FROM cron_environments e JOIN monitors m ON m.id = e.monitor_id
         WHERE e.next_checkin_latest <= ?1 AND m.status = 'active'
         ORDER BY e.next_checkin_latest LIMIT ?2`)

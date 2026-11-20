@@ -180,8 +180,10 @@ decisions were reversed to match Sentry's monitor consumer and clock tasks:
   instead of an allowlist. The SDK slug is slugified as Sentry does.
 - **SDK check-ins that cannot apply are still accepted.** Unknown slugs,
   paused monitors and limits are counted under `cron_unrecognized` and listed
-  by the API. An unknown slug with `monitor_config` creates the monitor once.
-  The UI owns it after that, where Sentry would keep upserting it.
+  by the API. An unknown slug with `monitor_config` creates the monitor, and
+  later check-ins upsert it as Sentry does: the fields the SDK sends replace
+  the monitor's (re-planning the next check-in if the timing changed), and
+  fields it omits keep their UI values.
 - **Rate limits and bounds are Sentry's.** Six check-ins a minute per
   monitor environment, a margin up to 28 days, a runtime up to 7 days,
   thresholds up to 720, and minute to year intervals.

@@ -208,11 +208,12 @@ const Present = <T extends z.ZodType>(schema: T) =>
   schema.nullish().transform((value) => (value === null ? undefined : value));
 
 /**
- * The SDK's `monitor_config`, mapped to Zentry's field names. On Sentry it
- * upserts the monitor (develop docs, sdk/telemetry/check-ins). Zentry uses it
- * only to create a monitor the first time its slug is seen; the UI owns the
- * monitor after that. Sentry clamps an oversized margin or runtime rather than
- * rejecting the check-in (monitor_consumer.py), so this does too.
+ * The SDK's `monitor_config`, mapped to Zentry's field names. As on Sentry it
+ * upserts the monitor (develop docs, sdk/telemetry/check-ins): it creates the
+ * monitor the first time its slug is seen and updates the settings it carries
+ * on every later check-in, so a schedule changed in code reaches the monitor.
+ * Sentry clamps an oversized margin or runtime rather than rejecting the
+ * check-in (monitor_consumer.py), so this does too.
  */
 const WireMonitorConfig = z
   .object({
@@ -246,6 +247,25 @@ export function provisionedConfig(
   request: MonitorConfigRequest,
 ): CronSettings | null {
   const result = CronConfig.safeParse({ slug, ...request });
+
+  return result.success ? result.data : null;
+}
+
+/**
+ * An existing monitor's settings after an SDK's monitor_config: the fields the
+ * SDK sent replace the monitor's and the rest are kept, so a config that only
+ * names a schedule cannot reset thresholds set in the UI. Null when the result
+ * is out of bounds.
+ */
+export function reconfiguredConfig(
+  current: CronSettings,
+  request: MonitorConfigRequest,
+): CronSettings | null {
+  const sent = Object.fromEntries(
+    Object.entries(request).filter(([, value]) => value !== undefined),
+  );
+
+  const result = CronConfig.safeParse({ ...current, ...sent });
 
   return result.success ? result.data : null;
 }

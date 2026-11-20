@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import { nextCheckIn } from "@/core/cron-schedule";
+import { cronPlan, timingReplan } from "@/core/cron-schedule";
 import type { CronReplan } from "@/db/monitors";
 import type { ApiMonitor, MonitorHistory } from "@/shared/contract";
 import { CreateMonitor } from "@/shared/monitors";
-import type { CronSettings, NewMonitor } from "@/shared/monitors";
-import { DAY, MINUTE } from "@/shared/time";
+import type { NewMonitor } from "@/shared/monitors";
+import { DAY } from "@/shared/time";
 import { fixtureTarget, productionUptimeTarget, secretFreeUptimeTarget } from "@/shared/uptime";
 
 import type { ApiContext, Handler } from "./context";
@@ -83,32 +83,12 @@ function validateMetric(
   return undefined;
 }
 
-/**
- * The next expected check-in for a cron monitor's environments, counted from
- * now so a new or resumed schedule cannot miss slots retroactively.
- */
-function cronPlan(config: CronSettings, now: number): NonNullable<CronReplan> {
-  const next = nextCheckIn(config.schedule, config.timezone, now);
-
-  return { nextCheckIn: next, nextCheckInLatest: next + config.graceMinutes * MINUTE };
-}
-
-/**
- * A re-plan only when the edit changes when check-ins are expected. Changing
- * thresholds or the runtime keeps the current expectation, so an edit cannot
- * push back a miss that is already due.
- */
-/** The settings that decide when a check-in is expected. */
-function timing({ schedule, timezone, graceMinutes }: CronSettings): string {
-  return JSON.stringify({ schedule, timezone, graceMinutes });
-}
-
 function editReplan(current: NewMonitor, edited: NewMonitor, now: number): CronReplan {
   if (current.type !== "cron" || edited.type !== "cron") {
     return null;
   }
 
-  return timing(current.config) === timing(edited.config) ? null : cronPlan(edited.config, now);
+  return timingReplan(current.config, edited.config, now);
 }
 
 function conflict(): Response {

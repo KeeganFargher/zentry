@@ -1,6 +1,6 @@
 import { CronDate, CronExpressionParser } from "cron-parser";
 
-import type { CronSchedule } from "@/shared/monitors";
+import type { CronSchedule, CronSettings } from "@/shared/monitors";
 import { DAY, HOUR, MINUTE } from "@/shared/time";
 
 /**
@@ -152,4 +152,36 @@ function fromWallClock(clock: WallClock, timezone: string): number {
   const exact = [before, after].filter((time) => offsetAt(time, timezone) === naive - time);
 
   return exact.length > 0 ? Math.min(...exact) : Math.max(before, after);
+}
+
+/** When a cron monitor's environments next expect a check-in. */
+export type CronPlan = { nextCheckIn: number; nextCheckInLatest: number };
+
+/**
+ * The next expected check-in for a cron monitor's environments, counted from
+ * now so a new or resumed schedule cannot miss slots retroactively.
+ */
+export function cronPlan(config: CronSettings, now: number): CronPlan {
+  const next = nextCheckIn(config.schedule, config.timezone, now);
+
+  return { nextCheckIn: next, nextCheckInLatest: next + config.graceMinutes * MINUTE };
+}
+
+/**
+ * A re-plan only when a change moves when check-ins are expected. Changing
+ * thresholds or the runtime keeps the current expectation, so a change cannot
+ * push back a miss that is already due. Shared by UI edits and by an SDK's
+ * monitor_config, so both re-plan alike.
+ */
+export function timingReplan(
+  current: CronSettings,
+  next: CronSettings,
+  now: number,
+): CronPlan | null {
+  return timing(current) === timing(next) ? null : cronPlan(next, now);
+}
+
+/** The settings that decide when a check-in is expected. */
+function timing({ schedule, timezone, graceMinutes }: CronSettings): string {
+  return JSON.stringify({ schedule, timezone, graceMinutes });
 }
