@@ -607,6 +607,10 @@ describe("push summaries", () => {
     expect(harness.pushed[0]?.title).toBe(TEST_SUMMARY.headline);
     expect(harness.prompts).toHaveLength(1);
     expect(await summaryRows()).toBe(1);
+    // The stale row was replaced, not kept beside the new one.
+    expect(await new IssueSummaryStore(env.DB).get(group?.id ?? 0, PROMPT_VERSION)).toEqual(
+      TEST_SUMMARY,
+    );
   });
 
   it("deletes the summary with its issue", async () => {

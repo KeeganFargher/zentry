@@ -29,7 +29,7 @@ export type SummaryReply = (prompt: SummaryPrompt) => SummaryResult;
 
 export const TEST_SUMMARY = {
   headline: "Checkout is failing",
-  detail: "Likely your own code: the checkout handler raised an error.",
+  detail: "Your checkout handler raised an error with no cause given.",
 };
 
 const summarizeAll: SummaryReply = () => ({ ok: true, summary: TEST_SUMMARY, model: "test-model" });

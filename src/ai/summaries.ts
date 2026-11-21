@@ -23,8 +23,8 @@ export const SUMMARY_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 // Reasoning spends most of these; at 1,200 one eval answer was cut off mid-JSON.
 const MAX_TOKENS = 2500;
 
-// The prompt asks for 45 and 120 characters. These are the hard limits: what
-// fits a lock screen line and Android's collapsed body.
+// The prompt asks for 40 and 120 characters. These are the hard limits: what
+// fits an expanded notification; a collapsed one shows about 30 characters.
 const MAX_HEADLINE = 50;
 const MAX_DETAIL = 140;
 

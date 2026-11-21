@@ -2117,8 +2117,10 @@ Android each type has its own notification channel (`alerts`, `workflow`,
 **Summaries.** An issue's title is often a bare exception type and a JSON
 blob, which says nothing on a lock screen. So alert pushes lead with a
 summary Workers AI writes: a headline (at most 50 characters) and one
-sentence (at most 140) on what broke, whether the fault looks like the
-developer's code or an outside service, and what it affects. The plan and the
+sentence (at most 140) that names who failed, the developer's code or the
+service it calls, then the cause and what it affects. A collapsed
+notification shows about 30 characters of each line, so both lead with the
+service or feature and never with a hedge such as "Likely". The plan and the
 model eval are in `docs/push-summaries-plan.md` and
 `docs/push-summaries-eval.md`.
 

@@ -125,13 +125,13 @@ If DeepSeek does not honour the schema, try gemma-4, then llama-3.1-8b-instruct.
 ```json
 {
   "headline": "string: what broke, in plain words",
-  "detail": "string: the likely cause and what it affects"
+  "detail": "string: who failed, the cause, and what it affects"
 }
 ```
 
 There is nothing more, deliberately (§3). The answer is parsed with zod where it enters, in `src/ai/` (§7). Over-long strings, line breaks and extra keys fail the parse. Nothing is truncated or repaired silently.
 
-**Length limits are not in the JSON schema** (see the spike results). The prompt asks for at most 45 and 120 characters. Zod rejects anything over 50 and 140, so a model that overshoots gets the plain push and a logged failure (§8) instead of cut-off text.
+**Length limits are not in the JSON schema** (see the spike results). The prompt asks for at most 40 and 120 characters. Zod rejects anything over 50 and 140, so a model that overshoots gets the plain push and a logged failure (§8) instead of cut-off text.
 
 ### Spike results (20 November)
 

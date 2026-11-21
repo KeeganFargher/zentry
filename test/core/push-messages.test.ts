@@ -14,7 +14,7 @@ import type { IssueNotice } from "@/shared/notify";
 
 const SUMMARY = {
   headline: "Discord rate limit blocking price alerts",
-  detail: "Discord is rate limiting the webhook, so price alerts likely failed to send.",
+  detail: "Discord is rate limiting the webhook, so price alerts are not being sent.",
 };
 
 const NOW = Date.UTC(2026, 10, 17, 10, 30);
@@ -91,7 +91,7 @@ describe("push messages", () => {
     expect(push).toEqual({
       channel: "alerts",
       title: "Discord rate limit blocking price alerts",
-      body: "Discord is rate limiting the webhook, so price alerts likely failed to send.\nAPI-48 · production",
+      body: "Discord is rate limiting the webhook, so price alerts are not being sent.\nAPI-48 · production",
       data: { kind: "issue", organization: "acme", issueId: 48 },
     });
   });

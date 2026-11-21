@@ -55,21 +55,23 @@ describe("Workers AI summary replies", () => {
   it("reads the summary from the JSON string in the first choice", () => {
     const answer = JSON.stringify({
       headline: "Discord rate limit blocking price alerts",
-      detail: "Discord is rate limiting the webhook, so price alerts likely failed to send.",
+      detail: "Discord is rate limiting the webhook, so price alerts are not being sent.",
     });
 
     expect(readReply(reply(answer))).toEqual({
       ok: true,
       summary: {
         headline: "Discord rate limit blocking price alerts",
-        detail: "Discord is rate limiting the webhook, so price alerts likely failed to send.",
+        detail: "Discord is rate limiting the webhook, so price alerts are not being sent.",
       },
       model: SUMMARY_MODEL,
     });
   });
 
   it("trims space around the text", () => {
-    const result = readReply(reply('{"headline":"  Checkout broke ","detail":" Likely ours. "}'));
+    const result = readReply(
+      reply('{"headline":"  Checkout broke ","detail":" Your checkout handler threw. "}'),
+    );
 
     expect(result).toMatchObject({ ok: true, summary: { headline: "Checkout broke" } });
   });
