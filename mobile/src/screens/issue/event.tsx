@@ -1,8 +1,10 @@
 // One event of the issue, with Sentry's event navigation: oldest, older,
 // newer, latest, as a joined button bar beside which event this is. The
-// latest is shown first, as on the web.
+// latest is shown first, as on the web. Below it, the web's "Copy as
+// Markdown": the whole event as one report, to hand to an AI assistant or
+// paste into a ticket.
 
-import type { ApiEventDetail } from "@contract";
+import type { ApiEventDetail, ApiIssue } from "@contract";
 import { useQuery } from "@tanstack/react-query";
 import type { JSX } from "react";
 import { View } from "react-native";
@@ -10,13 +12,16 @@ import { View } from "react-native";
 import { Notice } from "~/components/basics";
 import { Button, ButtonBar } from "~/components/button";
 import { EventBody } from "~/components/event";
+import { copyText } from "~/components/event/copy";
 import { Text } from "~/components/text";
 import { useNow } from "~/lib/clock";
 import { timeAgo } from "~/lib/format";
+import { toast } from "~/lib/issue-actions";
+import { issueMarkdown } from "~/lib/markdown";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
 import { eventQuery } from "~/lib/queries";
-import { useApi } from "~/lib/session";
+import { useApi, useSession } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
 /** An event with no newer one is the latest; with no older one, the first. */
@@ -130,13 +135,40 @@ function EventNav({ detail, onPick }: NavProps): JSX.Element {
   );
 }
 
-type PanelProps = { issueId: number; which: string; onPick: (which: string) => void };
+/**
+ * Copies the event shown, not the latest: paging to an older event and
+ * copying it is how a reader hands over the one that looks different.
+ * The link is to the web UI, which the paired server also serves.
+ */
+function CopyMarkdown({ issue, detail }: { issue: ApiIssue; detail: ApiEventDetail }): JSX.Element {
+  const org = useOrg();
+  const { session } = useSession();
 
-export function EventPanel({ issueId, which, onPick }: PanelProps): JSX.Element {
+  if (session === null) {
+    throw new Error("Issue shown while signed out");
+  }
+
+  const copy = async (): Promise<void> => {
+    const link = `${session.apiUrl}/${org}/issues/${issue.id}/`;
+
+    await copyText(issueMarkdown(link, issue, detail.event));
+    toast("Copied the issue as Markdown");
+  };
+
+  return (
+    <View style={{ paddingHorizontal: SPACE.lg, paddingTop: SPACE.md }}>
+      <Button label="Copy as Markdown" icon="copy" onPress={() => void copy()} />
+    </View>
+  );
+}
+
+type PanelProps = { issue: ApiIssue; which: string; onPick: (which: string) => void };
+
+export function EventPanel({ issue, which, onPick }: PanelProps): JSX.Element {
   const api = useApi();
   const org = useOrg();
 
-  const detail = useQuery(eventQuery(api, { org, issueId }, which));
+  const detail = useQuery(eventQuery(api, { org, issueId: issue.id }, which));
 
   if (detail.data === undefined) {
     return (
@@ -151,6 +183,7 @@ export function EventPanel({ issueId, which, onPick }: PanelProps): JSX.Element 
   return (
     <View>
       <EventNav detail={detail.data} onPick={onPick} />
+      <CopyMarkdown issue={issue} detail={detail.data} />
       <EventBody event={detail.data.event} />
     </View>
   );

@@ -1,10 +1,22 @@
 // "Copy as Markdown": one event as a self-contained report, for pasting into
 // a ticket, a pull request or an AI assistant. Everything someone needs to
 // start on the bug without opening Zentry: what, where, how often, the full
-// exception and trace, what led up to it, and the tags. The user's IP
-// address is left out, since the text is meant to travel.
+// exception and trace, the source around the app's own frames, what led up
+// to it, the request, contexts, extra data and the tags. The user's IP
+// address and the request headers (cookies, auth tokens) are left out,
+// since the text is meant to travel.
+//
+// The app keeps a copy in mobile/src/lib/markdown.ts: Metro cannot import
+// from ui/, so a change here is made there too.
 
-import type { ApiIssue, Json, StoredBreadcrumb, StoredEvent } from "@contract";
+import type {
+  ApiIssue,
+  Json,
+  JsonObject,
+  StoredBreadcrumb,
+  StoredEvent,
+  StoredFrame,
+} from "@contract";
 
 import { dateTime } from "./format";
 import { getText } from "./json";
@@ -145,6 +157,87 @@ function breadcrumbSection(event: StoredEvent): string[] {
   return [heading, "", fenced(shown.map(crumbLine).join("\n"))];
 }
 
+/** A frame with its source line, which is all `sourceSection` shows. */
+type SourceFrame = StoredFrame & { lineno: number; contextLine: string };
+
+function hasSource(frame: StoredFrame): frame is SourceFrame {
+  return frame.inApp && frame.lineno !== null && frame.contextLine !== null;
+}
+
+/** Lines around a frame's line, numbered, with the line itself marked. */
+function sourceLines(frame: SourceFrame): string {
+  const at = frame.lineno;
+  const start = at - frame.preContext.length;
+  const lines = [...frame.preContext, frame.contextLine, ...frame.postContext];
+
+  return lines
+    .map((line, index) => {
+      const number = start + index;
+
+      return `${number === at ? ">" : " "} ${String(number).padStart(5)} | ${line}`;
+    })
+    .join("\n");
+}
+
+function frameBlock(frame: SourceFrame): string {
+  const where = frame.absPath ?? frame.filename ?? frame.module ?? "<unknown>";
+
+  const lines = [
+    `### ${code(frame.function ?? "<unknown>")} in ${code(where)}`,
+    "",
+    fenced(sourceLines(frame)),
+  ];
+
+  if (frame.vars !== null) {
+    lines.push("", "Locals:", "", fenced(JSON.stringify(frame.vars, null, 2), "json"));
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * The source around the app's own frames, innermost first: the trace says
+ * where, this says what the code there does, which is what a fix starts
+ * from. Library frames are left out: they are rarely where the fix goes,
+ * and they would bury the app's frames in a long report.
+ */
+function sourceSection(event: StoredEvent): string[] {
+  const frames = event.exceptions
+    .toReversed()
+    .flatMap((exception) => exception.frames.toReversed())
+    .filter(hasSource);
+
+  return frames.length === 0
+    ? []
+    : ["## Source (in-app frames, innermost first)", "", frames.map(frameBlock).join("\n\n")];
+}
+
+/** The request without its headers, which carry cookies and tokens. */
+function requestSection(event: StoredEvent): string[] {
+  const { request } = event;
+
+  if (request === null) {
+    return [];
+  }
+
+  const parts = [
+    ...(request.queryString === null || request.queryString === ""
+      ? []
+      : [`Query: ${code(request.queryString)}`, ""]),
+    ...(request.data === null
+      ? []
+      : ["Body:", "", fenced(JSON.stringify(request.data, null, 2), "json")]),
+  ];
+
+  return parts.length === 0 ? [] : ["## Request", "", ...parts];
+}
+
+function jsonSection(heading: string, value: JsonObject): string[] {
+  return Object.keys(value).length === 0
+    ? []
+    : [`## ${heading}`, "", fenced(JSON.stringify(value, null, 2), "json")];
+}
+
 function tagSection(event: StoredEvent): string[] {
   return event.tags.length === 0
     ? []
@@ -171,8 +264,12 @@ export function issueMarkdown(link: string, issue: ApiIssue, event: StoredEvent)
     [details(issue, event)],
     messageSection(issue, event),
     trace,
+    sourceSection(event),
     breadcrumbSection(event),
+    requestSection(event),
     tagSection(event),
+    jsonSection("Contexts", event.contexts),
+    jsonSection("Extra", event.extra),
   ];
 
   return sections
