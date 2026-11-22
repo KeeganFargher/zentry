@@ -1,13 +1,12 @@
-// The monitor screens' queries. Timelines cover "the last N days", but the
-// window is rounded to five minutes: with the clock's own millisecond as the
-// end, every minute's tick (useNow) would be a new query key and a refetch.
+// The monitor screens' queries. Timelines cover "the last N days", with the
+// window rounded to five minutes and moved on every five.
 
 import type { ApiMonitor, MonitorDetail, MonitorTimeline } from "@contract";
 import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 
-import { useNow } from "~/lib/clock";
 import { useOrg } from "~/lib/organization";
+import { monitorsQuery } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 
 const MINUTE = 60_000;
@@ -20,11 +19,7 @@ export function useMonitors(): UseQueryResult<ApiMonitor[]> {
 
   // Refetched as often as the timelines move on, so a row's health tag never
   // trails a new red tick for long.
-  return useQuery({
-    queryKey: ["monitors", org],
-    queryFn: () => api.monitors(org),
-    refetchInterval: STEP,
-  });
+  return useQuery({ ...monitorsQuery(api, org), refetchInterval: STEP });
 }
 
 export function useMonitorDetail(id: string): UseQueryResult<MonitorDetail> {
@@ -41,6 +36,12 @@ export function useMonitorDetail(id: string): UseQueryResult<MonitorDetail> {
 /**
  * The last `days` of a monitor's ticks in `buckets` columns. The end is the
  * next five-minute mark, so the newest check-in is always inside the window.
+ *
+ * The key names the span, not the window: the window is worked out when the
+ * fetch runs, and the response carries it. A key with the window in it was
+ * new every five minutes, so a timeline restored from disk never matched
+ * and every row started empty; this one shows the last ticks it saw and
+ * moves on with the refetch.
  */
 export function useTimeline(
   id: string,
@@ -49,13 +50,16 @@ export function useTimeline(
 ): UseQueryResult<MonitorTimeline> {
   const api = useApi();
   const org = useOrg();
-  const until = Math.ceil(useNow() / STEP) * STEP;
-  const since = until - days * DAY;
 
   return useQuery({
-    queryKey: ["monitor-timeline", org, id, since, until, buckets],
-    queryFn: () => api.monitorTimeline(org, id, { since, until, buckets }),
-    // A new window keeps the old ticks on screen until its own arrive.
+    queryKey: ["monitor-timeline", org, id, days, buckets],
+    queryFn: () => {
+      const until = Math.ceil(Date.now() / STEP) * STEP;
+
+      return api.monitorTimeline(org, id, { since: until - days * DAY, until, buckets });
+    },
+    refetchInterval: STEP,
+    // Another period keeps the old ticks on screen until its own arrive.
     placeholderData: (previous) => previous,
   });
 }

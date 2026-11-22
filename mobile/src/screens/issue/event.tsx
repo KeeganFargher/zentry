@@ -15,6 +15,7 @@ import { useNow } from "~/lib/clock";
 import { timeAgo } from "~/lib/format";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { eventQuery } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
@@ -135,10 +136,7 @@ export function EventPanel({ issueId, which, onPick }: PanelProps): JSX.Element 
   const api = useApi();
   const org = useOrg();
 
-  const detail = useQuery({
-    queryKey: ["issues", org, issueId, "event", which],
-    queryFn: () => api.event(org, issueId, which),
-  });
+  const detail = useQuery(eventQuery(api, { org, issueId }, which));
 
   if (detail.data === undefined) {
     return (

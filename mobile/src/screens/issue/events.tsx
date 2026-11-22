@@ -13,6 +13,7 @@ import { useNow } from "~/lib/clock";
 import { timeAgo } from "~/lib/format";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { usePullRefresh } from "~/lib/pull-refresh";
 import { useApi } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
@@ -83,6 +84,10 @@ export function EventsScreen(): JSX.Element {
 
   const events = pages.data?.pages.flatMap((page) => page.events) ?? [];
 
+  const pull = usePullRefresh(async () => {
+    await pages.refetch();
+  });
+
   return (
     <FlatList
       data={events}
@@ -93,9 +98,7 @@ export function EventsScreen(): JSX.Element {
           void pages.fetchNextPage();
         }
       }}
-      refreshControl={
-        <RefreshControl refreshing={pages.isRefetching} onRefresh={() => void pages.refetch()} />
-      }
+      refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={pull.onRefresh} />}
       ListEmptyComponent={
         <Notice loading={pages.isPending} error={pages.error} empty="No stored events." />
       }

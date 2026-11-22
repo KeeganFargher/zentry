@@ -16,5 +16,5 @@
     // mobile/, because `import type` is erased before bundling.
     "paths": { "@contract": ["../src/shared/contract.ts"], "~/*": ["./src/*"] }
   },
-  "include": ["src", "app.config.ts", "expo-env.d.ts", ".expo/types/**/*.ts"]
+  "include": ["index.ts", "src", "app.config.ts", "expo-env.d.ts", ".expo/types/**/*.ts"]
 }

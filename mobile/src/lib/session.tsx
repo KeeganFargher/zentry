@@ -24,7 +24,8 @@ const KEYS = {
   deviceId: "zentry.deviceId",
 } as const;
 
-async function load(): Promise<Session | null> {
+/** The stored session; also read by the background tasks, which have no provider. */
+export async function loadSession(): Promise<Session | null> {
   const [apiUrl, token, email, deviceId] = await Promise.all([
     SecureStore.getItemAsync(KEYS.apiUrl),
     SecureStore.getItemAsync(KEYS.token),
@@ -82,7 +83,7 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
 
   useEffect(() => {
     const restore = async (): Promise<void> => {
-      setSession(await load());
+      setSession(await loadSession());
       setReady(true);
     };
 

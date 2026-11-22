@@ -5,6 +5,7 @@ import type { Level } from "@contract";
 import type { JSX, ReactNode } from "react";
 import { ActivityIndicator, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
+import Animated, { FadeIn } from "react-native-reanimated";
 
 import { levelLabel } from "~/lib/issue";
 import { usePalette } from "~/lib/preferences";
@@ -132,6 +133,13 @@ export function LevelBar({ level }: { level: Level }): JSX.Element {
   );
 }
 
+/**
+ * How long a load runs before its spinner fades in. Most loads that miss the
+ * cache finish inside this, and a spinner that flashes for a few frames reads
+ * as slower than a short blank: the content just appears.
+ */
+const SPINNER = FadeIn.delay(400);
+
 /** Loading, failed, or nothing to show: the three states before content. */
 export function Notice({
   loading,
@@ -149,7 +157,9 @@ export function Notice({
   return (
     <View style={{ padding: SPACE.xl, alignItems: "center", gap: SPACE.md }}>
       {loading ? (
-        <ActivityIndicator color={palette.accent} />
+        <Animated.View entering={SPINNER}>
+          <ActivityIndicator color={palette.accent} />
+        </Animated.View>
       ) : error !== null ? (
         <>
           <Text tone="danger" style={{ textAlign: "center" }}>

@@ -19,6 +19,8 @@ import { Text } from "~/components/text";
 import { detailsOf, TYPE_LABELS } from "~/lib/monitor-text";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { usePullRefresh } from "~/lib/pull-refresh";
+import { projectsQuery } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
@@ -77,7 +79,14 @@ export function MonitorsScreen(): JSX.Element {
   const [filter, setFilter] = useState<Filter>("all");
   const monitors = useMonitors();
   // The issue list and Projects tab load the same query, so this is usually cached.
-  const projects = useQuery({ queryKey: ["projects", org], queryFn: () => api.projects(org) });
+  const projects = useQuery(projectsQuery(api, org));
+
+  const pull = usePullRefresh(async () => {
+    await Promise.all([
+      monitors.refetch(),
+      client.invalidateQueries({ queryKey: ["monitor-timeline", org] }),
+    ]);
+  });
 
   const shown = (monitors.data ?? []).filter(
     (monitor) => filter === "all" || monitor.type === filter,
@@ -101,15 +110,7 @@ export function MonitorsScreen(): JSX.Element {
           onPress={() => router.push({ pathname: "/monitors/[id]", params: { id: item.id } })}
         />
       )}
-      refreshControl={
-        <RefreshControl
-          refreshing={monitors.isRefetching}
-          onRefresh={() => {
-            void monitors.refetch();
-            void client.invalidateQueries({ queryKey: ["monitor-timeline", org] });
-          }}
-        />
-      }
+      refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={pull.onRefresh} />}
       ListEmptyComponent={
         <Notice
           loading={monitors.isPending}
