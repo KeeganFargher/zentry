@@ -276,7 +276,7 @@ function IssueEvents({
         trailing={<AllEventsLink issueId={issueId} />}
       />
       {view.tab === "event" && (
-        <EventPanel issueId={issueId} which={view.which} onPick={(which) => setView({ which })} />
+        <EventPanel issue={issue} which={view.which} onPick={(which) => setView({ which })} />
       )}
       {view.tab === "tags" && <TagsTab issueId={issueId} />}
       {view.tab === "activity" && <ActivityTab issue={issue} />}
