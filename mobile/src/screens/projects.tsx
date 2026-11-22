@@ -13,6 +13,8 @@ import { Text } from "~/components/text";
 import { clockTime, compact } from "~/lib/format";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { usePullRefresh } from "~/lib/pull-refresh";
+import { projectsQuery } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 import { RADIUS, SPACE } from "~/lib/theme";
 
@@ -81,7 +83,11 @@ export function ProjectsScreen(): JSX.Element {
   const api = useApi();
   const org = useOrg();
   const router = useRouter();
-  const projects = useQuery({ queryKey: ["projects", org], queryFn: () => api.projects(org) });
+  const projects = useQuery(projectsQuery(api, org));
+
+  const pull = usePullRefresh(async () => {
+    await projects.refetch();
+  });
 
   return (
     <FlatList
@@ -99,12 +105,7 @@ export function ProjectsScreen(): JSX.Element {
           }
         />
       )}
-      refreshControl={
-        <RefreshControl
-          refreshing={projects.isRefetching}
-          onRefresh={() => void projects.refetch()}
-        />
-      }
+      refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={pull.onRefresh} />}
       ListEmptyComponent={
         <Notice
           loading={projects.isPending}

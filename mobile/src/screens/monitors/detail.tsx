@@ -19,6 +19,7 @@ import { dateTime, shortDate } from "~/lib/format";
 import { detailsOf, HEALTH_LABELS, TYPE_LABELS } from "~/lib/monitor-text";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { usePullRefresh } from "~/lib/pull-refresh";
 import { SPACE } from "~/lib/theme";
 
 import { About } from "./about";
@@ -185,34 +186,50 @@ function TypeSections({ detail }: { detail: MonitorDetail }): JSX.Element | null
   return null;
 }
 
+/**
+ * The monitor as the cached list last saw it, if it did: enough for the
+ * title and summary while the detail (check-ins, incidents, audit) loads.
+ */
+function useListedMonitor(id: string): ApiMonitor | undefined {
+  const client = useQueryClient();
+  const org = useOrg();
+
+  return client.getQueryData<ApiMonitor[]>(["monitors", org])?.find((monitor) => monitor.id === id);
+}
+
 function MonitorPage({ id }: { id: string }): JSX.Element {
   const palette = usePalette();
   const client = useQueryClient();
   const org = useOrg();
   const detail = useMonitorDetail(id);
+  const listed = useListedMonitor(id);
+  const monitor = detail.data?.monitor ?? listed;
+
+  const pull = usePullRefresh(async () => {
+    await Promise.all([
+      detail.refetch(),
+      client.invalidateQueries({ queryKey: ["monitor-timeline", org, id] }),
+    ]);
+  });
 
   return (
     <>
-      <Stack.Screen options={{ title: detail.data?.monitor.name ?? "Monitor" }} />
+      <Stack.Screen options={{ title: monitor?.name ?? "Monitor" }} />
       <ScrollView
         style={{ backgroundColor: palette.surface }}
         contentContainerStyle={{ padding: SPACE.md, gap: SPACE.md }}
-        refreshControl={
-          <RefreshControl
-            refreshing={detail.isRefetching}
-            onRefresh={() => {
-              void detail.refetch();
-              void client.invalidateQueries({ queryKey: ["monitor-timeline", org, id] });
-            }}
-          />
-        }
+        refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={pull.onRefresh} />}
       >
         {detail.data === undefined ? (
-          <Notice
-            loading={detail.isPending}
-            error={detail.error}
-            onRetry={() => void detail.refetch()}
-          />
+          <>
+            {/* The list's copy of the monitor, until its detail arrives. */}
+            {listed !== undefined && <Summary monitor={listed} />}
+            <Notice
+              loading={detail.isPending}
+              error={detail.error}
+              onRetry={() => void detail.refetch()}
+            />
+          </>
         ) : (
           <>
             <Summary monitor={detail.data.monitor} />

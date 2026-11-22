@@ -21,6 +21,7 @@ import { Segmented } from "~/components/segmented";
 import { Text } from "~/components/text";
 import { toast } from "~/lib/issue-actions";
 import { useOrganizations, useOrg } from "~/lib/organization";
+import { projectsQuery } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
@@ -220,7 +221,7 @@ export function NotificationsScreen(): JSX.Element {
     queryFn: () => api.notifications(org),
   });
 
-  const projects = useQuery({ queryKey: ["projects", org], queryFn: () => api.projects(org) });
+  const projects = useQuery(projectsQuery(api, org));
 
   const mutation = useMutation({
     mutationFn: ({ where, value }: { where: Where; value: NotificationValue | null }) =>

@@ -20,6 +20,8 @@ import { useNow } from "~/lib/clock";
 import { useSetStatus } from "~/lib/issue-actions";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { usePullRefresh } from "~/lib/pull-refresh";
+import { issueListQuery, projectsQuery } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 import { SPACE } from "~/lib/theme";
 
@@ -33,28 +35,8 @@ import type { SearchInput } from "./header";
 import { IssueRow } from "./row";
 import { filterSummary } from "./summary";
 
-/** The first page has no cursor. */
-const FIRST_PAGE: string | null = null;
-
 function useIssuePages(filters: Filters) {
-  const api = useApi();
-  const org = useOrg();
-  const query = filterQuery(filters);
-
-  return useInfiniteQuery({
-    queryKey: ["issues", org, "list", query.toString()],
-    queryFn: ({ pageParam }) => {
-      const page = new URLSearchParams(query);
-
-      if (pageParam !== null) {
-        page.set("cursor", pageParam);
-      }
-
-      return api.issues(org, page);
-    },
-    initialPageParam: FIRST_PAGE,
-    getNextPageParam: (last) => last.nextCursor,
-  });
+  return useInfiniteQuery(issueListQuery(useApi(), useOrg(), filterQuery(filters)));
 }
 
 /**
@@ -142,6 +124,10 @@ function IssueFeed({ pages, selection, top, onScroll }: FeedProps): JSX.Element 
   const issues: ApiIssue[] = pages.data?.pages.flatMap((page) => page.issues) ?? [];
   const selecting = selection.selected.size > 0;
 
+  const pull = usePullRefresh(async () => {
+    await pages.refetch();
+  });
+
   return (
     <Animated.FlatList
       data={issues}
@@ -168,8 +154,8 @@ function IssueFeed({ pages, selection, top, onScroll }: FeedProps): JSX.Element 
       onEndReachedThreshold={0.5}
       refreshControl={
         <RefreshControl
-          refreshing={pages.isRefetching}
-          onRefresh={() => void pages.refetch()}
+          refreshing={pull.refreshing}
+          onRefresh={pull.onRefresh}
           // Below the header, not hidden behind it.
           progressViewOffset={top}
         />
@@ -222,7 +208,7 @@ function IssueList(): JSX.Element {
   const insets = useSafeAreaInsets();
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const pages = useIssuePages(filters);
-  const projects = useQuery({ queryKey: ["projects", org], queryFn: () => api.projects(org) });
+  const projects = useQuery(projectsQuery(api, org));
   const setStatus = useSetStatus();
   const selection = useSelection();
   const header = useCollapsingHeader();

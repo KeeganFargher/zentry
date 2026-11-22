@@ -2183,6 +2183,26 @@ model eval are in `docs/push-summaries-plan.md` and
   avoids.
 - Hermes, React Native's engine here, has no `Array#toSorted`, so the app
   sorts copies; `unicorn/no-array-sort` is off for `mobile/` only.
+- The query cache is persisted (`lib/cache.ts`): TanStack Query's persister
+  writes it, as one value, to `expo-sqlite`'s key-value store, and the splash
+  screen stays up until it is restored, so a launch opens on the last
+  session's issues, monitors and projects while every screen refetches
+  behind them. Queries live a week; a new update id (EAS Update) starts from
+  an empty cache, since its contract may differ; signing out clears it. Full
+  events are kept in memory only (`eventQuery` in `lib/queries.ts`): they
+  are large, and each write rewrites the whole cache. An issue opened from a
+  list renders from the list's copy (both endpoints serialize issues the
+  same way) while its own fetch runs.
+- Two background tasks fill that cache with no screen open
+  (`lib/background.ts`, defined in `index.ts` before the router loads): one
+  for every push (Expo's Android pushes are FCM data messages, so the task
+  runs even when the app is closed), which also fetches a pushed issue and
+  its latest event, and an hourly one through WorkManager
+  (`expo-background-task`). Each fetches the default issue list, projects
+  and monitors, skips anything fetched in the last ten seconds (pushes come
+  in bursts, and the phone shares one rate limit), and saves the cache.
+- Pull-to-refresh spins only for a pull, not for background refetches, and a
+  load's spinner fades in only after 400 ms.
 - Colours, radius and type are Sentry's design tokens (getsentry/sentry,
   `static/packages/scraps`), in `mobile/src/lib/theme.ts` and kept in step with
   `ui/src/styles.css`: Rubik at 400 and 500, Roboto Mono for code, Sentry's

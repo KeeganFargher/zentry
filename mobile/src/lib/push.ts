@@ -13,6 +13,7 @@ import * as Notifications from "expo-notifications";
 import { z } from "zod";
 
 import type { Api } from "./api";
+import { jsonText } from "./json";
 
 /** One Android channel per type, so each can be muted in the phone's own settings. */
 const CHANNELS: [PushChannel, string, string, Notifications.AndroidImportance][] = [
@@ -128,6 +129,19 @@ const PushDataSchema = z.discriminatedUnion("kind", [
 /** What a tapped push should open; null for one this app did not send. */
 export function tappedPush(response: Notifications.NotificationResponse): PushData | null {
   const parsed = PushDataSchema.safeParse(response.notification.request.content.data);
+
+  return parsed.success ? parsed.data : null;
+}
+
+const PushDataText = jsonText(PushDataSchema);
+
+/**
+ * A received push's data, from the JSON text Expo carries it in through FCM
+ * (the background task sees the raw message); null for a push this app did
+ * not send.
+ */
+export function receivedPush(text: string): PushData | null {
+  const parsed = PushDataText.safeParse(text);
 
   return parsed.success ? parsed.data : null;
 }

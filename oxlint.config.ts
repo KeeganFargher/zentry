@@ -150,15 +150,16 @@ export default defineConfig({
     {
       // `jsonKind` tells the members of the Json union apart for trim and scrub, and
       // `jsonText` hands a parsed value to a schema; both need what these rules forbid.
-      files: ["src/shared/json.ts"],
+      files: ["src/shared/json.ts", "mobile/src/lib/json.ts"],
       rules: {
         "anti-slop/no-runtime-typeof": "off",
         "typescript/no-unsafe-type-assertion": "off",
       },
     },
     {
-      // `jsonText` is the one place JSON text is parsed, straight into a schema.
-      files: ["src/shared/json.ts"],
+      // `jsonText` is the one place JSON text is parsed, straight into a schema
+      // (the app has its own copy: Metro cannot bundle src/shared).
+      files: ["src/shared/json.ts", "mobile/src/lib/json.ts"],
       rules: { "zentry/no-json-parse": "off" },
     },
     {
@@ -168,6 +169,7 @@ export default defineConfig({
       // added here, by name.
       files: [
         "src/shared/json.ts",
+        "mobile/src/lib/json.ts",
         "src/shared/schema.ts",
         // The uptime queue's job messages, and the probe Worker's request and reply.
         "src/cron/uptime.ts",
@@ -187,7 +189,7 @@ export default defineConfig({
         "src/push/expo.ts",
         // Workers AI's replies, and the summary the model wrote inside one.
         "src/ai/summaries.ts",
-        // A tapped push's data, which crossed Expo and FCM.
+        // A push's data, tapped or received, which crossed Expo and FCM.
         "mobile/src/lib/push.ts",
         // The build's environment variables, set by CI or the person building.
         "mobile/app.config.ts",
@@ -210,6 +212,12 @@ export default defineConfig({
       // toReversed and findLast but not toSorted. So the app sorts a copy.
       files: ["mobile/**"],
       rules: { "unicorn/no-array-sort": "off" },
+    },
+    {
+      // The app's entry loads modules for what they do on load, as Expo Router's
+      // documented custom entry does: the background tasks, then the router.
+      files: ["mobile/index.ts"],
+      rules: { "import/no-unassigned-import": "off" },
     },
     {
       // The logger is the one module allowed to write to the console.

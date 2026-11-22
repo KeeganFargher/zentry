@@ -6,12 +6,16 @@ import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 
 import { usePreferences } from "./preferences";
+import { meQuery } from "./queries";
 import { useApi } from "./session";
 
 export function useMe(): UseQueryResult<ApiMe> {
-  const api = useApi();
+  return useQuery(meQuery(useApi()));
+}
 
-  return useQuery({ queryKey: ["me"], queryFn: () => api.me() });
+/** The organization with this slug while the user is still a member of it, else their first. */
+export function pickOrganization(all: ApiOrganization[], slug: string): ApiOrganization | null {
+  return all.find((entry) => entry.slug === slug) ?? all[0] ?? null;
 }
 
 export type Organizations = {
@@ -26,7 +30,8 @@ export function useOrganizations(): Organizations {
   const me = useMe();
   const { organization, setOrganization } = usePreferences();
   const all = me.data?.organizations ?? [];
-  const current = all.find((entry) => entry.slug === organization) ?? all[0] ?? null;
+  // Until one is chosen on this phone, the first.
+  const current = organization === null ? (all[0] ?? null) : pickOrganization(all, organization);
 
   return {
     current,

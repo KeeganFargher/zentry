@@ -16,6 +16,11 @@ const ORG_KEY = "zentry.organization";
 
 const THEMES: ThemeChoice[] = ["system", "light", "dark"];
 
+/** The organization last viewed, for the background tasks, which have no provider. */
+export function storedOrganization(): Promise<string | null> {
+  return SecureStore.getItemAsync(ORG_KEY);
+}
+
 type Preferences = {
   ready: boolean;
   theme: ThemeChoice;
@@ -39,7 +44,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }): JSX.
     const restore = async (): Promise<void> => {
       const [storedTheme, storedOrg] = await Promise.all([
         SecureStore.getItemAsync(THEME_KEY),
-        SecureStore.getItemAsync(ORG_KEY),
+        storedOrganization(),
       ]);
 
       setThemeState(THEMES.find((choice) => choice === storedTheme) ?? "system");

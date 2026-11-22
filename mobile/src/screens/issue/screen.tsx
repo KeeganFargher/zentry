@@ -21,6 +21,8 @@ import { timeAgo } from "~/lib/format";
 import { toast } from "~/lib/issue-actions";
 import { useOrg } from "~/lib/organization";
 import { usePalette } from "~/lib/preferences";
+import { usePullRefresh } from "~/lib/pull-refresh";
+import { issueFromLists, issueQuery, patchIssue } from "~/lib/queries";
 import { useApi } from "~/lib/session";
 import { CONTROL, SPACE } from "~/lib/theme";
 
@@ -126,7 +128,12 @@ function ActivityTab({ issue }: { issue: ApiIssue }): JSX.Element {
   );
 }
 
-/** Marks the issue seen once it is open, so the list stops showing it as unread. */
+/**
+ * Marks the issue seen once it is open, so the list stops showing it as
+ * unread. The cache is patched rather than refetched: the outcome is known,
+ * and invalidating every list under the issue screen would refetch each one
+ * on every issue opened.
+ */
 function useMarkSeen(issue: ApiIssue | undefined): void {
   const api = useApi();
   const org = useOrg();
@@ -138,7 +145,7 @@ function useMarkSeen(issue: ApiIssue | undefined): void {
     if (unseen && id !== undefined) {
       api
         .markSeen(org, id)
-        .then(() => queries.invalidateQueries({ queryKey: ["issues", org] }))
+        .then(() => patchIssue(queries, { org, issueId: id }, { hasSeen: true }))
         .catch((cause: unknown) =>
           toast(cause instanceof Error ? cause.message : "Could not mark the issue seen"),
         );
@@ -178,28 +185,6 @@ function AllEventsLink({ issueId }: { issueId: number }): JSX.Element {
   );
 }
 
-/**
- * Every query on the page (event, chart, tags, activity, follow) is keyed
- * under the issue, so refreshing invalidates the lot, not just the header.
- */
-function useRefresh(issueId: number): [boolean, () => Promise<void>] {
-  const org = useOrg();
-  const queries = useQueryClient();
-  const [refreshing, setRefreshing] = useState(false);
-
-  const refresh = async (): Promise<void> => {
-    setRefreshing(true);
-
-    try {
-      await queries.invalidateQueries({ queryKey: ["issues", org, issueId] });
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  return [refreshing, refresh];
-}
-
 export function IssueScreen(): JSX.Element {
   const api = useApi();
   const org = useOrg();
@@ -210,14 +195,24 @@ export function IssueScreen(): JSX.Element {
   const now = useNow();
   const [view, setView] = useView(params.event);
 
+  const queries = useQueryClient();
+
   const issue = useQuery({
-    queryKey: ["issues", org, issueId],
-    queryFn: () => api.issue(org, issueId),
+    ...issueQuery(api, { org, issueId }),
+    // Opened from a list, the issue is already in the cache: the header,
+    // actions and chart render on the first frame, and the fetch refreshes
+    // them if the list's copy is older than staleTime.
+    initialData: () => issueFromLists(queries, { org, issueId })?.issue,
+    initialDataUpdatedAt: () => issueFromLists(queries, { org, issueId })?.updatedAt,
   });
 
   useMarkSeen(issue.data);
 
-  const [refreshing, refresh] = useRefresh(issueId);
+  // Every query on the page (event, chart, tags, activity, follow) is keyed
+  // under the issue, so refreshing invalidates the lot, not just the header.
+  const pull = usePullRefresh(() =>
+    queries.invalidateQueries({ queryKey: ["issues", org, issueId] }),
+  );
 
   const page = { flex: 1, backgroundColor: palette.bg, paddingTop: insets.top };
 
@@ -240,7 +235,7 @@ export function IssueScreen(): JSX.Element {
     <View style={page}>
       <ScrollView
         contentContainerStyle={{ paddingBottom: insets.bottom + SPACE.xl }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+        refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={pull.onRefresh} />}
       >
         <Crumbs shortId={issue.data.shortId} />
         <IssueHeader issue={issue.data} now={now} />

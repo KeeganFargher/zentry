@@ -3,7 +3,8 @@
 
 import { RobotoMono_400Regular, RobotoMono_500Medium } from "@expo-google-fonts/roboto-mono";
 import { Rubik_400Regular, Rubik_500Medium, useFonts } from "@expo-google-fonts/rubik";
-import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, useIsRestoring } from "@tanstack/react-query";
+import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
@@ -14,6 +15,8 @@ import { AppState } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { startBackgroundRefresh } from "~/lib/background";
+import { persistOptions, queryClient } from "~/lib/cache";
 import { PreferencesProvider, usePreferences } from "~/lib/preferences";
 import { showPushesInForeground } from "~/lib/push";
 import { PushProvider } from "~/lib/push-state";
@@ -23,13 +26,6 @@ import { FONTS } from "~/lib/theme";
 void SplashScreen.preventAutoHideAsync();
 
 showPushesInForeground();
-
-// Issues change while the app is open. A query older than this refetches
-// when its screen mounts or the app comes back to the foreground (the
-// focusManager below), and pull-to-refresh is always there.
-const queries = new QueryClient({
-  defaultOptions: { queries: { staleTime: 15_000, retry: 1 } },
-});
 
 // React Query knows the browser's focus; on a phone, focus is the app being
 // in the foreground.
@@ -43,12 +39,19 @@ focusManager.setEventListener((setFocused) => {
 
 /** Push registration needs the signed-in API, so it lives inside the gate. */
 function SignedIn({ children }: { children: ReactNode }): JSX.Element {
+  useEffect(() => {
+    void startBackgroundRefresh();
+  }, []);
+
   return <PushProvider>{children}</PushProvider>;
 }
 
 function Navigator(): JSX.Element | null {
   const { palette, dark, ready: preferencesReady } = usePreferences();
   const { ready: sessionReady, session } = useSession();
+  // The splash screen stays up until the cache is back from disk, so the
+  // first frame is last session's issues, not an empty list and a spinner.
+  const restoring = useIsRestoring();
 
   // Sentry's two weights of Rubik, and Roboto Mono for code.
   const [fontsLoaded] = useFonts({
@@ -58,7 +61,7 @@ function Navigator(): JSX.Element | null {
     RobotoMono_500Medium,
   });
 
-  const ready = preferencesReady && sessionReady && fontsLoaded;
+  const ready = preferencesReady && sessionReady && fontsLoaded && !restoring;
 
   useEffect(() => {
     void SystemUI.setBackgroundColorAsync(palette.bg);
@@ -70,12 +73,16 @@ function Navigator(): JSX.Element | null {
     }
   }, [ready]);
 
-  // A new sign-in must not show the previous account's cached issues.
+  // A new sign-in must not show the previous account's cached issues. The
+  // persister then writes the empty cache over the one on disk. Only once the
+  // keystore has been read (until then, no session means not known yet) and
+  // the restore is done (a cache restored after the clear would bring the
+  // last account back, if the app closed before its sign-out was saved).
   useEffect(() => {
-    if (session === null) {
-      queries.clear();
+    if (sessionReady && !restoring && session === null) {
+      queryClient.clear();
     }
-  }, [session]);
+  }, [sessionReady, restoring, session]);
 
   if (!ready) {
     return null;
@@ -120,9 +127,9 @@ export default function RootLayout(): JSX.Element {
       <SafeAreaProvider>
         <PreferencesProvider>
           <SessionProvider>
-            <QueryClientProvider client={queries}>
+            <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
               <Navigator />
-            </QueryClientProvider>
+            </PersistQueryClientProvider>
           </SessionProvider>
         </PreferencesProvider>
       </SafeAreaProvider>
