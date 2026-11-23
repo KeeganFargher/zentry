@@ -181,6 +181,8 @@ export default defineConfig({
         "src/shared/monitor-alerts.ts",
         "src/core/wire.ts",
         "src/core/envelope.ts",
+        // A source bundle's manifest, read from an upload or from R2.
+        "src/core/source-bundle.ts",
         "src/ingest/handler.ts",
         "src/consumer/handler.ts",
         "src/api/**",

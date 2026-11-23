@@ -6,6 +6,7 @@ import type { CliCaller } from "@/db/cli-tokens";
 import { sha256Hex } from "@/shared/ids";
 
 import * as cli from "./cli";
+import * as debugFiles from "./cli-debug-files";
 import type { ApiDeps, CliHandler } from "./context";
 import { notFound } from "./http";
 import { apiPattern, ORG, SLUG } from "./paths";
@@ -33,6 +34,9 @@ const CLI_ROUTES: CliRoute[] = [
   scoped("GET", `/projects/${ORG}/${SLUG}/issues`, cli.listIssues),
   scoped("PUT", `/projects/${ORG}/${SLUG}/issues`, cli.updateIssues),
   scoped("GET", `/projects/${ORG}/${SLUG}/events`, cli.listEvents),
+  scoped("GET", `/organizations/${ORG}/chunk-upload`, debugFiles.chunkUploadOptions),
+  scoped("POST", `/organizations/${ORG}/chunk-upload`, debugFiles.uploadChunks),
+  scoped("POST", `/projects/${ORG}/${SLUG}/files/difs/assemble`, debugFiles.assembleDifs),
 ];
 
 /**
@@ -51,7 +55,8 @@ export async function cliCaller(token: string, deps: ApiDeps): Promise<CliCaller
 
 /**
  * A path this table does not know is a sentry-cli command Zentry has not
- * built (releases, source maps, debug files and the rest). 501 says so; a 404
+ * built (releases, source maps, debug files other than source bundles, and
+ * the rest). 501 says so; a 404
  * would make the CLI report a missing release or project instead.
  */
 function notBuilt(): Response {
@@ -59,8 +64,9 @@ function notBuilt(): Response {
     {
       detail:
         "Zentry does not support this sentry-cli command. Supported: info, organizations list, " +
-        "projects list, issues list/resolve/mute/unresolve, events list, monitors list, and " +
-        "the DSN commands (send-event, send-envelope, monitors run).",
+        "projects list, issues list/resolve/mute/unresolve, events list, monitors list, " +
+        "debug-files upload of source bundles, and the DSN commands (send-event, " +
+        "send-envelope, monitors run).",
     },
     { status: 501 },
   );

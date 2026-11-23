@@ -105,6 +105,8 @@ const Frame = z.object({
   pre_context: ContextLines,
   post_context: ContextLines,
   vars: lenient(JsonRecord),
+  // "rel:N": the frame's address is relative to `debug_meta.images[N]`.
+  addr_mode: label(50),
 });
 
 const Stacktrace = z.object({ frames: lenientList(Frame) });
@@ -259,6 +261,14 @@ const Sdk = z.object({
   settings: lenient(z.object({ infer_ip: lenient(Label) })),
 });
 
+// ── Debug images ─────────────────────────────────────────────────────────
+
+const DebugImage = z.object({ debug_id: label(100) });
+
+// Frames point into this list by position ("rel:N"), so an invalid image
+// stays as a null instead of being dropped, which would shift the rest.
+const DebugMeta = z.object({ images: z.array(lenient(DebugImage)).catch([]) });
+
 // ── The event ────────────────────────────────────────────────────────────
 
 export const WireEvent = z.object({
@@ -283,9 +293,12 @@ export const WireEvent = z.object({
   logger: label(200),
   transaction: label(200),
   fingerprint: lenientList(Text.transform((part) => cut(part, 500))),
+  debug_meta: lenient(DebugMeta),
 });
 
 export type WireEvent = z.output<typeof WireEvent>;
+
+export type WireDebugImage = z.output<typeof DebugImage>;
 
 export type WireFrame = z.output<typeof Frame>;
 

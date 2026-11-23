@@ -203,8 +203,9 @@ which is git-ignored, and `pnpm run deploy` and `pnpm migrate:remote` read that 
 3. In Cloudflare Zero Trust, add an Access application for the UI hostname
    only. Put its team domain and audience tag in `ACCESS_TEAM_DOMAIN` and
    `ACCESS_AUD` in the same copy. Leave the ingest hostname without Access.
-4. On the R2 bucket, add two lifecycle rules: delete `events/` after 90 days
-   and `spill/` after 7 days.
+4. On the R2 bucket, add three lifecycle rules: delete `events/` after 90
+   days, `spill/` after 7 days and `chunks/` after 1 day. `source-bundles/`
+   gets no rule (DESIGN.md §20.4).
 5. Apply the schema and deploy:
 
    ```bash

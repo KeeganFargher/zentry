@@ -1,7 +1,9 @@
 // What every read-API handler receives.
 
+import type { DebugFileBlobs } from "@/blobs/debug-files";
 import type { EventBlobs } from "@/blobs/events";
 import type { CliCaller, CliTokenStore } from "@/db/cli-tokens";
+import type { DebugFileStore } from "@/db/debug-files";
 import type { DeviceRecord, DeviceStore } from "@/db/devices";
 import type { EventStore } from "@/db/events";
 import type { IssueStore } from "@/db/issues";
@@ -28,6 +30,10 @@ export type ApiDeps = {
   notificationSettings: NotificationSettingsStore;
   devices: DeviceStore;
   cliTokens: CliTokenStore;
+  /** Upload chunks and assembled source bundles in R2 (§20.4). */
+  debugFiles: DebugFileBlobs;
+  /** Which source bundles each project has assembled. */
+  debugFileRecords: DebugFileStore;
   /** Wakes the notify consumer after a change that queued notifications. */
   notify: () => Promise<void>;
   /** False while no sender address is configured, so nothing is emailed. */

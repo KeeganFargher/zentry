@@ -8,6 +8,7 @@ import type { EventBlob } from "@/blobs/events";
 import { groupHourKeys, prepareEvent } from "@/core/buckets";
 import type { Prepared } from "@/core/buckets";
 import { normalizeEvent } from "@/core/normalize";
+import type { Normalized } from "@/core/normalize";
 import { planBatch } from "@/core/plan";
 import { WireEvent } from "@/core/wire";
 import type { BatchKeys } from "@/db/batch";
@@ -23,6 +24,9 @@ import type {
 import { hourBucket } from "@/shared/time";
 import type { QueueMessage } from "@/shared/types";
 
+import { withSources } from "./sources";
+import type { LoadSourceBundle } from "./sources";
+
 export type ConsumerDeps = {
   readState: (keys: BatchKeys) => Promise<BatchState>;
   readStored: (keys: GroupHourKey[]) => Promise<GroupHourStored[]>;
@@ -33,6 +37,8 @@ export type ConsumerDeps = {
   putBlobs: (blobs: EventBlob[]) => Promise<void>;
   loadSpill: (key: string) => Promise<string | null>;
   deleteSpill: (keys: string[]) => Promise<void>;
+  /** A project's source bundle for a debug id (DESIGN.md §20.4). */
+  loadSourceBundle: LoadSourceBundle;
   /** Wakes the notify consumer to drain the outbox (DESIGN.md §18). */
   notify: () => Promise<void>;
   maxStoredPerGroupHour: number;
@@ -51,7 +57,7 @@ async function loadPayload(message: QueueMessage, deps: ConsumerDeps): Promise<s
 const EventPayload = jsonText(WireEvent);
 
 /** Null when the payload is not a JSON object; retrying would not help. */
-function normalizeMessage(message: QueueMessage, payload: string): Prepared | null {
+function normalizeMessage(message: QueueMessage, payload: string): Normalized | null {
   const parsed = EventPayload.safeParse(payload);
 
   if (!parsed.success) {
@@ -64,20 +70,18 @@ function normalizeMessage(message: QueueMessage, payload: string): Prepared | nu
     return null;
   }
 
-  return prepareEvent(
-    normalizeEvent(parsed.data, {
-      projectId: message.project_id,
-      eventId: message.event_id,
-      receivedAt: message.received_at,
-      clientIp: message.client_ip,
-      userAgent: message.user_agent,
-      sentAt: message.sent_at,
-    }),
-  );
+  return normalizeEvent(parsed.data, {
+    projectId: message.project_id,
+    eventId: message.event_id,
+    receivedAt: message.received_at,
+    clientIp: message.client_ip,
+    userAgent: message.user_agent,
+    sentAt: message.sent_at,
+  });
 }
 
 /** Null when the event cannot be stored; retrying would not help. */
-async function prepare(message: QueueMessage, deps: ConsumerDeps): Promise<Prepared | null> {
+async function normalize(message: QueueMessage, deps: ConsumerDeps): Promise<Normalized | null> {
   const payload = await loadPayload(message, deps);
 
   if (payload === null) {
@@ -114,9 +118,37 @@ function batchKeys(prepared: Prepared[], now: number): BatchKeys {
   };
 }
 
+/**
+ * Hashing and the stored JSON, once the event is complete. Null when this
+ * throws: like normalizing, it depends only on the event.
+ */
+function prepare(message: QueueMessage, normalized: Normalized): Prepared | null {
+  try {
+    return prepareEvent(normalized);
+  } catch (cause) {
+    logError("dropping event that could not be prepared", {
+      project_id: message.project_id,
+      event_id: message.event_id,
+      error: errorText(cause),
+    });
+
+    return null;
+  }
+}
+
 /** Steps B to E for a set of messages. Throws if anything could not be stored. */
 export async function processMessages(messages: QueueMessage[], deps: ConsumerDeps): Promise<void> {
-  const results = await Promise.all(messages.map((message) => prepare(message, deps)));
+  const normalized = await Promise.all(messages.map((message) => normalize(message, deps)));
+  // Before hashing, as Sentry symbolicates before grouping: the grouping of
+  // some platforms reads the context line.
+  const sourced = await withSources(normalized, deps.loadSourceBundle);
+
+  const results = messages.map((message, index) => {
+    const event = sourced[index];
+
+    return event === null || event === undefined ? null : prepare(message, event);
+  });
+
   const prepared = results.filter((result) => result !== null);
   const now = deps.now();
 

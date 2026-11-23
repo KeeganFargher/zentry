@@ -3,6 +3,7 @@
 import type { StoredException, StoredFrame, StoredMechanism } from "@/shared/contract";
 
 import { toStoredFrames } from "./frames";
+import type { DebugImages } from "./frames";
 import { scrubText } from "./scrub";
 import type { WireEvent, WireException, WireMechanism, WireThread } from "./wire";
 
@@ -17,24 +18,24 @@ function toStoredMechanism(raw: WireMechanism): StoredMechanism {
   };
 }
 
-function toStoredException(raw: WireException): StoredException {
+function toStoredException(raw: WireException, images: DebugImages): StoredException {
   return {
     type: raw.type,
     value: raw.value === null ? null : scrubText(raw.value),
     module: raw.module,
     mechanism: raw.mechanism === null ? null : toStoredMechanism(raw.mechanism),
-    frames: raw.stacktrace === null ? [] : toStoredFrames(raw.stacktrace),
+    frames: raw.stacktrace === null ? [] : toStoredFrames(raw.stacktrace, images),
   };
 }
 
-function framesOf(thread: WireThread): StoredFrame[] {
-  return thread.stacktrace === null ? [] : toStoredFrames(thread.stacktrace);
+function framesOf(thread: WireThread, images: DebugImages): StoredFrame[] {
+  return thread.stacktrace === null ? [] : toStoredFrames(thread.stacktrace, images);
 }
 
 /** The stack of the thread that crashed, else the current one, else the first with frames. */
-function threadFrames(threads: WireThread[]): StoredFrame[] {
+function threadFrames(threads: WireThread[], images: DebugImages): StoredFrame[] {
   const withStacks = threads.flatMap((thread) => {
-    const frames = framesOf(thread);
+    const frames = framesOf(thread, images);
 
     return frames.length === 0 ? [] : [{ thread, frames }];
   });
@@ -55,14 +56,18 @@ function threadFrames(threads: WireThread[]): StoredFrame[] {
  * has none, so the trace shows and the event still groups by where it happened.
  */
 export function toStoredExceptions(raw: WireEvent): StoredException[] {
-  const exceptions = raw.exception.slice(-MAX_EXCEPTIONS).map(toStoredException);
+  const images = raw.debug_meta?.images ?? [];
+
+  const exceptions = raw.exception
+    .slice(-MAX_EXCEPTIONS)
+    .map((exception) => toStoredException(exception, images));
 
   if (exceptions.some((exception) => exception.frames.length > 0)) {
     return exceptions;
   }
 
-  const topLevel = raw.stacktrace === null ? [] : toStoredFrames(raw.stacktrace);
-  const frames = topLevel.length > 0 ? topLevel : threadFrames(raw.threads);
+  const topLevel = raw.stacktrace === null ? [] : toStoredFrames(raw.stacktrace, images);
+  const frames = topLevel.length > 0 ? topLevel : threadFrames(raw.threads, images);
   const last = exceptions.at(-1);
 
   if (frames.length === 0) {

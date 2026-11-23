@@ -5,7 +5,10 @@ import type { StoredFrame } from "@/shared/contract";
 import { looksLikeLibrary } from "./inapp";
 import { scrubObject } from "./scrub";
 import { trimObject } from "./trim";
-import type { WireFrame, WireStacktrace } from "./wire";
+import type { WireDebugImage, WireFrame, WireStacktrace } from "./wire";
+
+/** The event's `debug_meta.images`, by position; null where an image was invalid. */
+export type DebugImages = (WireDebugImage | null)[];
 
 const MAX_FRAMES = 250;
 const MAX_CONTEXT_LINES = 10;
@@ -33,7 +36,23 @@ function isInApp(raw: WireFrame, packaged: boolean): boolean {
   return raw.in_app ?? !looksLikeLibrary({ ...raw, absPath: raw.abs_path });
 }
 
-function toStoredFrame(raw: WireFrame, packaged: boolean): StoredFrame {
+const RELATIVE_ADDRESS = /^rel:(\d+)$/;
+
+/**
+ * The debug id of the image a frame's address is relative to. Only "rel:N"
+ * names an image; "abs" and absent modes are native addresses that would
+ * need symbolication to place, which Zentry does not do.
+ */
+function debugIdOf(raw: WireFrame, images: DebugImages): string | null {
+  const index = RELATIVE_ADDRESS.exec(raw.addr_mode ?? "")?.[1];
+  const id = index === undefined ? null : (images[Number(index)]?.debug_id ?? null);
+
+  return id === null ? null : id.toLowerCase();
+}
+
+type FrameSource = { packaged: boolean; images: DebugImages };
+
+function toStoredFrame(raw: WireFrame, source: FrameSource): StoredFrame {
   const located = {
     filename: raw.filename,
     absPath: raw.abs_path,
@@ -44,9 +63,10 @@ function toStoredFrame(raw: WireFrame, packaged: boolean): StoredFrame {
   return {
     ...located,
     package: raw.package,
+    debugId: debugIdOf(raw, source.images),
     lineno: raw.lineno,
     colno: raw.colno,
-    inApp: isInApp(raw, packaged),
+    inApp: isInApp(raw, source.packaged),
     contextLine: raw.context_line,
     preContext: nearestLines(raw.pre_context, "pre"),
     postContext: nearestLines(raw.post_context, "post"),
@@ -55,7 +75,7 @@ function toStoredFrame(raw: WireFrame, packaged: boolean): StoredFrame {
 }
 
 /** Frames are kept in SDK order: oldest call first, crash site last. */
-export function toStoredFrames(stacktrace: WireStacktrace): StoredFrame[] {
+export function toStoredFrames(stacktrace: WireStacktrace, images: DebugImages): StoredFrame[] {
   const { frames } = stacktrace;
   const half = MAX_FRAMES / 2;
 
@@ -65,5 +85,5 @@ export function toStoredFrames(stacktrace: WireStacktrace): StoredFrame[] {
   // Decided over every frame, before any are dropped.
   const packaged = frames.some((frame) => frame.package !== null);
 
-  return kept.map((frame) => toStoredFrame(frame, packaged));
+  return kept.map((frame) => toStoredFrame(frame, { packaged, images }));
 }

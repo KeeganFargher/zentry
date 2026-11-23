@@ -74,7 +74,7 @@ async function makeToken(email = USER): Promise<ApiCliTokenCreated> {
   return response.json<ApiCliTokenCreated>();
 }
 
-type TokenPayload = { iat: number; url: string; org: string };
+type TokenPayload = { iat: number; url: string; region_url: string; org: string };
 
 /** The `{iat, url, org}` sentry-cli reads out of the token's middle segment. */
 async function payloadOf(token: string): Promise<TokenPayload> {
@@ -133,7 +133,11 @@ describe("making a token", () => {
 
     expect(prefix).toBe("sntrys");
     expect(extra).toBeUndefined();
-    expect(await payloadOf(created.token)).toMatchObject({ url: INGEST, org: "default" });
+    expect(await payloadOf(created.token)).toMatchObject({
+      url: INGEST,
+      region_url: INGEST,
+      org: "default",
+    });
     expect(created.url).toBe(INGEST);
     // sentry-cli insists on exactly 32 bytes of unpadded base64 (org_auth_token.rs).
     expect(secret).toMatch(/^[A-Za-z0-9+/]{43}$/);
