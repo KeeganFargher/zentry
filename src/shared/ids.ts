@@ -47,11 +47,14 @@ function base64(bytes: Uint8Array): string {
 
 /**
  * A sentry-cli auth token in the shape of Sentry's organization tokens:
- * `sntrys_` + padded base64 of `{iat, url, org}` + `_` + unpadded base64 of
- * 256 random bits. sentry-cli parses exactly this (src/utils/auth_token/
- * org_auth_token.rs, which splits on `_` and wants 32 secret bytes) and then
- * calls `url` for `org` with no other configuration, so the token alone is
- * the whole setup. Standard base64 never contains `_`, which keeps the split
+ * `sntrys_` + padded base64 of `{iat, url, region_url, org}` + `_` + unpadded
+ * base64 of 256 random bits. sentry-cli parses exactly this (src/utils/
+ * auth_token/org_auth_token.rs, which splits on `_` and wants 32 secret
+ * bytes) and then calls `url` for `org` with no other configuration, so the
+ * token alone is the whole setup. `region_url` is required: without it the
+ * CLI cannot parse the payload, keeps the token only as an opaque secret, and
+ * calls sentry.io with no organization. Zentry has one region, so it is
+ * `url`. Standard base64 never contains `_`, which keeps the split
  * unambiguous. The payload is not secret: the CLI reads it, and so can anyone
  * who sees the token; only the random part is the credential.
  */
@@ -62,6 +65,7 @@ export function newCliToken(payload: { url: string; org: string; issuedAt: numbe
   const claims = JSON.stringify({
     iat: payload.issuedAt / 1000,
     url: payload.url,
+    region_url: payload.url,
     org: payload.org,
   });
 
@@ -75,9 +79,20 @@ export function newPairingCode(): string {
   return randomHex(16);
 }
 
+function hex(digest: ArrayBuffer): string {
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** SHA-256 of the text, as hex. Device tokens and pairing codes are stored this way. */
 export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+}
 
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+/**
+ * SHA-1 of the bytes, as hex. Only for sentry-cli's chunked uploads, which
+ * name every chunk and file by it; it is a content address there, not a
+ * security check.
+ */
+export async function sha1Hex(bytes: Uint8Array): Promise<string> {
+  return hex(await crypto.subtle.digest("SHA-1", bytes));
 }

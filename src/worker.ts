@@ -6,6 +6,7 @@ import { IssueSummarizer } from "@/ai/summaries";
 import { apiDeps } from "@/api-deps";
 import type { ApiDeps } from "@/api/context";
 import { serveApi, Sessions, serveAppApi } from "@/api/router";
+import { DebugFileBlobs } from "@/blobs/debug-files";
 import { EventBlobs } from "@/blobs/events";
 import { SpillStore } from "@/blobs/spill";
 import { handleBatch } from "@/consumer/handler";
@@ -188,6 +189,7 @@ function consumerDeps(env: Env): ConsumerDeps {
   const store = new BatchStore(env.DB);
   const blobs = new EventBlobs(env.BLOBS);
   const spill = new SpillStore(env.BLOBS);
+  const debugFiles = new DebugFileBlobs(env.BLOBS);
 
   return {
     readState: (keys) => store.readState(keys),
@@ -197,6 +199,7 @@ function consumerDeps(env: Env): ConsumerDeps {
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),
+    loadSourceBundle: (projectId, debugId) => debugFiles.getBundle(projectId, debugId),
     notify: () => wakeNotify(env),
     maxStoredPerGroupHour: Number(env.MAX_STORED_PER_GROUP_HOUR),
     now: () => Date.now(),

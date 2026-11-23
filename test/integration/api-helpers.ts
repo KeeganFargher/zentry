@@ -4,8 +4,10 @@ import { AccessVerifier } from "@/api/access";
 import type { SigningKey } from "@/api/access";
 import type { ApiDeps } from "@/api/context";
 import { handleApi, Sessions } from "@/api/router";
+import { DebugFileBlobs } from "@/blobs/debug-files";
 import { EventBlobs } from "@/blobs/events";
 import { CliTokenStore } from "@/db/cli-tokens";
+import { DebugFileStore } from "@/db/debug-files";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
@@ -111,6 +113,8 @@ export function apiDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     notificationSettings: new NotificationSettingsStore(env.DB),
     devices: new DeviceStore(env.DB),
     cliTokens: new CliTokenStore(env.DB),
+    debugFiles: new DebugFileBlobs(env.BLOBS),
+    debugFileRecords: new DebugFileStore(env.DB),
     notify: async () => {},
     emailEnabled: true,
     ingestHost: "ingest.zentry.test",

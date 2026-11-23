@@ -1009,6 +1009,8 @@ VALUES (1, 'default', 'Default', unixepoch() * 1000);
 |---|---|---|
 | `events/{project_id}/{event_id}.json.gz` | Normalized, scrubbed event | Delete after `RETENTION_DAYS` |
 | `spill/{project_id}/{event_id}.json` | Raw oversize payload awaiting the consumer | Delete after 7 days |
+| `chunks/{organization_id}/{sha1}` | A piece of a sentry-cli upload, until its file is assembled (§20.4) | Delete after 1 day |
+| `source-bundles/{project_id}/{debug_id}` | An assembled source bundle (§20.4) | None |
 
 ---
 
@@ -2230,11 +2232,13 @@ model eval are in `docs/push-summaries-plan.md` and
 ## 20. sentry-cli
 
 `sentry-cli` works against Zentry for what Zentry has: checking a token,
-listing organizations, projects, issues, events and cron monitors, and
-resolving, muting and reopening issues. Its DSN commands (`send-event`,
+listing organizations, projects, issues, events and cron monitors,
+resolving, muting and reopening issues, and uploading source bundles
+(§20.4). Its DSN commands (`send-event`,
 `send-envelope`, `monitors run`) go through ingest and need no token.
-Releases, deploys, source maps, debug files and the rest are not built; the
-API answers them with a 501 that lists what is supported.
+Releases, deploys, source maps, debug files other than source bundles and
+the rest are not built; the API answers them with a 501 that lists what is
+supported.
 
 ### 20.1 Tokens
 
@@ -2248,7 +2252,7 @@ its followers, and subscribes the token's member to every issue it changed.
 
 - **Format.** Sentry's organization-token shape, which sentry-cli parses
   (`src/utils/auth_token/org_auth_token.rs`): `sntrys_`, padded base64 of
-  `{"iat","url","org"}`, `_`, unpadded base64 of 32 random bytes. The CLI
+  `{"iat","url","region_url","org"}`, `_`, unpadded base64 of 32 random bytes. The CLI
   reads `url` and `org` out of the token, so `SENTRY_AUTH_TOKEN` is the whole
   setup. The payload is readable by anyone holding the token; only the random
   part is the secret.
@@ -2292,6 +2296,8 @@ Sentry's response shapes where the UI and the app need ours.
 | `GET /api/0/projects/{org}/{project}/issues/` | `issues list` |
 | `PUT /api/0/projects/{org}/{project}/issues/` | `issues resolve`, `mute`, `unresolve` |
 | `GET /api/0/projects/{org}/{project}/events/` | `events list` |
+| `GET`, `POST /api/0/organizations/{org}/chunk-upload/` | `debug-files upload` (limits, then chunks) |
+| `POST /api/0/projects/{org}/{project}/files/difs/assemble/` | `debug-files upload` (assemble) |
 
 Responses follow the structs sentry-cli deserializes (`src/api/mod.rs`): bare
 arrays, string ids, ISO dates, every non-optional field present. Lists page
@@ -2332,9 +2338,49 @@ calls included.
 
 ### 20.3 Not done
 
-- Releases, deploys and commits; source maps and debug files (§13);
+- Releases, deploys and commits; source maps, and debug files other than
+  source bundles (§13);
   `issues resolve --next-release`; snoozing.
 - `events list --show-user/--show-tags`.
 - Token scopes: every token reaches every route above. Read-only tokens would
   need a scope column and a check per route.
 - Removing members, owners revoking others' tokens, and token expiry.
+
+### 20.4 Source context from source bundles
+
+The .NET SDK reads only a file and line for each frame from the PDB at
+runtime; it sends no source lines. Sentry fills them in from a **source
+bundle**: a ZIP of the source files a debug file points at, which
+`sentry-cli debug-files bundle-sources` builds at build time and
+`sentry-cli debug-files upload -t sourcebundle` uploads. Zentry does the same,
+so the issue page, the app, Copy as Markdown and the emails show the code
+around each of the app's frames, from the exact build that ran.
+
+- **Upload** (`src/api/cli-debug-files.ts`) is Sentry's chunked protocol, as
+  sentry-cli 2.x drives it: limits from `chunk-upload/`, an `assemble/` call
+  that names the missing chunks, gzipped chunks named by SHA-1, then
+  `assemble/` again. Every chunk and file is checked against its SHA-1.
+  Assembling is synchronous (a bundle is a few megabytes), so the second call
+  already answers `ok`. Only source bundles are accepted: any other file
+  assembles to `error`, so a misconfigured build fails instead of storing
+  something unused. Files are capped at 32 MB, joined in memory.
+- **Storage.** The bundle goes to R2 under `source-bundles/{project}/{debug
+  id}`, and a `debug_files` row (migration 0010) records its checksum, so a
+  repeat upload is answered `ok` without reading it. Bundles have no lifecycle
+  rule: a build can run for months and its events need its bundle as long as
+  it runs. A deleted project's bundles stay in R2.
+- **Matching.** A frame names its image through `addr_mode: "rel:N"`, an index
+  into `debug_meta.images`; normalization keeps that image's debug id on the
+  frame (`StoredFrame.debugId`). The bundle's manifest maps each file's build
+  path to its ZIP entry, and the frame's `abs_path` is that build path, as
+  symbolic's `source_by_path` looks it up.
+- **When.** In the consumer, after normalizing and before hashing, which is
+  where Sentry symbolicates. One read per (project, debug id) per batch. A
+  frame qualifies when it is in-app, has a line, a path and a debug id, and
+  the SDK sent no context. It gets five lines either side, Sentry's window. A
+  line past the end of the file, a path the bundle lacks, a file over 2 MB or
+  a missing bundle leave the frame without context. An R2 read that fails
+  throws, so the batch is retried.
+- **Not done:** native symbolication from uploaded PDBs (frames must arrive
+  with file and line, which the .NET SDK sends whenever the PDB is next to the
+  assembly), listing or deleting bundles in the UI, and expiring bundles.

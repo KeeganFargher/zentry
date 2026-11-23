@@ -24,6 +24,12 @@ export type StoredFrame = {
   function: string | null;
   /** The binary or assembly the code is in. Absent on events stored before this field existed. */
   package?: string | null;
+  /**
+   * Debug id of the image the frame's code is in (`debug_meta.images`), which
+   * names the source bundle its source context comes from. Lower-cased.
+   * Absent on events stored before this field existed.
+   */
+  debugId?: string | null;
   lineno: number | null;
   colno: number | null;
   inApp: boolean;

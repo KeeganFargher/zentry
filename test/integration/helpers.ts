@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 
+import { DebugFileBlobs } from "@/blobs/debug-files";
 import { EventBlobs } from "@/blobs/events";
 import { SpillStore } from "@/blobs/spill";
 import type { ConsumerDeps } from "@/consumer/handler";
@@ -70,6 +71,7 @@ export function consumerDeps(overrides: Partial<ConsumerDeps> = {}): ConsumerDep
   const store = new BatchStore(env.DB);
   const blobs = new EventBlobs(env.BLOBS);
   const spill = new SpillStore(env.BLOBS);
+  const debugFiles = new DebugFileBlobs(env.BLOBS);
 
   return {
     readState: (keys) => store.readState(keys),
@@ -79,6 +81,7 @@ export function consumerDeps(overrides: Partial<ConsumerDeps> = {}): ConsumerDep
     putBlobs: (events) => blobs.putAll(events),
     loadSpill: (key) => spill.get(key),
     deleteSpill: (keys) => spill.deleteAll(keys),
+    loadSourceBundle: (projectId, debugId) => debugFiles.getBundle(projectId, debugId),
     notify: async () => {},
     maxStoredPerGroupHour: 100,
     now: () => NOW,

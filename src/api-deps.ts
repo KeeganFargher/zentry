@@ -4,8 +4,10 @@
 
 import { AccessVerifier, fetchAccessKeys } from "@/api/access";
 import type { ApiDeps } from "@/api/context";
+import { DebugFileBlobs } from "@/blobs/debug-files";
 import { EventBlobs } from "@/blobs/events";
 import { CliTokenStore } from "@/db/cli-tokens";
+import { DebugFileStore } from "@/db/debug-files";
 import { DeviceStore } from "@/db/devices";
 import { EventStore } from "@/db/events";
 import { IssueStore } from "@/db/issues";
@@ -43,6 +45,8 @@ export function apiDeps(env: Env, hooks: NotifyHooks): ApiDeps {
     notificationSettings: new NotificationSettingsStore(env.DB),
     devices: new DeviceStore(env.DB),
     cliTokens: new CliTokenStore(env.DB),
+    debugFiles: new DebugFileBlobs(env.BLOBS),
+    debugFileRecords: new DebugFileStore(env.DB),
     uptimeFixtureOrigin: env.UPTIME_FIXTURE_ORIGIN,
     allowMonitorPreview: async (key) => (await env.MONITOR_PREVIEW_RL.limit({ key })).success,
     monitorPreviews: new MonitorPreviews(env.DB),
